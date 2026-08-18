@@ -9,3 +9,10 @@ data/
 .venv/
 __pycache__/
 *.egg-info/
+# Node / pnpm
+node_modules/
+dist/
+*.tsbuildinfo
+
+# LLM response cache (content-addressed, regenerable)
+.cache/

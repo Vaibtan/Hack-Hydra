@@ -1,0 +1,24 @@
+{
+  "name": "palimpsest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build --force",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:live": "vitest run --project live",
+    "probe": "pnpm --filter @palimpsest/hydra run probe"
+  },
+  "devDependencies": {
+    "@effect/vitest": "0.30.0",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
