@@ -1,0 +1,11 @@
+.agents/
+.claude/
+.env
+
+# LongMemEval datasets — longmemeval_s_cleaned.json alone is 265 MB
+data/
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
