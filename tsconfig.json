@@ -1,4 +1,8 @@
 {
   "files": [],
-  "references": [{ "path": "./packages/hydra" }]
+  "references": [
+    { "path": "./packages/hydra" },
+    { "path": "./packages/dataset" },
+    { "path": "./packages/palimpsest" }
+  ]
 }

@@ -7,6 +7,13 @@
 export const MAX_TRAVERSAL_HOPS = 16
 export const MAX_QUERY_RESULT_VERTICES = 100_000
 export const MAX_BODY_BYTES = 1_000_000
+/**
+ * Measured against HydraDB 0.1.0 by bisection: a string property of 32 743
+ * UTF-8 bytes is stored, 32 744 fails the write with a 500 and the opaque
+ * message "internal query execution error". The cap is on bytes, not code
+ * points (16 371 two-byte characters is the same boundary).
+ */
+export const MAX_STRING_PROPERTY_BYTES = 32_743
 
 export type RelDirection = "outgoing" | "incoming" | "both"
 

@@ -3,6 +3,7 @@ export type { Params, QueryOptions, RelRow, VertexRow } from "./Client.js"
 export {
   MAX_BODY_BYTES,
   MAX_QUERY_RESULT_VERTICES,
+  MAX_STRING_PROPERTY_BYTES,
   MAX_TRAVERSAL_HOPS,
   renderMsPathsQuery
 } from "./Cypher.js"

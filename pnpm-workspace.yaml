@@ -3,6 +3,7 @@ packages:
   - "apps/*"
 allowBuilds:
   '@parcel/watcher': false
+  esbuild: true
   msgpackr-extract: false
 minimumReleaseAgeExclude:
   - '@vitest/expect@4.1.11'

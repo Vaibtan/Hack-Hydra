@@ -1,6 +1,11 @@
 import { HttpClient, HttpClientRequest } from "@effect/platform"
 import { Config, Effect, Option, Ref } from "effect"
-import { MAX_BODY_BYTES, renderMsPathsQuery, type MsPathsConfig } from "./Cypher.js"
+import {
+  MAX_BODY_BYTES,
+  MAX_STRING_PROPERTY_BYTES,
+  renderMsPathsQuery,
+  type MsPathsConfig
+} from "./Cypher.js"
 import { decodeResponse, type HydraPath, type QueryResult, type Scalar } from "./Decode.js"
 import { HydraLimitError, HydraParseError, HydraUnavailable } from "./Errors.js"
 import { vertexId } from "./Ids.js"
@@ -77,6 +82,22 @@ const chunkByBytes = <T>(rows: ReadonlyArray<T>): Array<Array<T>> => {
   }
   if (current.length > 0) chunks.push(current)
   return chunks
+}
+
+/**
+ * The engine answers an oversize string property with a 500 and no reason, so
+ * the check has to happen here — otherwise the caller sees "internal query
+ * execution error" and has nothing to act on.
+ */
+const oversizeProperty = (
+  row: Readonly<Record<string, unknown>>
+): { readonly property: string; readonly bytes: number } | undefined => {
+  for (const [property, value] of Object.entries(row)) {
+    if (typeof value !== "string") continue
+    const bytes = Buffer.byteLength(value, "utf8")
+    if (bytes > MAX_STRING_PROPERTY_BYTES) return { property, bytes }
+  }
+  return undefined
 }
 
 const errorFromBody = (
@@ -195,6 +216,18 @@ const make = Effect.gen(function* () {
           .join(", ")
         const statement = `UNWIND $rows AS row MERGE (n {id: row.id}) SET n:${label}, ${assignments}`
         const payload = group.map((row) => ({ id: vertexId(row.key), ...row.properties }))
+        for (const row of payload) {
+          const oversize = oversizeProperty(row)
+          if (oversize !== undefined) {
+            return yield* new HydraLimitError({
+              reason:
+                `property '${oversize.property}' is ${oversize.bytes} UTF-8 bytes, over HydraDB's ` +
+                `${MAX_STRING_PROPERTY_BYTES}-byte string property cap`,
+              status: 413,
+              query: `<batchMerge ${label}>`
+            })
+          }
+        }
         for (const chunk of chunkByBytes(payload)) {
           yield* send(statement, { rows: chunk }, {})
           written += chunk.length

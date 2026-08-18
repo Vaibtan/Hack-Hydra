@@ -1,0 +1,21 @@
+{
+  "name": "@palimpsest/palimpsest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@palimpsest/dataset": "workspace:*",
+    "@palimpsest/hydra": "workspace:*",
+    "effect": "^3.22.1"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "^0.108.1"
+  },
+  "scripts": {
+    "ingest-transcript": "tsx bin/ingest-transcript.ts",
+    "turn": "tsx bin/turn.ts"
+  }
+}

@@ -18,8 +18,13 @@ Design documents:
 ## Layout
 
 ```
-packages/hydra   HydraDB HTTP client — a deep module over the Cypher subset
+packages/hydra        HydraDB HTTP client — a deep module over the Cypher subset
+packages/dataset      LongMemEval loader — typed questions, sessions, turns
+packages/palimpsest   the memory layer itself — keys, transcript ingest
 ```
+
+The LongMemEval files live in the gitignored `data/` (`longmemeval_oracle.json`, 15 MB;
+`longmemeval_s_cleaned.json`, 265 MB). `PALIMPSEST_DATA_DIR` overrides where they are looked for.
 
 ## Prerequisites
 
@@ -44,6 +49,10 @@ pnpm test         # every project: hermetic unit tests + the live probe suite
 pnpm test:unit    # unit tests only — no network, runs anywhere
 pnpm probe        # the live probe suite against the HydraDB node on :8443
 pnpm typecheck    # tsc --build across the workspace
+
+# one benchmark user's verbatim transcript into HydraDB, then read a turn back
+pnpm ingest-transcript --uid gpt4_2655b836 --dataset oracle --reset
+pnpm turn --uid gpt4_2655b836 --sid answer_4be1b6b4_1 --idx 0
 ```
 
 `pnpm probe` needs the Docker node running; `pnpm test:unit` does not.
@@ -70,3 +79,25 @@ The probe suite in `packages/hydra/test/live` is the executable version of the p
 review: the `pathCount`-per-source recall trap, the constant-property target selector, unknown
 anchors being skipped silently, edge-property `WHERE` for as-of reads, `STARTS WITH $param`, and
 parse errors carrying the engine's own reason text.
+
+## `packages/dataset`
+
+`parseQuestion` turns a raw LongMemEval record into typed sessions and turns, and assigns
+`session_ord` **by timestamp** — 211 of the 500 `_s_cleaned` questions and 34 of the 500 oracle
+questions list their sessions out of chronological order, and ties keep file order so the ranking is
+reproducible. `has_answer` is preserved (absent means false, which is how the S file encodes it), as
+is `answer_session_ids`, because the eval harness scores retrieval against them without a judge.
+
+## `packages/palimpsest`
+
+`Transcript` writes `Session`, `Turn` and `HAS_TURN` under one user's key prefix and reads turns
+back. Two things it hides:
+
+- **Key prefixing.** Every key starts `uid|`, because the local token is scoped to one graph, so all
+  500 benchmark users share it. `Keys.ts` is the only place a key is built.
+- **Turn chunking.** HydraDB stores at most **32 743 UTF-8 bytes** in a string property (measured by
+  bisection; over that the write fails with an opaque 500). Four of the 246 750 turns in
+  `longmemeval_s_cleaned.json` are longer — and they are exactly the long assistant outputs the
+  `single-session-assistant` questions ask about. A long turn keeps its first chunk on the `Turn`
+  vertex and hangs the rest off `HAS_CHUNK`; `readTurn` reassembles it, so Span offsets stay
+  absolute and no caller learns this happened.

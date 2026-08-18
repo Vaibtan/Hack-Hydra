@@ -13,11 +13,14 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:live": "vitest run --project live",
-    "probe": "pnpm --filter @palimpsest/hydra run probe"
+    "probe": "pnpm --filter @palimpsest/hydra run probe",
+    "ingest-transcript": "pnpm --filter @palimpsest/palimpsest run ingest-transcript",
+    "turn": "pnpm --filter @palimpsest/palimpsest run turn"
   },
   "devDependencies": {
     "@effect/vitest": "0.30.0",
     "@types/node": "^22.10.2",
+    "tsx": "^4.23.12",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   }
