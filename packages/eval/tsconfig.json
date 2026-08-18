@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": ".", "outDir": "dist", "types": ["node"] },
+  "include": ["src/**/*.ts", "test/**/*.ts", "bin/**/*.ts"],
+  "references": [
+    { "path": "../hydra" },
+    { "path": "../dataset" },
+    { "path": "../llm" },
+    { "path": "../palimpsest" }
+  ]
+}

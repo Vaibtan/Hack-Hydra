@@ -1,8 +1,20 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/hydra" },
-    { "path": "./packages/dataset" },
-    { "path": "./packages/palimpsest" }
+    {
+      "path": "./packages/hydra"
+    },
+    {
+      "path": "./packages/dataset"
+    },
+    {
+      "path": "./packages/llm"
+    },
+    {
+      "path": "./packages/palimpsest"
+    },
+    {
+      "path": "./packages/eval"
+    }
   ]
 }

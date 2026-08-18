@@ -1,0 +1,20 @@
+{
+  "name": "@palimpsest/eval",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "extract": "tsx bin/extract.ts",
+    "drops": "tsx bin/drops.ts"
+  },
+  "dependencies": {
+    "@palimpsest/dataset": "workspace:*",
+    "@palimpsest/hydra": "workspace:*",
+    "@palimpsest/llm": "workspace:*",
+    "@palimpsest/palimpsest": "workspace:*",
+    "effect": "^3.22.1"
+  }
+}

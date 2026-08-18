@@ -20,7 +20,9 @@ Design documents:
 ```
 packages/hydra        HydraDB HTTP client — a deep module over the Cypher subset
 packages/dataset      LongMemEval loader — typed questions, sessions, turns
-packages/palimpsest   the memory layer itself — keys, transcript ingest
+packages/palimpsest   the memory layer itself — keys, transcript ingest, claim extraction
+packages/llm          OpenAI wrapper: schema-validated output, disk cache, cost accounting
+packages/eval         measurement — slices and the extraction-recall metric
 ```
 
 The LongMemEval files live in the gitignored `data/` (`longmemeval_oracle.json`, 15 MB;
@@ -53,9 +55,13 @@ pnpm typecheck    # tsc --build across the workspace
 # one benchmark user's verbatim transcript into HydraDB, then read a turn back
 pnpm ingest-transcript --uid gpt4_2655b836 --dataset oracle --reset
 pnpm turn --uid gpt4_2655b836 --sid answer_4be1b6b4_1 --idx 0
+
+# the day-1 gate: extraction recall vs has_answer on a stratified oracle slice
+pnpm extract --slice 20 --concurrency 8 [--misses]
 ```
 
-`pnpm probe` needs the Docker node running; `pnpm test:unit` does not.
+`pnpm probe` needs the Docker node running; `pnpm test:unit` does not. The live suites and
+`pnpm extract` read `OPENAI_API_KEY` from the gitignored `.env` at the workspace root.
 
 ## `packages/hydra`
 
@@ -101,3 +107,46 @@ back. Two things it hides:
   `single-session-assistant` questions ask about. A long turn keeps its first chunk on the `Turn`
   vertex and hangs the rest off `HAS_CHUNK`; `readTurn` reassembles it, so Span offsets stay
   absolute and no caller learns this happened.
+
+`Extract` turns one session into Claims with one LLM call. The model is **not** asked for character
+offsets — it is asked to copy the supporting words verbatim, and the Span is located here. Three
+tiers, each reported rather than hidden: exact `indexOf`, then whitespace-normalised, then
+markdown-normalised (models reliably drop `**bold**` when quoting; adding that tier cut dropped
+spans from 128 to 15 on the dev slice). A quote that still cannot be located is dropped and counted,
+never written with a guessed offset.
+
+## `packages/llm`
+
+One operation: `generateObject({kind, system, prompt, schema, objectName})` returns a
+schema-validated value. Every call is cached on disk under `.cache/llm` keyed by
+`sha256(model + system + prompt + jsonSchema)`, so re-running any experiment makes zero API calls
+and produces exactly the same graph — a prompt edit is a cache miss by construction. Usage is
+accumulated so every run can print its own cost. Default model `gpt-5.6-luna`
+(`PALIMPSEST_MODEL` overrides); concurrency is gated by one process-wide semaphore
+(`PALIMPSEST_LLM_CONCURRENCY`, default 8).
+
+## `packages/eval`
+
+`stratifiedSlice` takes questions round-robin across the six question types in `question_id` order,
+so a slice is deterministic and never misses a type. `questionRecall` measures **extraction recall
+vs `has_answer`**: the fraction of answer-bearing turns that at least one Claim's Span points into,
+micro-averaged over turns. A turn no Claim points at can never be surfaced whatever retrieval does,
+so this number is the ceiling on everything downstream.
+
+### Day-1 gate result
+
+`pnpm extract --slice 20` on the oracle file, `gpt-5.6-luna`, 20 questions / 33 sessions:
+
+| question type | recall | answer turns | covered |
+|---|---|---|---|
+| knowledge-update | 100.0 % | 6 | 6 |
+| multi-session | 100.0 % | 9 | 9 |
+| single-session-assistant | 100.0 % | 3 | 3 |
+| single-session-preference | 83.3 % | 6 | 5 |
+| single-session-user | 100.0 % | 2 | 2 |
+| temporal-reasoning | 100.0 % | 7 | 7 |
+| **ALL** | **97.0 %** | **33** | **32** |
+
+Gate is ≥ 90 %: **pass**. 1 676 claims (1 213 from assistant turns, 441 filling a slot), 15 dropped
+spans, $0.31 of tokens for the whole slice. A second run makes zero API calls and prints the same
+numbers in 0.1 s.

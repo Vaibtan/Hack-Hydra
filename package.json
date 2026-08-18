@@ -15,7 +15,8 @@
     "test:live": "vitest run --project live",
     "probe": "pnpm --filter @palimpsest/hydra run probe",
     "ingest-transcript": "pnpm --filter @palimpsest/palimpsest run ingest-transcript",
-    "turn": "pnpm --filter @palimpsest/palimpsest run turn"
+    "turn": "pnpm --filter @palimpsest/palimpsest run turn",
+    "extract": "pnpm --filter @palimpsest/eval run extract"
   },
   "devDependencies": {
     "@effect/vitest": "0.30.0",

@@ -1,0 +1,16 @@
+{
+  "name": "@palimpsest/llm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@effect/ai": "^0.37.0",
+    "@effect/ai-openai": "^0.41.0",
+    "@effect/platform": "^0.97.1",
+    "effect": "^3.22.1",
+    "@effect/platform-node": "^0.108.1"
+  }
+}

@@ -9,7 +9,9 @@
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",
     "@palimpsest/hydra": "workspace:*",
-    "effect": "^3.22.1"
+    "effect": "^3.22.1",
+    "@palimpsest/llm": "workspace:*",
+    "@effect/ai": "^0.37.0"
   },
   "devDependencies": {
     "@effect/platform-node": "^0.108.1"
