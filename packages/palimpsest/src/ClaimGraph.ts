@@ -346,6 +346,12 @@ const make = Effect.gen(function* () {
       )
     })
 
+  /** Just the claim count — a single indexed scan, for cheap "is this user ingested?" checks. */
+  const claimCount = (uid: string): Effect.Effect<number, HydraError> =>
+    hydra
+      .query("MATCH (n:Claim) WHERE n.uid = $uid RETURN count(*) AS c", { uid })
+      .pipe(Effect.map((result) => Number(result.rows[0]?.["c"] ?? 0)))
+
   const stats = (uid: string): Effect.Effect<UserStats, HydraError> =>
     Effect.gen(function* () {
       const count = (label: string) =>
@@ -442,7 +448,7 @@ const make = Effect.gen(function* () {
       yield* hydra.deleteByKeys(keys)
     })
 
-  return { readEntities, reconcileAll, writeSession, writeCounts, stats, remove } as const
+  return { readEntities, reconcileAll, writeSession, writeCounts, claimCount, stats, remove } as const
 })
 
 export class ClaimGraph extends Effect.Service<ClaimGraph>()("palimpsest/ClaimGraph", {

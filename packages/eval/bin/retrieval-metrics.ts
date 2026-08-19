@@ -57,8 +57,8 @@ const program = Effect.gen(function* () {
     slice,
     (question) =>
       claimGraph
-        .stats(uidFor(question.questionId))
-        .pipe(Effect.map((stats) => (stats.claims === 0 ? question.questionId : null))),
+        .claimCount(uidFor(question.questionId))
+        .pipe(Effect.map((claims) => (claims === 0 ? question.questionId : null))),
     { concurrency: 4 }
   )
   const notIngested = missing.filter((id) => id !== null)
