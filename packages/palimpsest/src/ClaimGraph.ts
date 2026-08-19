@@ -353,6 +353,68 @@ const make = Effect.gen(function* () {
     })
 
   /**
+   * The current `df` of the given tokens, in one round trip.
+   *
+   * A whole-user ingest counts `df` while writing and never reads it back. A
+   * *single-session* ingest cannot: the session adds to counts the rest of the
+   * history already contributed to, so it has to know what they are.
+   *
+   * There is no batched read by id on this engine, so this leans on the
+   * `MSpaths` per-source path cap instead of fighting it: `pathCount: 1` asks
+   * for one path per token, and the path's source node carries `df`. A token
+   * with no `HITS` edge returns no path and is 0, which is exactly right.
+   */
+  const readTokenDf = (
+    uid: string,
+    stems: ReadonlyArray<string>
+  ): Effect.Effect<ReadonlyMap<string, number>, HydraError> =>
+    Effect.gen(function* () {
+      const df = new Map<string, number>()
+      if (stems.length === 0) return df
+      const paths = yield* hydra.msPaths({
+        sourceLabel: "Token",
+        sourceProperty: "tkey",
+        sourceValues: stems.map((stem) => tokenKey(uid, stem)),
+        relTypes: ["HITS"],
+        relDirection: "outgoing",
+        maxLen: 1,
+        pathCount: 1
+      })
+      for (const path of paths) {
+        const token = path.nodes[0]
+        if (token === undefined) continue
+        const stem = String(token.properties["stem"] ?? "")
+        if (stem !== "") df.set(stem, Number(token.properties["df"] ?? 0))
+      }
+      return df
+    })
+
+  /** The same trick for `Slot.n_claims`, read off the slot each path starts at. */
+  const readSlotClaimCounts = (
+    skeys: ReadonlyArray<string>
+  ): Effect.Effect<ReadonlyMap<string, number>, HydraError> =>
+    Effect.gen(function* () {
+      const counts = new Map<string, number>()
+      if (skeys.length === 0) return counts
+      const paths = yield* hydra.msPaths({
+        sourceLabel: "Slot",
+        sourceProperty: "skey",
+        sourceValues: [...skeys],
+        relTypes: ["FILLS"],
+        relDirection: "incoming",
+        maxLen: 1,
+        pathCount: 1
+      })
+      for (const path of paths) {
+        const slot = path.nodes[0]
+        if (slot === undefined) continue
+        const skey = String(slot.properties["skey"] ?? "")
+        if (skey !== "") counts.set(skey, Number(slot.properties["n_claims"] ?? 0))
+      }
+      return counts
+    })
+
+  /**
    * Just the claim count, off the `User` vertex in one ~100 ms read by id.
    *
    * Zero means "this user was never indexed" — either never ingested, or
@@ -452,6 +514,8 @@ const make = Effect.gen(function* () {
     reconcileAll,
     writeSession,
     writeCounts,
+    readTokenDf,
+    readSlotClaimCounts,
     claimCount,
     countSupersessions,
     stats,

@@ -44,7 +44,7 @@ export type { Reconciled } from "./Canon.js"
 export { ClaimGraph, claimDigest } from "./ClaimGraph.js"
 export type { SessionWrite, WrittenClaim } from "./ClaimGraph.js"
 export { Ingest } from "./Ingest.js"
-export type { IngestReport, SessionProgress } from "./Ingest.js"
+export type { IngestReport, SessionIngestReport, SessionProgress } from "./Ingest.js"
 export { Supersede, foldSupersessionEdges } from "./Supersede.js"
 export type { ChainClaim, SlotClaim, SupersedeReport, SupersessionEdge } from "./Supersede.js"
 export {

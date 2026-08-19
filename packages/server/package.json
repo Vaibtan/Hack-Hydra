@@ -1,0 +1,23 @@
+{
+  "name": "@palimpsest/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "serve": "tsx bin/serve.ts",
+    "smoke": "tsx bin/smoke.ts"
+  },
+  "dependencies": {
+    "@palimpsest/dataset": "workspace:*",
+    "@palimpsest/hydra": "workspace:*",
+    "@palimpsest/llm": "workspace:*",
+    "@palimpsest/palimpsest": "workspace:*",
+    "@effect/ai": "^0.37.0",
+    "@effect/platform": "^0.97.1",
+    "@effect/platform-node": "^0.108.1",
+    "effect": "^3.22.1"
+  }
+}

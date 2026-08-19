@@ -23,6 +23,9 @@
     "ask": "pnpm --filter @palimpsest/palimpsest run ask",
     "ingest-slice": "pnpm --filter @palimpsest/eval run ingest-slice",
     "backfill-user": "pnpm --filter @palimpsest/eval run backfill-user",
+    "eval": "pnpm --filter @palimpsest/eval run eval",
+    "serve": "pnpm --filter @palimpsest/server run serve",
+    "smoke": "pnpm --filter @palimpsest/server run smoke",
     "retrieval-metrics": "pnpm --filter @palimpsest/eval run retrieval-metrics",
     "trajectory": "pnpm --filter @palimpsest/palimpsest run trajectory"
   },

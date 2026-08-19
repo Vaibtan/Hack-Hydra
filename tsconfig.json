@@ -15,6 +15,9 @@
     },
     {
       "path": "./packages/eval"
+    },
+    {
+      "path": "./packages/server"
     }
   ]
 }
