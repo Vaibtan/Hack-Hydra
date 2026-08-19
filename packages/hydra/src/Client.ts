@@ -1,5 +1,6 @@
 import { HttpClient, HttpClientRequest } from "@effect/platform"
 import { Config, Effect, Option, Ref } from "effect"
+import { randomUUID } from "node:crypto"
 import {
   MAX_BODY_BYTES,
   MAX_STRING_PROPERTY_BYTES,
@@ -286,7 +287,24 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const stored = yield* Ref.get(bookmarkRef)
       const bookmark = options?.fresh === true ? undefined : (options?.bookmark ?? Option.getOrUndefined(stored))
-      const body: Record<string, unknown> = { cell_id: cellId, query }
+      // Every statement carries its own request id.
+      //
+      // HydraDB derives the idempotency key of a write from the `query_id`, and
+      // if the client does not supply one the server names it `http-query-<n>`
+      // from a counter that **restarts at 1 when the node restarts**. The
+      // idempotency results outlive the counter, so after a restart the n-th
+      // relationship merge collides with a completely unrelated one from a
+      // previous run: `idempotency key conflict for relationship-import request
+      // key http-query-129.unwind-relationship-merge: this key already stored a
+      // result for a different payload`. Every write fails, permanently, and
+      // nothing in the graph is wrong — it is purely a name collision.
+      //
+      // The server honours a client-supplied id and echoes it back, so a UUID
+      // per statement makes the collision impossible. Deduplication is not lost
+      // by this: every write here is content-addressed and idempotent by MERGE,
+      // so replaying one is a no-op regardless of its request key.
+      const requestId = `palimpsest-${randomUUID()}`
+      const body: Record<string, unknown> = { cell_id: cellId, query, query_id: requestId }
       if (Object.keys(parameters).length > 0) body["parameters"] = parameters
       if (bookmark !== undefined) body["bookmark"] = bookmark
 
