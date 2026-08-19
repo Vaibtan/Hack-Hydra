@@ -33,6 +33,12 @@ export interface SupersessionEdge {
   readonly atSession: number
 }
 
+/** A claim in a slot's chain, labelled with what (if anything) replaced it. */
+export type ChainClaim = SlotClaim & {
+  readonly supersededBy: string | null
+  readonly atSession: number | null
+}
+
 export interface SupersedeReport {
   readonly slotsExamined: number
   readonly slotsContested: number
@@ -269,47 +275,102 @@ const make = Effect.gen(function* () {
       )
 
   /**
-   * The chain for one slot, as of session `k`: each claim labelled CURRENT or
-   * superseded by whichever claim replaced it at or before `k`.
+   * The supersession edges leaving the given claims.
+   *
+   * Read with `MSpaths` from the claims themselves rather than
+   * `MATCH (a:Claim)-[:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid`, which is
+   * evaluated against the whole store and costs the same whether the user has
+   * four edges or four thousand.
    */
+  const readEdges = (
+    uid: string,
+    ckeys: ReadonlyArray<string>,
+    asOf?: number
+  ): Effect.Effect<ReadonlyMap<string, { readonly newer: string; readonly atSession: number }>, HydraError> =>
+    Effect.gen(function* () {
+      const byOlder = new Map<string, { newer: string; atSession: number }>()
+      if (ckeys.length === 0) return byOlder
+
+      const paths = yield* hydra.msPaths({
+        sourceLabel: "Claim",
+        sourceProperty: "ckey",
+        sourceValues: ckeys,
+        targetLabel: "Claim",
+        targetProperty: "kind",
+        targetValues: [claimKind(uid)],
+        relTypes: ["SUPERSEDED_BY"],
+        relDirection: "outgoing",
+        maxLen: 1
+      })
+
+      for (const path of paths) {
+        const older = path.nodes[0]
+        const newer = path.nodes[path.nodes.length - 1]
+        const edge = path.relationships[0]
+        if (older === undefined || newer === undefined || edge === undefined) continue
+        const atSession = Number(edge.properties["at_session"] ?? 0)
+        // As-of is data-level: an edge written at a later session simply is not
+        // visible yet. No snapshot, no bookmark — one integer comparison.
+        if (asOf !== undefined && atSession > asOf) continue
+        byOlder.set(String(older.properties["ckey"] ?? ""), {
+          newer: String(newer.properties["ckey"] ?? ""),
+          atSession
+        })
+      }
+      return byOlder
+    })
+
+  /**
+   * The chains for a set of slots as of session `k`: every claim labelled
+   * CURRENT, or superseded by whichever claim replaced it at or before `k`.
+   * Two round trips for any number of slots.
+   */
+  const chains = (
+    uid: string,
+    skeys: ReadonlyArray<string>,
+    asOf?: number
+  ): Effect.Effect<ReadonlyMap<string, ReadonlyArray<ChainClaim>>, HydraError> =>
+    Effect.gen(function* () {
+      const bySlot = yield* readSlotClaims(uid, skeys)
+      const visible = new Map<string, ReadonlyArray<SlotClaim>>()
+      for (const [skey, claims] of bySlot) {
+        visible.set(
+          skey,
+          claims.filter((claim) => asOf === undefined || claim.sessionOrd <= asOf)
+        )
+      }
+
+      const byOlder = yield* readEdges(
+        uid,
+        [...visible.values()].flat().map((claim) => claim.ckey),
+        asOf
+      )
+
+      const out = new Map<string, ReadonlyArray<ChainClaim>>()
+      for (const [skey, claims] of visible) {
+        out.set(
+          skey,
+          claims.map((claim) => {
+            const edge = byOlder.get(claim.ckey)
+            return {
+              ...claim,
+              supersededBy: edge?.newer ?? null,
+              atSession: edge?.atSession ?? null
+            }
+          })
+        )
+      }
+      return out
+    })
+
   const chain = (
     uid: string,
     skey: string,
     asOf?: number
-  ): Effect.Effect<
-    ReadonlyArray<SlotClaim & { readonly supersededBy: string | null; readonly atSession: number | null }>,
-    HydraError
-  > =>
-    Effect.gen(function* () {
-      const bySlot = yield* readSlotClaims(uid, [skey])
-      const claims = (bySlot.get(skey) ?? []).filter(
-        (claim) => asOf === undefined || claim.sessionOrd <= asOf
-      )
-      if (claims.length === 0) return []
+  ): Effect.Effect<ReadonlyArray<ChainClaim>, HydraError> =>
+    chains(uid, [skey], asOf).pipe(Effect.map((all) => all.get(skey) ?? []))
 
-      const edges = yield* hydra.query(
-        "MATCH (a:Claim)-[r:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid " +
-          "RETURN a.ckey AS older, b.ckey AS newer, r.at_session AS at_session",
-        { uid }
-      )
-      const byOlder = new Map<string, { newer: string; atSession: number }>()
-      for (const row of edges.rows) {
-        const atSession = Number(row["at_session"])
-        if (asOf !== undefined && atSession > asOf) continue
-        byOlder.set(String(row["older"]), { newer: String(row["newer"]), atSession })
-      }
-
-      return claims.map((claim) => {
-        const edge = byOlder.get(claim.ckey)
-        return {
-          ...claim,
-          supersededBy: edge?.newer ?? null,
-          atSession: edge?.atSession ?? null
-        }
-      })
-    })
-
-  return { readSlotClaims, detect, run, contestedSlots, chain } as const
+  return { readSlotClaims, readEdges, detect, run, contestedSlots, chain, chains } as const
 })
 
 export class Supersede extends Effect.Service<Supersede>()("palimpsest/Supersede", {

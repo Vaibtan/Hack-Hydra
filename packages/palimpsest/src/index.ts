@@ -35,4 +35,15 @@ export type { SessionWrite, UserStats, WrittenClaim } from "./ClaimGraph.js"
 export { Ingest } from "./Ingest.js"
 export type { IngestReport, SessionProgress } from "./Ingest.js"
 export { Supersede } from "./Supersede.js"
-export type { SlotClaim, SupersedeReport, SupersessionEdge } from "./Supersede.js"
+export type { ChainClaim, SlotClaim, SupersedeReport, SupersessionEdge } from "./Supersede.js"
+export {
+  DEFAULT_TOP_K,
+  applyAsOf,
+  convergenceThreshold,
+  decide,
+  idf,
+  orderEvidence,
+  rank,
+  scoreReached
+} from "./Scoring.js"
+export type { AbstentionReason, AsOfLabelled, ReachedClaim, Verdict } from "./Scoring.js"

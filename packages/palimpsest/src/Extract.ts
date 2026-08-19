@@ -244,12 +244,23 @@ Fields
   canon from the known-entity list whenever it refers to the same thing; that is what links sessions
   together. The user themselves is always canon "me" with etype "self". Give aliases the user
   actually used.
-- slot: set it when the claim gives a value to an (entity, attribute) pair that can CHANGE over time
-  — where someone lives, who they work for, a pet's name, a weight, a deadline, a plan, a count, a
-  price. Use an attr from the vocabulary if one fits, otherwise a short snake_case attr. Two claims
-  about the same property of the same thing MUST use the same (entity_canon, attr) — that pairing is
-  how the memory notices one fact replacing another. Set slot to null for one-off events and
-  observations.
+- slot: a slot is one changeable property of one specific thing, and it exists so the memory can
+  notice a LATER value REPLACING an earlier one. Set it only when a *different value for the same
+  slot could later make this claim untrue*.
+  - entity_canon is the thing the value belongs to, and it is almost never "me". The mortgage's
+    amount is (mortgage, price), not (me, price). The laptop's brand is (laptop, brand). Only a
+    genuine property of the person uses "me": residence, employer, job_title, age, weight, height,
+    phone, email, birthday.
+  - NEVER emit (me, preference). A preference belongs to the thing it is about — liking a meditation
+    app is (headspace, preference), preferring a news source is (associated press, preference),
+    wanting short videos is (comedy sketch, length). If the preference is not about one specific
+    thing, set slot to null.
+  - Two claims about the same property of the same thing MUST use the identical
+    (entity_canon, attr) pair — that pairing is the only way the memory sees a replacement.
+  - Amounts, prices, counts, dates, deadlines and statuses attached to a thing are the highest-value
+    slots. "Pre-approved for $450,000" is (mortgage, price); a later "$500,000" must land there too.
+  - Set slot to null for one-off events, observations, questions, opinions about nothing in
+    particular, and anything additive — two hobbies, two items on a list, two symptoms.
 - t_event: the date the claim is ABOUT, not the session date, as "YYYY-MM-DD", "YYYY-MM" or "YYYY".
   Resolve relative expressions against the session date ("last Tuesday", "three weeks ago",
   "March 15th" with no year). null when the claim has no date.

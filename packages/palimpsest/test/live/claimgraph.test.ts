@@ -5,7 +5,7 @@ import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { ClaimGraph, Ingest, Transcript, claimKind, stems, tokenKey } from "../../src/index.js"
+import { ClaimGraph, Ingest, Supersede, Transcript, claimKind, stems, tokenKey } from "../../src/index.js"
 
 /**
  * A whole user through the whole write path, against the live node and the real
@@ -18,6 +18,7 @@ const hasOracle = existsSync(datasetPath("oracle"))
 const AppLive = Ingest.Default.pipe(
   Layer.provideMerge(Transcript.Default),
   Layer.provideMerge(ClaimGraph.Default),
+  Layer.provideMerge(Supersede.Default),
   Layer.provideMerge(HydraClient.Default),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
@@ -26,7 +27,15 @@ const AppLive = Ingest.Default.pipe(
 const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.runPromise(Effect.provide(effect, AppLive) as unknown as Effect.Effect<A, E, never>)
 
-const UID = "probe-claimgraph"
+/**
+ * The uid carries a generation suffix. The graph is additive and deletes are
+ * impractical on this engine, so changing the extraction prompt leaves the old
+ * claims in place beside the new ones — which makes `Token.df` (counted for the
+ * current generation) disagree with the edges actually present. Ingesting under
+ * a fresh key prefix is the cheap, supported way to get a clean graph; bump the
+ * suffix whenever the extraction prompt changes.
+ */
+const UID = "probe-claimgraph-g2"
 const SOURCE = "gpt4_2655b836"
 
 // Nothing is wiped between runs. Every write is content-addressed, so a second

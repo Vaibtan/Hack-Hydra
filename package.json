@@ -18,7 +18,8 @@
     "turn": "pnpm --filter @palimpsest/palimpsest run turn",
     "extract": "pnpm --filter @palimpsest/eval run extract",
     "ingest": "pnpm --filter @palimpsest/palimpsest run ingest",
-    "stats": "pnpm --filter @palimpsest/palimpsest run stats"
+    "stats": "pnpm --filter @palimpsest/palimpsest run stats",
+    "slots": "pnpm --filter @palimpsest/palimpsest run slots"
   },
   "devDependencies": {
     "@effect/vitest": "0.30.0",

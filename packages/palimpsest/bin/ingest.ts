@@ -3,7 +3,7 @@ import { loadDataset, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv, usageCostUsd } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { ClaimGraph, Ingest, Transcript } from "../src/index.js"
+import { ClaimGraph, Ingest, Supersede, Transcript } from "../src/index.js"
 
 /**
  * `ingest --uid <question_id> [--dataset s|oracle] [--users N] [--concurrency N] [--reset]`
@@ -20,6 +20,13 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const uid = arg("uid", "")
+/**
+ * Ingest the same question under a different key prefix. Useful after a prompt
+ * change — the graph is additive and content-addressed, so re-ingesting in
+ * place leaves the old claims alongside the new ones, and deleting them is an
+ * hours-long operation on this engine.
+ */
+const asUid = arg("as", "")
 const dataset = arg("dataset", "s") as DatasetName
 const concurrency = Number(arg("concurrency", "4"))
 const reset = process.argv.includes("--reset")
@@ -27,6 +34,7 @@ const reset = process.argv.includes("--reset")
 const AppLive = Ingest.Default.pipe(
   Layer.provideMerge(Transcript.Default),
   Layer.provideMerge(ClaimGraph.Default),
+  Layer.provideMerge(Supersede.Default),
   Layer.provideMerge(HydraClient.Default),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
@@ -52,8 +60,9 @@ const program = Effect.gen(function* () {
     targets,
     (question) =>
       Effect.gen(function* () {
-        if (reset) yield* ingest.removeUser(question.questionId)
-        const report = yield* ingest.ingestUser(question.questionId, question, {
+        const target = asUid === "" ? question.questionId : asUid
+        if (reset) yield* ingest.removeUser(target)
+        const report = yield* ingest.ingestUser(target, question, {
           onSession: (step) => {
             process.stdout.write(
               `\r  session ${String(step.sessionOrd).padStart(3)}/${question.sessions.length}` +
@@ -64,13 +73,18 @@ const program = Effect.gen(function* () {
         process.stdout.write(`\r${" ".repeat(72)}\r`)
 
         const s = report.stats
-        console.log(`uid        ${question.questionId}  (${question.questionType})`)
+        console.log(`uid        ${target}  (${question.questionType})`)
         console.log(`question   ${question.question}`)
         console.log(
           `graph      ${s.sessions} sessions, ${s.turns} turns, ${s.claims} claims, ` +
             `${s.entities} entities, ${s.slots} slots, ${s.tokens} tokens`
         )
-        console.log(`contested  ${s.contestedSlots} slots hold >= 2 claims  (supersessions: ${s.supersessions})`)
+        console.log(`contested  ${s.contestedSlots} slots hold >= 2 claims`)
+        console.log(
+          `supersede  ${report.supersessions.edges} edges over ` +
+            `${report.supersessions.slotsContested} contested slots ` +
+            `(${report.supersessions.cachedDecisions} decisions cached); graph holds ${s.supersessions}`
+        )
         console.log(
           `dropped    ${report.sessions.reduce((n, x) => n + x.dropped, 0)} spans; ` +
             `${report.sessions.filter((x) => x.cached).length}/${report.sessions.length} sessions from cache`

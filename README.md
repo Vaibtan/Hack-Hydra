@@ -62,6 +62,9 @@ pnpm extract --slice 20 --concurrency 8 [--misses]
 # a whole benchmark user: transcript, claims, entities, slots, tokens, edges
 pnpm ingest --uid 37d43f65 --dataset s
 pnpm stats  --uid 37d43f65 --slots
+
+# supersession chains, with CURRENT / SUPERSEDED labels, optionally as of session k
+pnpm slots --uid 852ce960 [--as-of 4] [--all]
 ```
 
 `pnpm probe` needs the Docker node running; `pnpm test:unit` does not. The live suites and
@@ -183,3 +186,43 @@ One engine characteristic worth knowing before building on it: `DETACH DELETE` r
 **2.3 vertices per second**, flat in vertex degree, so the 30 s cap allows ~65 vertices per
 statement and deleting a whole user is an hours-long operation. Every write here is
 content-addressed and idempotent precisely so that re-ingest never needs a reset.
+
+### Supersession
+
+`Supersede` runs after a user's claims are written, over the slots that ended up holding more than
+one claim. One LLM call per slot sees the whole *ordered* history and returns which claims
+**replace** which — never pairwise as claims arrive, because whether a claim replaces another is only
+decidable against the slot's history: two hobbies in one slot are additive, two addresses are not.
+Edges are only ever added, so the as-of scrubber can walk the chain backwards and a re-run writes the
+same content-addressed edges over themselves.
+
+The model works in 1-based positions, not claim keys, so the prompt carries no `uid` and an identical
+slot history is **one cache entry shared by every user that has it**. Structural rules are enforced
+here, not asked of the model: an edge must point forward in the slot's history, `at_session` is the
+newer claim's session, and a slot with one claim is never sent.
+
+On `852ce960`, a `knowledge-update` question asking what the user was pre-approved for:
+
+```
+mortgage | price
+  SUPERSEDED@37   s 3  The user was pre-approved for a $350,000 loan from Wells Fargo.
+  CURRENT         s 3  The assistant assumed the user would finance $300,000 …
+  CURRENT         s37  The user was pre-approved for a $400,000 mortgage from Wells Fargo.
+```
+
+`--as-of 4` replays the same slot as the memory held it at session 4, before the second amount
+existed. That is data-level: two integer comparisons, no snapshot and no bookmark.
+
+Slots are the one place the extraction prompt has to be strict. A first version let every preference
+become `me | preference`, which collected 100+ unrelated claims in one slot and made both
+supersession and slot expansion useless. A preference now belongs to the thing it is about
+(`headspace | preference`), and only genuine properties of the person (`residence`, `employer`, …)
+use `me`.
+
+### A note on regenerating a graph
+
+The graph is additive and `DETACH DELETE` is impractical here, so **changing the extraction prompt
+does not replace the old claims — it adds a second generation beside them**, and `Token.df`, counted
+for the current generation, then disagrees with the edges actually present. The supported way to get
+a clean graph is a fresh key prefix: `pnpm ingest --uid <question_id> --as <new-prefix>`. Extraction
+is content-addressed, so the LLM calls are served from cache and a re-key costs cents.
