@@ -70,6 +70,13 @@ const workspaceRoot = (): string => {
 const outDir = resolve(workspaceRoot(), arg("out", "results"))
 const judgeModel = arg("judge", JUDGE_MODEL)
 /**
+ * Measure the users that *are* indexed and say how many were skipped, instead
+ * of refusing the whole run. Off by default: a silently partial table is worse
+ * than no table, so this has to be asked for and it is printed in the header of
+ * every file it produces.
+ */
+const skipMissing = process.argv.includes("--skip-missing")
+/**
  * B2's context budget in characters (~4 chars per token).
  *
  * The largest LongMemEval_S haystack is 513 954 characters — about 128 k tokens
@@ -132,7 +139,7 @@ const program = Effect.gen(function* () {
   const llm = yield* Llm
 
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
-  const slice = benchmarkSlice(questions, sliceSize)
+  let slice = benchmarkSlice(questions, sliceSize)
 
   const needsGraph = systems.some((system) => system.startsWith("palimpsest"))
 
@@ -160,7 +167,15 @@ const program = Effect.gen(function* () {
       { concurrency: 8 }
     )
     const notIngested = missing.filter((id) => id !== null)
-    if (notIngested.length > 0) {
+    if (notIngested.length > 0 && skipMissing) {
+      console.log(
+        `skipping     ${notIngested.length} of ${slice.length} questions whose users are not indexed`
+      )
+      console.log(`             ${notIngested.slice(0, 12).join(", ")}${notIngested.length > 12 ? " …" : ""}`)
+      console.log("")
+      const present = new Set(slice.map((q) => q.questionId).filter((id) => !notIngested.includes(id)))
+      slice = slice.filter((question) => present.has(question.questionId))
+    } else if (notIngested.length > 0) {
       console.error(`${notIngested.length} of ${slice.length} users are not indexed:`)
       console.error(`  ${notIngested.slice(0, 20).join(", ")}${notIngested.length > 20 ? " …" : ""}`)
       console.error(
@@ -309,6 +324,8 @@ const program = Effect.gen(function* () {
             dataset,
             prefix,
             slice: slice.length,
+            requestedSlice: sliceSize,
+            partial: slice.length !== sliceSize,
             readerModel: llm.model,
             judgeModel,
             fullCtxChars: system === "fullctx" ? fullCtxChars : null,
@@ -331,6 +348,15 @@ const program = Effect.gen(function* () {
     `Dataset \`longmemeval_${dataset}\`, prefix \`${prefix}\`. Reader \`${llm.model}\`, judge ` +
       `\`${judgeModel}\` with the official LongMemEval templates. Every number replays from ` +
       "`.cache/llm` for $0.00.",
+    ...(slice.length === sliceSize
+      ? []
+      : [
+          "",
+          `> **Partial slice.** ${slice.length} of a requested ${sliceSize} questions. The other ` +
+            `${sliceSize - slice.length} users are not indexed in this graph, so they are excluded ` +
+            "rather than counted as retrieval failures. Every column below is over the " +
+            `${slice.length} that are.`
+        ]),
     "",
     renderTable(bySystem)
   ].join("\n")

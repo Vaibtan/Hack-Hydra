@@ -67,4 +67,28 @@ Both are now rows in `CONTEXT.md` and a live probe in
 the lease surgery; the graph came through intact and the day-3 gate reproduced at
 **100.0 % / 0.0 %** for $0.00 afterwards.
 
-**Actual cost:** *(filled in when the run finishes)*
+*Attempt 3, `--users 3`, after both faults were fixed:* ran cleanly to **60 of 100 users, 0
+failures**, then the WSL VM collapsed a second time — `vmmemWSL` down to 0.72 GB with the host
+still holding 3.1 GB free, so this was **not** host memory pressure. The node came back read-only
+with the same stale writer lease, and the same recovery worked: kill `wslrelay`/`wslhost`, restart
+`WslService` (force-killing it out of `StopPending`), relaunch Docker Desktop, move the lease file
+aside, start. Under five minutes end to end, and the 60 ingested users were durable — sessions in
+the graph went 1 350 → 3 551 and every gate still reproduced.
+
+That is **two node failures in one run**, which is the agreed stop-and-report line, so the run was
+stopped at 60/100 rather than pushed further. The graph, the cache and the results are all intact;
+what is missing is the other 40 users' ingest.
+
+**Actual cost of the 100-slice ingest so far:** ~4 200 new extraction calls (cache went 2 892 →
+8 032 entries), which at the measured ~$0.010/session is roughly **$26** of the projected $35–45,
+for 60 % of the users. The remaining 40 would land the projection close to target.
+
+## 2026-08-19 — answer accuracy on the indexed 60
+
+```
+pnpm eval --slice 100 --system all --prefix g2 --concurrency 4 --skip-missing
+```
+
+**$1.02**, four systems × 60 questions (18 abstention, 42 answerable), judged by `gpt-4o`. The
+40 un-indexed users are excluded rather than counted as retrieval failures, and every file says so.
+Re-runs are $0.00.
