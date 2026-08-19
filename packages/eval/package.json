@@ -12,7 +12,8 @@
     "canon-drift": "tsx bin/canon-drift.ts",
     "ingest-slice": "tsx bin/ingest-slice.ts",
     "retrieval-metrics": "tsx bin/retrieval-metrics.ts",
-    "backfill-user": "tsx bin/backfill-user.ts"
+    "backfill-user": "tsx bin/backfill-user.ts",
+    "eval": "tsx bin/eval.ts"
   },
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",
@@ -20,6 +21,7 @@
     "@palimpsest/llm": "workspace:*",
     "@palimpsest/palimpsest": "workspace:*",
     "effect": "^3.22.1",
-    "@effect/platform-node": "^0.108.1"
+    "@effect/platform-node": "^0.108.1",
+    "@effect/ai": "^0.37.0"
   }
 }

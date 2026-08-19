@@ -74,7 +74,16 @@ const undouble = (base: string): string => {
 export const stem = (word: string): string => {
   if (word.length <= 3) return word
 
-  const irregular = IRREGULAR[word]
+  // `Object.hasOwn`, not `IRREGULAR[word]`: a plain object literal inherits
+  // `Object.prototype`, so `IRREGULAR["constructor"]` is the Object constructor
+  // *function* and `base.endsWith` then throws. `stems` lowercases first, so
+  // "constructor" is the only word in the language that reaches this — and it
+  // reaches it in any conversation about code. It crashed the BM25 baseline,
+  // which tokenises every turn of a haystack rather than only claim text.
+  //
+  // This cannot move an existing `tkey`: the input it changes previously threw,
+  // so it never produced a token to move.
+  const irregular = Object.hasOwn(IRREGULAR, word) ? IRREGULAR[word] : undefined
   let base = irregular ?? word
 
   if (irregular === undefined) {

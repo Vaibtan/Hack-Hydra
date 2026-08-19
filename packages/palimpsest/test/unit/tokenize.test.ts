@@ -88,3 +88,31 @@ describe("claimTokens", () => {
     expect(tokens).toHaveLength(MAX_TOKENS_PER_CLAIM)
   })
 })
+
+describe("stem, on words that collide with Object.prototype", () => {
+  /**
+   * `IRREGULAR` is a plain object literal, so `IRREGULAR["constructor"]` used to
+   * return the Object constructor function and `stem` threw
+   * `base.endsWith is not a function`. `stems` lowercases before looking up, so
+   * "constructor" is the only word that can reach it — and it reaches it in any
+   * conversation about code, which is how it crashed the BM25 baseline.
+   */
+  it("stems 'constructor' instead of throwing", () => {
+    expect(() => stem("constructor")).not.toThrow()
+    expect(stem("constructor")).toBe("constructor")
+  })
+
+  it("tokenises a sentence containing it", () => {
+    const terms = stems("The constructor takes a prototype and a valueOf override")
+    expect(terms).toContain("constructor")
+    expect(terms).toContain("prototyp")
+  })
+
+  it("still applies the irregular plurals it actually owns", () => {
+    expect(stem("children")).toBe("child")
+    // "knives" -> "knife" from the table, then the trailing `e` comes off like
+    // every other form, so it meets "knife" and "knifes" on the same key.
+    expect(stem("knives")).toBe("knif")
+    expect(stem("knife")).toBe("knif")
+  })
+})
