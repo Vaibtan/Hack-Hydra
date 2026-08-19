@@ -22,6 +22,7 @@
     "ingest": "tsx bin/ingest.ts",
     "stats": "tsx bin/stats.ts",
     "slots": "tsx bin/slots.ts",
-    "ask": "tsx bin/ask.ts"
+    "ask": "tsx bin/ask.ts",
+    "trajectory": "tsx bin/trajectory.ts"
   }
 }

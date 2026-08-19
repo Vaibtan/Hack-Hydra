@@ -69,6 +69,9 @@ pnpm slots --uid 852ce960 [--as-of 4] [--all]
 # the whole read path: verdict, receipt, evidence, answer
 pnpm ask --uid 852ce960 --date "2023/05/20 (Sat) 02:21" --question "..." [--as-of 4] [--full]
 
+# what the memory believed at every session, for one question
+pnpm trajectory --uid 852ce960 --question "..." --date "2023/12/20 (Wed) 12:00"
+
 # the day-3 gate over a stratified slice of real haystacks
 pnpm ingest-slice --slice 20 --dataset s --users 4 --prefix g2
 pnpm retrieval-metrics --slice 20 --prefix g2 [--misses]
@@ -323,3 +326,26 @@ it carries *proof of what was searched*. Abstention is caught one layer later, b
 So on this slice abstention recall is 1/2 from the reader and 0/2 from the structure. The honest
 claim is not "we abstain better", it is "we can show exactly what was searched and what was found" —
 and false-premise questions are the open problem.
+
+### The as-of trajectory
+
+`pnpm trajectory` asks one question as of every session in turn. One graph, no re-ingest, no
+database snapshot — as-of is nothing but `session_ord ≤ k` and `at_session ≤ k`:
+
+```
+> as of s 1  20230712   0 ev   NOT_IN_MEMORY
+  as of s 2  20230802   0 ev   NOT_IN_MEMORY
+> as of s 3  20230811  15 ev   $350,000
+  …                            $350,000
+> as of s37  20231130  17 ev   $400,000
+  as of s38  20231211  17 ev   $400,000
+  as of s39  20231214  17 ev   $400,000
+
+distinct answers   3
+  from session  1: NOT_IN_MEMORY
+  from session  3: $350,000
+  from session 37: $400,000
+```
+
+Before the fact was ever stated the memory says so, rather than leaking a value it will only learn
+later. That is the property a snapshot-free as-of has to earn, and it is the one the scrubber shows.

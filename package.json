@@ -22,7 +22,8 @@
     "slots": "pnpm --filter @palimpsest/palimpsest run slots",
     "ask": "pnpm --filter @palimpsest/palimpsest run ask",
     "ingest-slice": "pnpm --filter @palimpsest/eval run ingest-slice",
-    "retrieval-metrics": "pnpm --filter @palimpsest/eval run retrieval-metrics"
+    "retrieval-metrics": "pnpm --filter @palimpsest/eval run retrieval-metrics",
+    "trajectory": "pnpm --filter @palimpsest/palimpsest run trajectory"
   },
   "devDependencies": {
     "@effect/vitest": "0.30.0",
