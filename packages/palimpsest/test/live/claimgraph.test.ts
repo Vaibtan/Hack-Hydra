@@ -107,16 +107,23 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
           maxLen: 2
         })
 
-        const evidence = yield* hydra.query(
-          "MATCH (c:Claim)-[r:EVIDENCE]->(t:Turn) WHERE c.ckey = $ckey RETURN t.text AS text, r.cs AS cs, r.ce AS ce",
-          { ckey }
-        )
+        // Walked, not joined: `MATCH (c:Claim)-[:EVIDENCE]->(t:Turn) WHERE
+        // c.ckey = $ckey` is evaluated against every EVIDENCE edge in the store
+        // and exceeds the 30 s cap once a slice of users is loaded.
+        const evidencePaths = yield* hydra.msPaths({
+          sourceLabel: "Claim",
+          sourceProperty: "ckey",
+          sourceValues: [ckey],
+          relTypes: ["EVIDENCE"],
+          relDirection: "outgoing",
+          maxLen: 1
+        })
         const stats = yield* claimGraph.stats(UID)
-        return { question, first, second, dfChecks, paths, ckey, evidence, stats }
+        return { question, first, second, dfChecks, paths, ckey, evidencePaths, stats }
       })
     )
 
-    const { question, first, second, dfChecks, paths, ckey, evidence, stats } = outcome
+    const { question, first, second, dfChecks, paths, ckey, evidencePaths, stats } = outcome
 
     expect(stats.claims).toBeGreaterThan(50)
     expect(stats.sessions).toBe(question.sessions.length)
@@ -141,10 +148,14 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
     expect(reached.has(ckey)).toBe(true)
 
     // EVIDENCE points at a real Span in a real Turn.
-    const row = evidence.rows[0]!
-    const text = String(row["text"])
-    expect(Number(row["ce"])).toBeGreaterThan(Number(row["cs"]))
-    expect(Number(row["ce"])).toBeLessThanOrEqual(text.length)
+    const evidencePath = evidencePaths[0]!
+    const turn = evidencePath.nodes[evidencePath.nodes.length - 1]!
+    const edge = evidencePath.relationships[0]!
+    const text = String(turn.properties["text"] ?? "")
+    const cs = Number(edge.properties["cs"])
+    const ce = Number(edge.properties["ce"])
+    expect(ce).toBeGreaterThan(cs)
+    expect(ce).toBeLessThanOrEqual(text.length)
   })
 
   it("keeps a second user's graph entirely separate", async () => {
