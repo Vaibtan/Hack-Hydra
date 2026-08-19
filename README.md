@@ -14,6 +14,9 @@ Design documents:
 - [`docs/spec-palimpsest.md`](docs/spec-palimpsest.md) — thesis, glossary, schema, ingest, retrieval, eval
 - [`docs/review-2026-08-17-palimpsest-plan.md`](docs/review-2026-08-17-palimpsest-plan.md) — the review that corrected the plan, plus the live-node probe table
 - [`CONTEXT.md`](CONTEXT.md) — the domain vocabulary used in code, tests and UI
+- [`docs/writeup.md`](docs/writeup.md) — the submission writeup: thesis, HydraDB findings, results, positioning, limitations
+- [`docs/run-log.md`](docs/run-log.md) — what each expensive run projected and what it actually cost
+- [`docs/video-script.md`](docs/video-script.md) — the sub-5-minute demo run-through
 
 ## Layout
 
@@ -22,7 +25,9 @@ packages/hydra        HydraDB HTTP client — a deep module over the Cypher subs
 packages/dataset      LongMemEval loader — typed questions, sessions, turns
 packages/palimpsest   the memory layer itself — keys, transcript ingest, claim extraction
 packages/llm          OpenAI wrapper: schema-validated output, disk cache, cost accounting
-packages/eval         measurement — slices and the extraction-recall metric
+packages/eval         measurement — slices, gates, the LongMemEval judge, baselines
+packages/server       HTTP API over the library (@effect/platform HttpApi)
+apps/demo             Vite + React demo: receipt, evidence, scrubber, live ingest
 ```
 
 The LongMemEval files live in the gitignored `data/` (`longmemeval_oracle.json`, 15 MB;
@@ -78,7 +83,23 @@ pnpm retrieval-metrics --slice 20 --prefix g2 [--misses]
 
 # give users ingested before the User vertex existed their counts and HAS_* edges
 pnpm backfill-user --prefix g2 --slice 20 --uid 852ce960,37d43f65
+
+# answer accuracy: ask -> reader -> the official LongMemEval judge, per system
+PALIMPSEST_LLM_CONCURRENCY=48 pnpm ingest-slice --slice 100 --dataset s --users 3 --prefix g2
+pnpm eval --slice 100 --system palimpsest|palimpsest-premise|bm25|fullctx|all --prefix g2
+
+# the API, and a smoke run of ingest -> ask -> slots on a fresh user
+pnpm serve                       # :8787
+pnpm smoke                       # against a running server
+
+# the demo — needs `pnpm serve` in another terminal
+pnpm demo                        # http://localhost:5173
 ```
+
+`--slice N` means the same N questions to ingest, to the retrieval gate and to the answer harness.
+Below 30 it is the stratified slice the day-1/day-3 gates were measured with, unchanged; at 30 and
+above it is all thirty `_abs` questions plus a stratified remainder, because abstention is what this
+benchmark is for and a stratified 100 picks up only whichever `_abs` ids sort early.
 
 `pnpm probe` needs the Docker node running; `pnpm test:unit` does not. The live suites and
 `pnpm extract` read `OPENAI_API_KEY` from the gitignored `.env` at the workspace root.
@@ -378,3 +399,74 @@ distinct answers   3
 
 Before the fact was ever stated the memory says so, rather than leaking a value it will only learn
 later. That is the property a snapshot-free as-of has to earn, and it is the one the scrubber shows.
+
+## `packages/server`
+
+Five endpoints over `@effect/platform` `HttpApi`, with request and response schemas defined once so
+the demo shares the types rather than re-declaring them:
+
+| Endpoint | What it does |
+|---|---|
+| `POST /users/:uid/sessions` | ingest one session — claims written, supersessions, bookmark |
+| `POST /users/:uid/ask` | `{question, questionDate?, asOf?, historical?, premiseCheck?}` → verdict, answer, evidence with spans, receipt, hash |
+| `GET /users/:uid/sessions` | the session list the as-of scrubber runs over |
+| `GET /users/:uid/slots/:skey` | one slot's supersession chain, optionally as of session *k* |
+| `GET /users/:uid/stats` | the counts, and the slots holding ≥ 2 claims |
+
+Errors are structured: `GraphError` (503) carries HydraDB's own reason text, which is precise enough
+to act on; `NotFound` (404); `BadRequest` (400).
+
+`Ingest.ingestSession` is the path this needed and `ingestUser` could not provide. A whole-user
+ingest *overwrites* `Token.df` and `Slot.n_claims` with the counts of its own run, which is correct
+precisely because its run is the whole history; one session arriving later has to add to counts the
+rest of the history already contributed to. Two decisions fall out of that:
+
+- **Append-only `session_ord`** (`User.n_sessions + 1`). Inserting into the middle would renumber
+  every later session and invalidate every `at_session` on every supersession edge — and edges here
+  are only ever added. A backdated import needs a re-ingest under a fresh prefix.
+- **Idempotent by session.** The vertex writes are content-addressed and would be idempotent
+  anyway; the *counts* are not, so the Session vertex is checked by id first. Without that, posting
+  the same session twice would inflate every `df` it touched and quietly change the idf of every
+  later question.
+
+```
+$ pnpm smoke
+  ok    ingest session 1                   ord 1, 9 claims, 0 dropped
+  ok    ask sees the new claims            9 evidence, 24 paths
+  ok    reader answers from the span       Nibbles
+  ok    ingest session 2                   ord 2, 6 claims, 1 supersessions
+  ok    re-posting a session is a no-op    claims still 15
+  ok    answer follows the newer claim     Pretzel
+  ok    as-of 1 replays the old belief     Nibbles
+  ok    same question, same hash           4181cb60fc7323f786fbfeca…
+  ok    slot chain                         hamster | pet_name — 3 claims, 1 superseded
+SMOKE PASSED
+```
+
+The ask after each ingest has no sleep and no retry. One `HydraClient` in the process holds the
+bookmark from the last write and replays it into the next read, so ingest→ask is read-your-writes
+without either endpoint knowing.
+
+## `apps/demo`
+
+Vite + React, opening on `852ce960` and its mortgage question so the first frame already has a
+three-step chain to scrub. Run `pnpm serve` first; the dev server proxies `/api` to it.
+
+The panels exist to make the design's claims checkable rather than to summarise them. The receipt
+shows the actual `algo.MSpaths` statement, the anchors that reached a claim beside the ones that
+reached nothing, the path counts and the convergence table. The evidence list renders verbatim turn
+text with the span marked — never a Claim's text, because a Claim is an index entry and showing it
+would make the demo a summary of a summary. The chain strikes through whatever a `SUPERSEDED_BY`
+edge points out of, and the as-of slider changes which edges are visible without touching the graph.
+
+Three presets, because they land in three different places on this user and the difference is the
+point:
+
+| Question | Outcome |
+|---|---|
+| *"What was I pre-approved for…?"* | **ANSWER $400,000** — 29 spans, 13/15 anchors, 287 paths |
+| *"What breed is my Bernese mountain dog?"* | **ABSENT A2** — 0 spans, 3/7 anchors: structural, with the receipt as proof |
+| *"How many engineers do I manage?"* | **reader NOT_IN_MEMORY** — 65 spans, 15/16 anchors: the right text was reached and did not contain it |
+
+`docs/video-script.md` is the sub-5-minute run-through.
+
