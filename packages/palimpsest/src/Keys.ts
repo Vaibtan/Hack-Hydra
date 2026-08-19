@@ -5,6 +5,13 @@
  * Nothing outside this module builds a key by hand.
  */
 
+/**
+ * The per-user root vertex. Every per-user aggregate hangs off it, because
+ * `MATCH (n:Label) WHERE n.uid = $uid` is a store-wide label scan and a read by
+ * `{id: …}` is not — see the engine table in `CONTEXT.md`.
+ */
+export const userKey = (uid: string): string => `${uid}|user`
+
 export const sessionKey = (uid: string, sid: string): string => `${uid}|sess|${sid}`
 
 export const turnKey = (uid: string, sid: string, turnIdx: number): string =>

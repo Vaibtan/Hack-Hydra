@@ -22,6 +22,7 @@
     "slots": "pnpm --filter @palimpsest/palimpsest run slots",
     "ask": "pnpm --filter @palimpsest/palimpsest run ask",
     "ingest-slice": "pnpm --filter @palimpsest/eval run ingest-slice",
+    "backfill-user": "pnpm --filter @palimpsest/eval run backfill-user",
     "retrieval-metrics": "pnpm --filter @palimpsest/eval run retrieval-metrics",
     "trajectory": "pnpm --filter @palimpsest/palimpsest run trajectory"
   },

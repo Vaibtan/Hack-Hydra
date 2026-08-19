@@ -7,7 +7,7 @@ convergence.
 
 | Term | Meaning | Where it lives |
 |---|---|---|
-| **User** (`uid`) | One independent history. Benchmark: the LongMemEval `question_id`. All keys start `uid\|`. Users share the single `default` graph and are separated by key prefix. | key prefix |
+| **User** (`uid`) | One independent history. Benchmark: the LongMemEval `question_id`. All keys start `uid\|`. Users share the single `default` graph and are separated by key prefix. The `User` vertex (`uid\|user`) carries every per-user count and roots `HAS_ENTITY` / `HAS_SLOT` / `HAS_SESSION`, because the engine indexes ids and `MSpaths` sources and nothing else. | key prefix, `User` vertex |
 | **Session** | One conversation with a timestamp. `session_ord` is its 1-based rank by timestamp within the user; ties keep input order. | `Session` vertex |
 | **Turn** | One message: `role`, `text`, `turn_idx`. Stored verbatim, because the graph indexes the transcript rather than replacing it. | `Turn` vertex |
 | **Span** | `(sid, turn_idx, char_start, char_end)` into a Turn's text. The only thing a reader ever sees. | properties on `Claim`, duplicated on `EVIDENCE` |
@@ -34,6 +34,9 @@ Measured against HydraDB 0.1.0, not read from docs. Each one changed a design de
 | Query runtime | **30 s** | Arrives as a **500**, so it is classified by message, not status. |
 | Vertex ids | JSON numbers | Ids are the top 53 bits of SHA-256(key), not a full u64. |
 | `DETACH DELETE` | **~2.3 vertices/s**, then **refused entirely** past ~1M edges (`delete_vertex_scan_edges … exceeds limit 1000000`) | Deletion is not available on a working graph, at any batch size. Every write is content-addressed so re-ingest never needs a reset; a prompt change gets a fresh key prefix instead. |
+| `MATCH (n:L) WHERE n.p = $v` | **full label scan**, ~75–115 µs per vertex of that label **store-wide** | The only index-driven reads are `{id: …}` and an `MSpaths` source list. One user's Claim count cost 4.4 s at 58 k Claims and one Token count 9.5 s; by id the same vertex is ~100 ms at any store size. Every per-user read hangs off the `User` vertex instead. |
+| Batched read by id | **not available** | `UNWIND $rows AS row MATCH (n {id: row.id}) RETURN …` is refused (*"UNWIND batch supports one-hop relationships only"* — `UNWIND` is a write form here) and so is `WHERE n.id IN [...]`. Many vertices at once go through `MSpaths`. |
+| Source-only `MSpaths` | **one path per source** unless `pathCount` is raised | Silent, like the row cap: the walk from `User` over `HAS_SESSION` returned 1 of 39 sessions. A constant-valued target selector (`Claim.kind`) is exempt *and* faster — raising `pathCount` on the convergence query took its median from 0.12 s to 14 s for byte-identical evidence. So the client raises it on source-only walks only. |
 | `MATCH` joins | evaluated store-wide | Per-user aggregates are denormalised at write time or read through `MSpaths`, which is driven from source values and stays fast. |
 | Second graph id | 403 with the local token | All users share `default`, partitioned by key prefix. |
 

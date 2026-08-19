@@ -1,6 +1,7 @@
 export { HydraClient } from "./Client.js"
 export type { Params, QueryOptions, RelRow, VertexRow } from "./Client.js"
 export {
+  DEFAULT_PATH_COUNT,
   MAX_BODY_BYTES,
   MAX_QUERY_RESULT_VERTICES,
   MAX_STRING_PROPERTY_BYTES,

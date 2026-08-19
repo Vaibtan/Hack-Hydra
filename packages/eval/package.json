@@ -11,7 +11,8 @@
     "drops": "tsx bin/drops.ts",
     "canon-drift": "tsx bin/canon-drift.ts",
     "ingest-slice": "tsx bin/ingest-slice.ts",
-    "retrieval-metrics": "tsx bin/retrieval-metrics.ts"
+    "retrieval-metrics": "tsx bin/retrieval-metrics.ts",
+    "backfill-user": "tsx bin/backfill-user.ts"
   },
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",

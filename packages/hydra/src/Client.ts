@@ -6,7 +6,7 @@ import {
   renderMsPathsQuery,
   type MsPathsConfig
 } from "./Cypher.js"
-import { decodeResponse, type HydraPath, type QueryResult, type Scalar } from "./Decode.js"
+import { decodeResponse, type HydraPath, type QueryResult, type Row, type Scalar } from "./Decode.js"
 import { HydraLimitError, HydraParseError, HydraUnavailable } from "./Errors.js"
 import { vertexId } from "./Ids.js"
 
@@ -266,6 +266,42 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<QueryResult, HydraParseError | HydraLimitError | HydraUnavailable> =>
     send(cypher, parameters, options)
 
+  /**
+   * One vertex, read by its content-addressed id.
+   *
+   * This is the only cheap per-vertex read the engine offers. `MATCH (n:Label)
+   * WHERE n.prop = $value` is a full label scan proportional to that label's
+   * **store-wide** population (~75 µs/vertex measured: 4.4 s for one Claim
+   * count at 58 k Claims, 18 s at the same graph a day later), while
+   * `MATCH (n:Label {id: $id})` is ~100 ms whatever the store holds. Callers
+   * pass the key string and never hash.
+   *
+   * There is no batched form: `UNWIND $rows AS row MATCH (n {id: row.id})
+   * RETURN …` is refused with *"UNWIND batch supports one-hop relationships
+   * only"*, and `WHERE n.id IN [...]` with *"WHERE currently supports boolean
+   * combinations of property comparisons"*. Many vertices at once go through
+   * `msPaths`, which is driven from its source values and is equally indexed.
+   */
+  const getById = (
+    label: string,
+    key: string,
+    properties: ReadonlyArray<string>
+  ): Effect.Effect<Option.Option<Row>, HydraParseError | HydraLimitError | HydraUnavailable> =>
+    Effect.gen(function* () {
+      requireIdentifier("label", label)
+      if (properties.length === 0) throw new Error("getById needs at least one property")
+      const projection = properties
+        .map((property) => `n.${requireIdentifier("property", property)} AS ${property}`)
+        .join(", ")
+      const result = yield* send(
+        `MATCH (n:${label} {id: $id}) RETURN ${projection}`,
+        { id: vertexId(key) },
+        {}
+      )
+      const row = result.rows[0]
+      return row === undefined ? Option.none() : Option.some(row)
+    })
+
   const batchMerge = (
     label: string,
     rows: ReadonlyArray<VertexRow>
@@ -413,13 +449,13 @@ const make = Effect.gen(function* () {
 
   const lastBookmark = Ref.get(bookmarkRef)
 
-  return { query, batchMerge, batchRel, msPaths, deleteByKeys, lastBookmark } as const
+  return { query, getById, batchMerge, batchRel, msPaths, deleteByKeys, lastBookmark } as const
 })
 
 /**
  * The one seam onto HydraDB. Everything the Cypher subset demands — inlined
  * string lists, MERGE-by-id upserts, body chunking, typed-value decoding,
- * bookmark threading — is hidden behind these six operations.
+ * bookmark threading — is hidden behind these seven operations.
  */
 export class HydraClient extends Effect.Service<HydraClient>()("palimpsest/HydraClient", {
   effect: make

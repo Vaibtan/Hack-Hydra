@@ -3,6 +3,7 @@ import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Schema } from "effect"
 import { claimKind } from "./Keys.js"
+import { readUserVertices } from "./User.js"
 
 /**
  * Supersession as structure.
@@ -251,28 +252,37 @@ const make = Effect.gen(function* () {
       }
     })
 
-  /** The slots of a user that could hold a chain, cheapest query available. */
+  /**
+   * The slots of a user that could hold a chain.
+   *
+   * Walked from the `User` root over `HAS_SLOT` and filtered client-side, not
+   * `MATCH (s:Slot) WHERE s.uid = $uid AND s.n_claims >= 2` — that reads every
+   * Slot in the store, and `n_claims` is already on the vertex.
+   */
   const contestedSlots = (
     uid: string
   ): Effect.Effect<
-    ReadonlyArray<{ readonly skey: string; readonly entityName: string; readonly attr: string }>,
+    ReadonlyArray<{
+      readonly skey: string
+      readonly entityName: string
+      readonly attr: string
+      readonly nClaims: number
+    }>,
     HydraError
   > =>
-    hydra
-      .query(
-        "MATCH (s:Slot) WHERE s.uid = $uid AND s.n_claims >= 2 " +
-          "RETURN s.skey AS skey, s.entity_name AS entity_name, s.attr AS attr ORDER BY skey",
-        { uid }
-      )
-      .pipe(
-        Effect.map((result) =>
-          result.rows.map((row) => ({
-            skey: String(row["skey"]),
-            entityName: String(row["entity_name"]),
-            attr: String(row["attr"])
+    readUserVertices(hydra, uid, "HAS_SLOT").pipe(
+      Effect.map((rows) =>
+        rows
+          .map((row) => ({
+            skey: String(row["skey"] ?? ""),
+            entityName: String(row["entity_name"] ?? ""),
+            attr: String(row["attr"] ?? ""),
+            nClaims: Number(row["n_claims"] ?? 0)
           }))
-        )
+          .filter((slot) => slot.skey !== "" && slot.nClaims >= 2)
+          .sort((a, b) => a.skey.localeCompare(b.skey))
       )
+    )
 
   /**
    * The supersession edges leaving the given claims.

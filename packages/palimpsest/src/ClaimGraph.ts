@@ -6,6 +6,7 @@ import { reconcile, type Reconciled } from "./Canon.js"
 import type { ExtractedClaim, ExtractedEntity } from "./Extract.js"
 import { claimKey, claimKind, entityKey, slotKey, tokenKey, turnKey } from "./Keys.js"
 import { claimTokens } from "./Tokenize.js"
+import { EMPTY_STATS, linkToUser, readUserStats, readUserVertices, type UserStats } from "./User.js"
 
 /**
  * Writing the claim graph.
@@ -49,37 +50,37 @@ export interface SessionWrite {
   readonly slotFills: ReadonlyArray<string>
 }
 
-export interface UserStats {
-  readonly claims: number
-  readonly entities: number
-  readonly slots: number
-  readonly tokens: number
-  readonly sessions: number
-  readonly turns: number
-  readonly supersessions: number
-  /** Slots holding ≥ 2 claims — the health metric for whether supersession can fire. */
-  readonly contestedSlots: number
-}
+export type { UserStats } from "./User.js"
 
 const make = Effect.gen(function* () {
   const hydra = yield* HydraClient
 
-  /** The user's entities, as the graph currently holds them. */
+  /**
+   * The user's entities, as the graph currently holds them — walked from the
+   * `User` root over `HAS_ENTITY`.
+   *
+   * `MATCH (e:Entity) WHERE e.uid = $uid` measured **4.9 s** at 26 users and is
+   * proportional to every Entity in the store, so at the 500-user scale it
+   * exceeds the engine's 30 s cap — on the read that opens *every* ingest.
+   * `MSpaths` is driven from one indexed source value and does not care how
+   * big the store is.
+   */
   const readEntities = (uid: string): Effect.Effect<ReadonlyArray<ExtractedEntity>, HydraError> =>
-    Effect.gen(function* () {
-      const result = yield* hydra.query(
-        "MATCH (e:Entity) WHERE e.uid = $uid RETURN e.name AS name, e.etype AS etype, e.aliases AS aliases ORDER BY name",
-        { uid }
+    readUserVertices(hydra, uid, "HAS_ENTITY").pipe(
+      Effect.map((rows) =>
+        rows
+          .map((row) => ({
+            canon: String(row["name"] ?? ""),
+            etype: String(row["etype"] ?? "topic") as ExtractedEntity["etype"],
+            // HydraDB has no list type, so aliases travel as a delimited string.
+            aliases: String(row["aliases"] ?? "")
+              .split(ALIAS_SEPARATOR)
+              .filter((alias) => alias !== "")
+          }))
+          .filter((entity) => entity.canon !== "")
+          .sort((a, b) => a.canon.localeCompare(b.canon))
       )
-      return result.rows.map((row) => ({
-        canon: String(row["name"]),
-        etype: String(row["etype"]) as ExtractedEntity["etype"],
-        // HydraDB has no list type, so aliases travel as a delimited string.
-        aliases: String(row["aliases"] ?? "")
-          .split(ALIAS_SEPARATOR)
-          .filter((alias) => alias !== "")
-      }))
-    })
+    )
 
   /**
    * The canon decisions for a whole ingest, made once.
@@ -289,6 +290,11 @@ const make = Effect.gen(function* () {
         )
       )
 
+      // The user root, so `readEntities`, `contestedSlots` and `stats` never
+      // have to scan a label. Same content-addressed MERGE as everything else.
+      yield* linkToUser(hydra, uid, "HAS_ENTITY", "Entity", entities.map((entity) => entityKey(uid, entity.canon)))
+      yield* linkToUser(hydra, uid, "HAS_SLOT", "Slot", [...slots.keys()])
+
       return {
         claims: written,
         entities,
@@ -346,48 +352,53 @@ const make = Effect.gen(function* () {
       )
     })
 
-  /** Just the claim count — a single indexed scan, for cheap "is this user ingested?" checks. */
+  /**
+   * Just the claim count, off the `User` vertex in one ~100 ms read by id.
+   *
+   * Zero means "this user was never indexed" — either never ingested, or
+   * ingested before the `User` vertex existed, which `pnpm backfill-user`
+   * repairs.
+   */
   const claimCount = (uid: string): Effect.Effect<number, HydraError> =>
-    hydra
-      .query("MATCH (n:Claim) WHERE n.uid = $uid RETURN count(*) AS c", { uid })
-      .pipe(Effect.map((result) => Number(result.rows[0]?.["c"] ?? 0)))
+    readUserStats(hydra, uid).pipe(
+      Effect.map((stats) => (stats._tag === "Some" ? stats.value.claims : 0))
+    )
 
+  /**
+   * Everything `stats` used to count, read off the `User` vertex.
+   *
+   * The old shape was six `MATCH (n:Label) WHERE n.uid = $uid RETURN count(*)`
+   * scans plus two Slot scans, at the *end of every ingest*: 4.4 s for Claims
+   * and 8.7 s for Tokens at 26 users, and past the 30 s cap at 100 — so a
+   * fully written user would have been reported FAILED by the timeout of the
+   * read that was only there to describe it. Every one of these numbers was
+   * already known in memory when the ingest wrote them.
+   */
   const stats = (uid: string): Effect.Effect<UserStats, HydraError> =>
+    readUserStats(hydra, uid).pipe(
+      Effect.map((stats) => (stats._tag === "Some" ? stats.value : EMPTY_STATS))
+    )
+
+  /**
+   * Counts the supersession edges a user holds, by walking out of the claims of
+   * its contested slots. Every supersession edge is inside a slot with ≥ 2
+   * claims by construction, so the walk is exhaustive — and unlike
+   * `MATCH (a:Claim)-[:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid`, which
+   * measured **24.7 s**, it is driven from indexed source values.
+   *
+   * An ingest knows this number without asking; this exists for `backfill-user`,
+   * which has to recover it from a graph written before the `User` vertex did.
+   */
+  const countSupersessions = (
+    uid: string,
+    contestedSkeys: ReadonlyArray<string>
+  ): Effect.Effect<number, HydraError> =>
     Effect.gen(function* () {
-      const count = (label: string) =>
-        hydra
-          .query(`MATCH (n:${label}) WHERE n.uid = $uid RETURN count(*) AS c`, { uid })
-          .pipe(Effect.map((r) => Number(r.rows[0]?.["c"] ?? 0)))
-
-      const claims = yield* count("Claim")
-      const entities = yield* count("Entity")
-      const slots = yield* count("Slot")
-      const tokens = yield* count("Token")
-      const sessions = yield* count("Session")
-      const turns = yield* count("Turn")
-
-      // `n_claims` is denormalised onto the Slot at write time; the equivalent
-      // `MATCH (c:Claim)-[:FILLS]->(s:Slot) … count(*)` join exceeds the
-      // engine's 30 s cap once several users share the graph.
-      const contested = yield* hydra.query(
-        "MATCH (s:Slot) WHERE s.uid = $uid AND s.n_claims >= 2 RETURN count(*) AS c",
-        { uid }
-      )
-
-      // Supersession edges are counted by walking out of the contested slots'
-      // claims, not with `MATCH (a:Claim)-[:SUPERSEDED_BY]->(b:Claim) WHERE
-      // a.uid = $uid`, which is a store-wide join and measured **24.7 s** on a
-      // graph holding a handful of users — over the cap before it is useful.
-      // Every supersession edge is inside a slot with ≥ 2 claims by
-      // construction, so this walk is exhaustive.
-      const contestedSlots = yield* hydra.query(
-        "MATCH (s:Slot) WHERE s.uid = $uid AND s.n_claims >= 2 RETURN s.skey AS skey",
-        { uid }
-      )
+      if (contestedSkeys.length === 0) return 0
       const slotClaims = yield* hydra.msPaths({
         sourceLabel: "Slot",
         sourceProperty: "skey",
-        sourceValues: contestedSlots.rows.map((row) => String(row["skey"])),
+        sourceValues: [...contestedSkeys],
         targetLabel: "Claim",
         targetProperty: "kind",
         targetValues: [claimKind(uid)],
@@ -402,31 +413,19 @@ const make = Effect.gen(function* () {
             .filter((ckey) => ckey !== "")
         )
       ]
-      const supersessionPaths =
-        ckeys.length === 0
-          ? []
-          : yield* hydra.msPaths({
-              sourceLabel: "Claim",
-              sourceProperty: "ckey",
-              sourceValues: ckeys,
-              targetLabel: "Claim",
-              targetProperty: "kind",
-              targetValues: [claimKind(uid)],
-              relTypes: ["SUPERSEDED_BY"],
-              relDirection: "outgoing",
-              maxLen: 1
-            })
-
-      return {
-        claims,
-        entities,
-        slots,
-        tokens,
-        sessions,
-        turns,
-        supersessions: supersessionPaths.filter((path) => path.relationships.length === 1).length,
-        contestedSlots: Number(contested.rows[0]?.["c"] ?? 0)
-      }
+      if (ckeys.length === 0) return 0
+      const paths = yield* hydra.msPaths({
+        sourceLabel: "Claim",
+        sourceProperty: "ckey",
+        sourceValues: ckeys,
+        targetLabel: "Claim",
+        targetProperty: "kind",
+        targetValues: [claimKind(uid)],
+        relTypes: ["SUPERSEDED_BY"],
+        relDirection: "outgoing",
+        maxLen: 1
+      })
+      return paths.filter((path) => path.relationships.length === 1).length
     })
 
   /** Drops a user's claim graph (not their transcript). */
@@ -448,7 +447,16 @@ const make = Effect.gen(function* () {
       yield* hydra.deleteByKeys(keys)
     })
 
-  return { readEntities, reconcileAll, writeSession, writeCounts, claimCount, stats, remove } as const
+  return {
+    readEntities,
+    reconcileAll,
+    writeSession,
+    writeCounts,
+    claimCount,
+    countSupersessions,
+    stats,
+    remove
+  } as const
 })
 
 export class ClaimGraph extends Effect.Service<ClaimGraph>()("palimpsest/ClaimGraph", {

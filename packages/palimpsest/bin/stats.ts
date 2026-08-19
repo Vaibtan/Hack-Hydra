@@ -2,9 +2,9 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { ClaimGraph } from "../src/index.js"
+import { ClaimGraph, Supersede } from "../src/index.js"
 
-/** `stats --uid <question_id> [--slots]` — what a user's graph actually holds. */
+/** `stats --uid <question_id> [--slots] [--tokens]` — what a user's graph actually holds. */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -14,8 +14,10 @@ const arg = (name: string, fallback: string): string => {
 
 const uid = arg("uid", "")
 const showSlots = process.argv.includes("--slots")
+const showTokens = process.argv.includes("--tokens")
 
 const AppLive = ClaimGraph.Default.pipe(
+  Layer.provideMerge(Supersede.Default),
   Layer.provideMerge(HydraClient.Default),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -35,27 +37,30 @@ const program = Effect.gen(function* () {
   console.log(`tokens           ${s.tokens}`)
   console.log(`supersessions    ${s.supersessions}`)
 
-  const df = yield* hydra.query(
-    "MATCH (t:Token) WHERE t.uid = $uid RETURN t.stem AS stem, t.df AS df ORDER BY df DESC LIMIT 10",
-    { uid }
-  )
-  console.log("")
-  console.log("most common anchors")
-  for (const row of df.rows) {
-    console.log(`  ${String(row["stem"]).padEnd(24)}df ${row["df"]}`)
+  if (showSlots) {
+    const supersede = yield* Supersede
+    const slots = yield* supersede.contestedSlots(uid)
+    console.log("")
+    console.log("slots by claim count")
+    for (const slot of [...slots].sort((a, b) => b.nClaims - a.nClaims)) {
+      console.log(`  ${String(slot.nClaims).padStart(3)}  ${slot.entityName} | ${slot.attr}`)
+    }
   }
 
-  if (showSlots) {
-    const slots = yield* hydra.query(
-      "MATCH (c:Claim)-[:FILLS]->(s:Slot) WHERE s.uid = $uid " +
-        "RETURN s.skey AS skey, s.entity_name AS entity, s.attr AS attr, count(*) AS n ORDER BY n DESC",
+  // The only remaining store-wide scan in the repo, and it is opt-in: there is
+  // no `HAS_TOKEN` edge (a user has thousands of Tokens and they are only ever
+  // reached from the question side), so a top-df listing has to read the Token
+  // label. It cost 8.7 s at 26 users and will exceed the 30 s cap well before
+  // 500 — which is exactly why nothing on the product path does this.
+  if (showTokens) {
+    const df = yield* hydra.query(
+      "MATCH (t:Token) WHERE t.uid = $uid RETURN t.stem AS stem, t.df AS df ORDER BY df DESC LIMIT 10",
       { uid }
     )
     console.log("")
-    console.log("slots by claim count")
-    for (const row of slots.rows) {
-      if (Number(row["n"]) < 2) continue
-      console.log(`  ${String(row["n"]).padStart(3)}  ${row["entity"]} | ${row["attr"]}`)
+    console.log("most common anchors  (store-wide Token scan — slow by construction)")
+    for (const row of df.rows) {
+      console.log(`  ${String(row["stem"]).padEnd(24)}df ${row["df"]}`)
     }
   }
 })

@@ -178,8 +178,8 @@ describe("HydraClient against the live node", () => {
     )
   })
 
-  it("source-only MSpaths caps paths at pathCount per source (the recall trap)", async () => {
-    const [capped, widened] = await run(
+  it("caps a source-only walk at pathCount per source — the client raises it by default", async () => {
+    const [engineDefault, clientDefault] = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
         const base = {
@@ -190,13 +190,18 @@ describe("HydraClient against the live node", () => {
           relDirection: "outgoing" as const,
           maxLen: 2
         }
-        const a = yield* hydra.msPaths(base)
-        const b = yield* hydra.msPaths({ ...base, pathCount: 10 })
+        // `pathCount: 1` is what the engine does when the key is omitted, and
+        // it reports no truncation of any kind: this is a recall cap that looks
+        // exactly like an answer. Walking the `User` root over `HAS_SESSION`
+        // returned 1 of 39 sessions before the client started always sending
+        // the ceiling.
+        const a = yield* hydra.msPaths({ ...base, pathCount: 1 })
+        const b = yield* hydra.msPaths(base)
         return [a, b] as const
       })
     )
-    expect(capped).toHaveLength(1)
-    expect(widened.length).toBeGreaterThan(1)
+    expect(engineDefault).toHaveLength(1)
+    expect(clientDefault.length).toBeGreaterThan(1)
   })
 
   it("silently skips unknown anchors and returns no rows when all are unknown", async () => {

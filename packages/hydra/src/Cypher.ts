@@ -15,6 +15,25 @@ export const MAX_BODY_BYTES = 1_000_000
  */
 export const MAX_STRING_PROPERTY_BYTES = 32_743
 
+/**
+ * A **source-only** `algo.MSpaths` walk returns one path per source value
+ * unless told otherwise, and says nothing about having stopped — a recall cap
+ * that looks exactly like an answer. Walking the `User` root over
+ * `HAS_SESSION` returned 1 of 39 sessions this way.
+ *
+ * A walk *with* a constant-valued target selector is not subject to it: every
+ * source→target pair comes back. That is what `Claim.kind` is for, and it is
+ * also the faster plan by an order of magnitude — raising `pathCount` on the
+ * convergence query took its median from 0.12 s to 14 s while returning
+ * byte-identical evidence, because the engine then enumerates paths it would
+ * otherwise prune.
+ *
+ * So the ceiling is applied to source-only walks only, and a caller that wants
+ * fewer paths says so. Nobody is truncated by omission; nobody pays for
+ * breadth a target selector already guarantees.
+ */
+export const DEFAULT_PATH_COUNT = MAX_QUERY_RESULT_VERTICES
+
 export type RelDirection = "outgoing" | "incoming" | "both"
 
 export interface MsPathsConfig {
@@ -88,9 +107,10 @@ export const renderMsPathsQuery = (config: MsPathsConfig): RenderedQuery => {
     relDirection: config.relDirection,
     maxLen: config.maxLen
   }
-  if (config.pathCount !== undefined) {
+  const pathCount = config.pathCount ?? (hasTargetSelector ? undefined : DEFAULT_PATH_COUNT)
+  if (pathCount !== undefined) {
     parts.push("pathCount:$pathCount")
-    parameters["pathCount"] = config.pathCount
+    parameters["pathCount"] = pathCount
   }
 
   return {

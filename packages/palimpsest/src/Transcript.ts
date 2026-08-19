@@ -2,6 +2,7 @@ import type { DatasetSession } from "@palimpsest/dataset"
 import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { sessionKey, turnChunkKey, turnKey } from "./Keys.js"
+import { linkToUser, readUserVertices } from "./User.js"
 
 /**
  * HydraDB stores at most 32 743 UTF-8 bytes in a string property. Four of the
@@ -85,7 +86,10 @@ const make = Effect.gen(function* () {
             sid: session.sid,
             session_ord: session.sessionOrd,
             date: session.date.dateInt,
-            ts: session.date.ts
+            ts: session.date.ts,
+            // Denormalised so `readSessions` never has to join HAS_TURN, which
+            // measured 19.2 s at 26 users and grows with the whole store.
+            n_turns: session.turns.length
           }
         }))
       )
@@ -148,6 +152,14 @@ const make = Effect.gen(function* () {
         }))
       )
 
+      yield* linkToUser(
+        hydra,
+        uid,
+        "HAS_SESSION",
+        "Session",
+        sessions.map((session) => sessionKey(uid, session.key))
+      )
+
       return {
         sessions: sessions.length,
         turns: turns.length,
@@ -161,22 +173,38 @@ const make = Effect.gen(function* () {
     turnIdx: number
   ): Effect.Effect<Option.Option<StoredTurn>, HydraError> =>
     Effect.gen(function* () {
-      const result = yield* hydra.query(
-        "MATCH (t:Turn) WHERE t.turn = $key RETURN t.sid AS sid, t.turn_idx AS turn_idx, " +
-          "t.session_ord AS session_ord, t.role AS role, t.text AS text, t.chunks AS chunks",
-        { key: turnKey(uid, sid, turnIdx) }
-      )
-      const row = result.rows[0]
-      if (row === undefined) return Option.none()
+      // By id, not `WHERE t.turn = $key`: the second is a scan of every Turn in
+      // the store (246 750 of them at full scale) for one row.
+      const found = yield* hydra.getById("Turn", turnKey(uid, sid, turnIdx), [
+        "sid",
+        "turn_idx",
+        "session_ord",
+        "role",
+        "text",
+        "chunks"
+      ])
+      if (found._tag === "None") return Option.none()
+      const row = found.value
 
       let text = String(row["text"])
       if (Number(row["chunks"]) > 1) {
-        const rest = yield* hydra.query(
-          "MATCH (t:Turn)-[:HAS_CHUNK]->(c:TurnChunk) WHERE t.turn = $key " +
-            "RETURN c.chunk_idx AS chunk_idx, c.text AS text ORDER BY chunk_idx",
-          { key: turnKey(uid, sid, turnIdx) }
-        )
-        text += rest.rows.map((chunk) => String(chunk["text"])).join("")
+        const paths = yield* hydra.msPaths({
+          sourceLabel: "Turn",
+          sourceProperty: "turn",
+          sourceValues: [turnKey(uid, sid, turnIdx)],
+          relTypes: ["HAS_CHUNK"],
+          relDirection: "outgoing",
+          maxLen: 1
+        })
+        const chunks = paths
+          .filter((path) => path.relationships.length === 1)
+          .map((path) => path.nodes[path.nodes.length - 1])
+          .map((node) => ({
+            idx: Number(node?.properties["chunk_idx"] ?? 0),
+            text: String(node?.properties["text"] ?? "")
+          }))
+          .sort((a, b) => a.idx - b.idx)
+        text += chunks.map((chunk) => chunk.text).join("")
       }
 
       return Option.some({
@@ -188,22 +216,28 @@ const make = Effect.gen(function* () {
       })
     })
 
+  /**
+   * The user's sessions, walked from the `User` root.
+   *
+   * The old form joined `(Session)-[:HAS_TURN]->(Turn)` under
+   * `WHERE s.uid = $uid` to count turns and measured **19.2 s** on a 26-user
+   * graph — paid by the as-of scrubber on every load. The turn count is a
+   * Session property now, and the session set is one indexed `MSpaths` hop.
+   */
   const readSessions = (uid: string): Effect.Effect<ReadonlyArray<StoredSession>, HydraError> =>
-    Effect.gen(function* () {
-      const result = yield* hydra.query(
-        "MATCH (s:Session)-[:HAS_TURN]->(t:Turn) WHERE s.uid = $uid " +
-          "RETURN s.sid AS sid, s.session_ord AS session_ord, s.date AS date, s.ts AS ts, " +
-          "count(*) AS turns ORDER BY session_ord",
-        { uid }
+    readUserVertices(hydra, uid, "HAS_SESSION").pipe(
+      Effect.map((rows) =>
+        rows
+          .map((row) => ({
+            sid: String(row["sid"] ?? ""),
+            sessionOrd: Number(row["session_ord"] ?? 0),
+            dateInt: Number(row["date"] ?? 0),
+            ts: Number(row["ts"] ?? 0),
+            turns: Number(row["n_turns"] ?? 0)
+          }))
+          .sort((a, b) => a.sessionOrd - b.sessionOrd)
       )
-      return result.rows.map((row) => ({
-        sid: String(row["sid"]),
-        sessionOrd: Number(row["session_ord"]),
-        dateInt: Number(row["date"]),
-        ts: Number(row["ts"]),
-        turns: Number(row["turns"])
-      }))
-    })
+    )
 
   /** Drops a user's transcript. Used by tests and by a forced re-ingest. */
   const remove = (uid: string): Effect.Effect<void, HydraError> =>

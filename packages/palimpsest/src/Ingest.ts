@@ -3,13 +3,14 @@ import type { Llm } from "@palimpsest/llm"
 import type { DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
-import { ClaimGraph, type UserStats } from "./ClaimGraph.js"
+import { ClaimGraph } from "./ClaimGraph.js"
 import type { SupersedeReport } from "./Supersede.js"
 import { extractSession } from "./Extract.js"
 import { slotKey } from "./Keys.js"
 import { stems } from "./Tokenize.js"
 import { Supersede } from "./Supersede.js"
 import { Transcript } from "./Transcript.js"
+import { writeUserStats, type UserStats } from "./User.js"
 
 /**
  * Ingest for one user, end to end.
@@ -132,10 +133,27 @@ const make = Effect.gen(function* () {
         .sort((a, b) => a.skey.localeCompare(b.skey))
       const supersessions = yield* supersede.run(uid, contested)
 
+      // Every number `stats` used to read back with a store-wide label scan was
+      // already in hand here — the write is what produced them. Recording them
+      // on the `User` vertex is the whole of §2.1: an ingest that ends by
+      // *counting* the graph it just wrote costs 30 s at scale and can fail a
+      // user that was written perfectly.
+      const stats: UserStats = {
+        claims: extractions.reduce((n, extraction) => n + extraction.claims.length, 0),
+        entities: reconciled.entities.length,
+        slots: slotEntities.size,
+        tokens: tokenDf.size,
+        sessions: question.sessions.length,
+        turns: question.sessions.reduce((n, session) => n + session.turns.length, 0),
+        supersessions: supersessions.edges,
+        contestedSlots: contested.length
+      }
+      yield* writeUserStats(hydra, uid, stats)
+
       return {
         uid,
         sessions: progress,
-        stats: yield* claimGraph.stats(uid),
+        stats,
         supersessions,
         bookmark: yield* hydra.lastBookmark
       }

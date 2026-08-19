@@ -75,6 +75,9 @@ pnpm trajectory --uid 852ce960 --question "..." --date "2023/12/20 (Wed) 12:00"
 # the day-3 gate over a stratified slice of real haystacks
 pnpm ingest-slice --slice 20 --dataset s --users 4 --prefix g2
 pnpm retrieval-metrics --slice 20 --prefix g2 [--misses]
+
+# give users ingested before the User vertex existed their counts and HAS_* edges
+pnpm backfill-user --prefix g2 --slice 20 --uid 852ce960,37d43f65
 ```
 
 `pnpm probe` needs the Docker node running; `pnpm test:unit` does not. The live suites and
@@ -82,7 +85,7 @@ pnpm retrieval-metrics --slice 20 --prefix g2 [--misses]
 
 ## `packages/hydra`
 
-Six operations, and nothing about the Cypher subset leaks past them:
+Seven operations, and nothing about the Cypher subset leaks past them:
 
 | Operation | What it hides |
 |---|---|
@@ -90,6 +93,7 @@ Six operations, and nothing about the Cypher subset leaks past them:
 | `batchMerge(label, rows)` | `UNWIND … MERGE`-by-id + `SET`, grouping rows by property signature, 1 MB body chunking |
 | `batchRel(relType, rows)` | `UNWIND MATCH,MATCH MERGE`, edge-id derivation, the "cannot update relationship id" rule |
 | `msPaths(config)` | inlining string lists as escaped literals while scalars stay `$params`, the `maxLen ≤ 16` cap |
+| `getById(label, key, props)` | key→id hashing, and the fact that this is the only cheap per-vertex read |
 | `deleteByKeys(keys)` | batched `DETACH DELETE` |
 | `lastBookmark` | the causal floor from the last write, replayed into the next read |
 
@@ -99,6 +103,17 @@ at all. Ignoring that cursor does not fail; it silently truncates, which for a r
 recall quietly capped with no error anywhere. Every read here follows the cursor to exhaustion, and
 continuing needs **both** the cursor and the originating `query_id` — the cursor alone answers
 `result cursor does not belong to this query request`.
+
+It hides two more caps of the same shape, both found by measurement rather than by an error.
+**`MATCH (n:Label) WHERE n.prop = $value` is a full label scan** — the engine indexes vertex ids and
+`MSpaths` source values, and nothing else — so it costs ~100 µs for every vertex of that label in the
+*whole store*, however few of them belong to the user asking. Counting one user's Claims took 4.4 s
+at 58 k Claims and one user's Tokens 9.5 s, against ~100 ms to read the same vertex by id; at the
+500-user scale those sit past the engine's 30 s cap. And a **source-only `algo.MSpaths` walk returns
+one path per source** unless `pathCount` is raised: the walk from the `User` root over `HAS_SESSION`
+returned 1 of 39 sessions and reported nothing wrong. A constant-valued target selector is exempt
+from that — which is what `Claim.kind` is for — *and* is the faster plan, so the client raises
+`pathCount` on source-only walks only. `packages/hydra/test/live/byid.probe.test.ts` pins both.
 
 Vertex ids are content-addressed from the key string: the top 53 bits of `SHA-256(key)`. The spec
 says `xxhash64`; the width is narrower because HydraDB node ids travel as JSON numbers, which cannot
@@ -194,6 +209,13 @@ numbers in 0.1 s.
 - **Derived counts are computed while writing, not read back.** `Token.df` and `Slot.n_claims` would
   otherwise need `MATCH (t:Token)-[:HITS]->(c:Claim) … count(*)`, which joins every token against
   every claim in the store and exceeds the engine's 30 s cap as soon as a few users share the graph.
+- **Every per-user read is id-keyed.** There is a `User` vertex per history, keyed `uid|user`,
+  carrying the counts (`n_claims`, `n_entities`, …) and rooting `HAS_ENTITY`, `HAS_SLOT` and
+  `HAS_SESSION`. `stats` is one ~100 ms read of that vertex instead of six label scans; the entity
+  list an ingest reconciles against, the contested slots, and the session list the as-of scrubber
+  walks are one `MSpaths` hop each. The counts are written at the end of the ingest that produced
+  them — nothing derived is ever recomputed by joining the store. `pnpm backfill-user` gives the
+  vertex and its edges to a user ingested before it existed, by running the old scans exactly once.
 
 Measured on a 49-session, 533-turn haystack (`37d43f65`): **cold 295 s, warm 33 s** against budgets
 of 10 and 3 minutes; 1 985 claims, 1 806 entities, 325 slots, 4 414 tokens, 51 slots holding ≥ 2
@@ -309,8 +331,15 @@ users, not the oracle file:
 | **ALL answerable** | **18** | **100.0 %** | **0.0 %** |
 
 Gates are ≥ 85 % and ≤ 10 %: **both pass**, and no widening lever was needed. 14.7 of 16.4 anchors
-resolve per question, 24.9 evidence claims per question, median latency **5.8 s** on a quiescent
-graph. A second run reproduces every number for $0.00.
+resolve per question, 24.9 evidence claims per question, median latency **0.12 s** — 20 questions
+end to end in 0.6 s. A second run reproduces every number for $0.00.
+
+That latency is the id-keyed reads. It was **5.8 s** when the same 100 % / 0 % was first measured,
+and essentially all of it was one `MATCH (c:Claim) WHERE c.uid = $uid RETURN count(*)` per user —
+the idf denominator, scanning every Claim in the store for a number the ingest already knew. The
+first ask against a user after the node has been idle still costs ~14 s at the median while HydraDB
+faults the traversal into its page cache; that is the engine's cache, not our read path, and it is
+the number the demo warms up before recording.
 
 **Where it is weak, stated plainly.** Structural abstention (`A1`/`A2`) fired on **neither** of the
 two `_abs` questions in the slice. With ~2 000 claims per user and ~15 resolved anchors, something

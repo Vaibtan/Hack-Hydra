@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { renderMsPathsQuery } from "../../src/index.js"
+import { DEFAULT_PATH_COUNT, renderMsPathsQuery } from "../../src/index.js"
 
 /**
  * Oracle: the query text below is the exact statement accepted by the live
@@ -28,10 +28,26 @@ describe("renderMsPathsQuery", () => {
         "targetValues:['u|claim'], relTypes:['HITS','NAMES','MENTIONS'], " +
         "relDirection:$relDirection, maxLen:$maxLen}) YIELD path RETURN path"
     )
+    // A constant target selector already returns every source→target pair, and
+    // raising pathCount here only makes the engine enumerate more and answer
+    // slower — so it is left off.
     expect(parameters).toEqual({ relDirection: "outgoing", maxLen: 2 })
   })
 
-  it("passes optional scalar config through as parameters only when given", () => {
+  it("raises pathCount on a source-only walk, where the engine would return one path per source", () => {
+    const { query, parameters } = renderMsPathsQuery({
+      sourceLabel: "User",
+      sourceProperty: "ukey",
+      sourceValues: ["u|user"],
+      relTypes: ["HAS_SESSION"],
+      relDirection: "outgoing",
+      maxLen: 1
+    })
+    expect(query).toContain("pathCount:$pathCount")
+    expect(parameters["pathCount"]).toBe(DEFAULT_PATH_COUNT)
+  })
+
+  it("lets a caller ask for fewer paths than the default ceiling", () => {
     const withCounts = renderMsPathsQuery({
       sourceLabel: "Token",
       sourceProperty: "tkey",

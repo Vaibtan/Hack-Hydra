@@ -5,6 +5,7 @@ import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { questionAnchors, type QuestionAnchors } from "./Anchors.js"
 import { claimKind, tokenKey } from "./Keys.js"
+import { readUserStats } from "./User.js"
 import {
   DEFAULT_TOP_K,
   applyAsOf,
@@ -87,20 +88,27 @@ const make = Effect.gen(function* () {
   const hydra = yield* HydraClient
   const supersede = yield* Supersede
 
-  /** `idf` needs the collection size; one scan per ask, memoised per user. */
-  const claimCounts = new Map<string, number>()
+  /**
+   * `idf` needs the collection size. It comes off the `User` vertex by id in
+   * ~100 ms, and is re-read on every ask rather than memoised: the memo was
+   * only ever there to amortise a 4.4 s label scan, and holding it would make
+   * an ask that follows a live ingest score against a stale denominator.
+   *
+   * A user with no `User` vertex is a setup error, not a retrieval outcome —
+   * scoring against a total of zero would flatten every idf to 0 and silently
+   * change the ranking, so it dies loudly instead.
+   */
   const totalClaims = (uid: string): Effect.Effect<number, HydraError> =>
-    Effect.gen(function* () {
-      const cached = claimCounts.get(uid)
-      if (cached !== undefined) return cached
-      const result = yield* hydra.query(
-        "MATCH (c:Claim) WHERE c.uid = $uid RETURN count(*) AS c",
-        { uid }
+    readUserStats(hydra, uid).pipe(
+      Effect.flatMap((stats) =>
+        stats._tag === "Some"
+          ? Effect.succeed(stats.value.claims)
+          : Effect.dieMessage(
+              `user ${uid} has no User vertex — ingest it, or run ` +
+                `\`pnpm backfill-user\` if it was ingested before the vertex existed`
+            )
       )
-      const count = Number(result.rows[0]?.["c"] ?? 0)
-      claimCounts.set(uid, count)
-      return count
-    })
+    )
 
   const ask = (
     uid: string,
