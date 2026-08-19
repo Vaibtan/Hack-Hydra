@@ -73,6 +73,13 @@ export interface AskOptions {
   readonly maxLen?: number
 }
 
+/**
+ * How many slot-mates of the candidates may join the evidence. Bounded on
+ * purpose: a converged claim earned its place, a slot-mate did not, and one
+ * broad slot should not decide the reader's token budget.
+ */
+export const MAX_SLOT_EXPANSION = 40
+
 export const determinismHash = (ckeys: ReadonlyArray<string>): string =>
   createHash("sha256").update([...ckeys].sort().join("\n"), "utf8").digest("hex")
 
@@ -171,9 +178,16 @@ const make = Effect.gen(function* () {
 
       const merged = new Map<string, ReachedClaim>()
       for (const claim of verdict.candidates) merged.set(claim.ckey, claim)
-      for (const claim of slotClaims.claims) {
-        if (!merged.has(claim.ckey)) merged.set(claim.ckey, claim)
-      }
+
+      // Slot expansion is bounded. A converged claim earned its place; a
+      // slot-mate did not, and one unusually broad slot would otherwise decide
+      // how many tokens the reader is asked to read. Newest first, because a
+      // slot's recent history is what a question about it usually means.
+      const slotMates = slotClaims.claims
+        .filter((claim) => !merged.has(claim.ckey))
+        .sort((a, b) => b.sessionOrd - a.sessionOrd || a.ckey.localeCompare(b.ckey))
+        .slice(0, MAX_SLOT_EXPANSION)
+      for (const claim of slotMates) merged.set(claim.ckey, claim)
 
       const edges = yield* supersede.readEdges(uid, [...merged.keys()], options.asOf)
       const labelled = applyAsOf([...merged.values()], edges, options.asOf)

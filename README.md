@@ -288,3 +288,38 @@ ANSWER         $350,000
 
 Same graph, same question, two different answers — because as-of is a filter over `session_ord` and
 `at_session`, not a database snapshot.
+
+### Day-3 gate result
+
+`pnpm retrieval-metrics --slice 20 --prefix g2` — the stratified 20-question slice of
+**LongMemEval_S**, i.e. real haystacks with 46–57 sessions each and ~40 000 claims across the 20
+users, not the oracle file:
+
+| question type | n | SessionRecall@25 | false-abstention |
+|---|---|---|---|
+| knowledge-update | 3 | 100.0 % | 0.0 % |
+| multi-session | 4 | 100.0 % | 0.0 % |
+| single-session-assistant | 3 | 100.0 % | 0.0 % |
+| single-session-preference | 3 | 100.0 % | 0.0 % |
+| single-session-user | 2 | 100.0 % | 0.0 % |
+| temporal-reasoning | 3 | 100.0 % | 0.0 % |
+| **ALL answerable** | **18** | **100.0 %** | **0.0 %** |
+
+Gates are ≥ 85 % and ≤ 10 %: **both pass**, and no widening lever was needed. 14.7 of 16.4 anchors
+resolve per question, 24.9 evidence claims per question, median latency **5.8 s** on a quiescent
+graph. A second run reproduces every number for $0.00.
+
+**Where it is weak, stated plainly.** Structural abstention (`A1`/`A2`) fired on **neither** of the
+two `_abs` questions in the slice. With ~2 000 claims per user and ~15 resolved anchors, something
+always converges, so the structural verdict does not carry abstention on a well-populated graph —
+it carries *proof of what was searched*. Abstention is caught one layer later, by the reader:
+
+- `0862e8bf_abs` — *"What is the name of my hamster?"* (the user has a cat) → retrieval reached 2
+  claims, reader returned **NOT_IN_MEMORY**. Correct.
+- `031748ae_abs` — *"How many engineers do I lead as Software Engineer Manager?"* (the user is a
+  Senior Software Engineer, never a manager) → answered **"5"**. Wrong: the count is real, the
+  premise is not.
+
+So on this slice abstention recall is 1/2 from the reader and 0/2 from the structure. The honest
+claim is not "we abstain better", it is "we can show exactly what was searched and what was found" —
+and false-premise questions are the open problem.

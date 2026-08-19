@@ -49,7 +49,7 @@ export {
 export type { AbstentionReason, AsOfLabelled, ReachedClaim, Verdict } from "./Scoring.js"
 export { questionAnchors } from "./Anchors.js"
 export type { QuestionAnchors } from "./Anchors.js"
-export { Retrieve, determinismHash } from "./Retrieve.js"
+export { MAX_SLOT_EXPANSION, Retrieve, determinismHash } from "./Retrieve.js"
 export type { AskOptions, AskResult, Receipt } from "./Retrieve.js"
 export { NOT_IN_MEMORY, Reader, SPAN_CONTEXT, cutExcerpt } from "./Reader.js"
 export type { HydratedSpan, ReadAnswer } from "./Reader.js"
