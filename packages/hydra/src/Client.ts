@@ -60,19 +60,20 @@ const groupBySignature = <T>(
 }
 
 /**
- * Split rows so that each chunk's serialized parameter payload stays well under
- * HydraDB's 1 MB HTTP body cap. Sized by measurement rather than a row count,
- * because Turn texts differ by three orders of magnitude.
+ * Split rows so each chunk stays inside *both* of HydraDB's ceilings: the 1 MB
+ * HTTP body cap and the 30 s query runtime cap. Bytes alone is not enough,
+ * because the two batch forms have wildly different per-row costs (see the
+ * constants below), so each declares its own row ceiling.
  */
 const BODY_BUDGET = Math.floor(MAX_BODY_BYTES * 0.8)
 
-const chunkByBytes = <T>(rows: ReadonlyArray<T>): Array<Array<T>> => {
+const chunkRows = <T>(rows: ReadonlyArray<T>, maxRows: number): Array<Array<T>> => {
   const chunks: Array<Array<T>> = []
   let current: Array<T> = []
   let bytes = 0
   for (const row of rows) {
     const size = Buffer.byteLength(JSON.stringify(row), "utf8") + 1
-    if (current.length > 0 && bytes + size > BODY_BUDGET) {
+    if (current.length > 0 && (bytes + size > BODY_BUDGET || current.length >= maxRows)) {
       chunks.push(current)
       current = []
       bytes = 0
@@ -83,6 +84,18 @@ const chunkByBytes = <T>(rows: ReadonlyArray<T>): Array<Array<T>> => {
   if (current.length > 0) chunks.push(current)
   return chunks
 }
+
+/**
+ * Upserts are cheap. Deletes are not: measured against HydraDB 0.1.0,
+ * `DETACH DELETE` retires roughly **2.3 vertices per second** and the rate is
+ * flat in vertex degree (5 -> 2.3 s, 20 -> 10 s, 50 -> 21.6 s), so the 30 s
+ * runtime cap allows about 65 vertices per statement. Deleting a whole
+ * benchmark user is therefore an hours-long operation and is not something to
+ * build on — every write in this codebase is content-addressed and idempotent
+ * precisely so that re-ingest never needs a reset.
+ */
+const MERGE_ROWS_PER_CHUNK = 1_000
+const DELETE_ROWS_PER_CHUNK = 40
 
 /**
  * The engine answers an oversize string property with a 500 and no reason, so
@@ -108,11 +121,13 @@ const errorFromBody = (
   const error = (body as { error?: { code?: string; message?: string } } | null)?.error
   const reason = error?.message ?? `HTTP ${status}`
   const code = error?.code ?? `http_${status}`
-  if (status === 400 || status === 422) {
-    return /limit|exceed|too large|too many|cap\b/i.test(reason)
-      ? new HydraLimitError({ reason, status, query })
-      : new HydraParseError({ reason, code, query })
-  }
+  // The 30 s runtime cap arrives as a 500, so it has to be recognised by its
+  // message rather than its status — callers need to tell "your statement was
+  // too big" apart from "the engine is down", because the first can be retried
+  // by splitting the batch and the second cannot.
+  const isLimit = /timeout|exceeded|too large|too many|limit is/i.test(reason)
+  if (isLimit) return new HydraLimitError({ reason, status, query })
+  if (status === 400 || status === 422) return new HydraParseError({ reason, code, query })
   if (status === 413 || status === 429) return new HydraLimitError({ reason, status, query })
   return new HydraUnavailable({ reason })
 }
@@ -228,7 +243,7 @@ const make = Effect.gen(function* () {
             })
           }
         }
-        for (const chunk of chunkByBytes(payload)) {
+        for (const chunk of chunkRows(payload, MERGE_ROWS_PER_CHUNK)) {
           yield* send(statement, { rows: chunk }, {})
           written += chunk.length
         }
@@ -245,7 +260,7 @@ const make = Effect.gen(function* () {
       requireIdentifier("relType", relType)
       const groups = groupBySignature(
         rows,
-        (row) => `${row.srcLabel} ${row.dstLabel} ${signature(row.properties ?? {}).join(",")}`
+        (row) => `${row.srcLabel} | ${row.dstLabel} | ${signature(row.properties ?? {}).join(",")}`
       )
       let written = 0
       for (const [, group] of groups) {
@@ -269,7 +284,7 @@ const make = Effect.gen(function* () {
           r: vertexId(`${row.srcKey}|${relType}|${row.dstKey}`),
           ...(row.properties ?? {})
         }))
-        for (const chunk of chunkByBytes(payload)) {
+        for (const chunk of chunkRows(payload, MERGE_ROWS_PER_CHUNK)) {
           yield* send(statement, { rows: chunk }, {})
           written += chunk.length
         }
@@ -289,15 +304,43 @@ const make = Effect.gen(function* () {
         .filter((cell): cell is HydraPath => cell !== null && typeof cell === "object")
     })
 
-  /** Removes vertices and their edges. Used by tests and by re-ingest resets. */
+  /**
+   * Removes vertices and their edges.
+   *
+   * A `DETACH DELETE` costs whatever the vertex's degree happens to be, and a
+   * high-`df` Token can sit on thousands of edges, so no fixed chunk size is
+   * safe: 100 keys is instant for Claims and blows the 30 s cap for Tokens.
+   * The batch therefore halves itself on a limit error until it fits, which
+   * needs no knowledge of the caller's graph shape.
+   */
   const deleteByKeys = (
     keys: ReadonlyArray<string>
   ): Effect.Effect<void, HydraParseError | HydraLimitError | HydraUnavailable> =>
     Effect.gen(function* () {
       if (keys.length === 0) return
       const payload = keys.map((key) => ({ id: vertexId(key) }))
-      for (const chunk of chunkByBytes(payload)) {
-        yield* send("UNWIND $rows AS row MATCH (n {id: row.id}) DETACH DELETE n", { rows: chunk }, {})
+
+      // Each timeout costs a full 30 s, so the working size is halved and then
+      // *kept* rather than re-discovered per batch: one or two slow failures for
+      // the whole delete instead of one per chunk.
+      let size = DELETE_ROWS_PER_CHUNK
+      let index = 0
+      while (index < payload.length) {
+        const slice = payload.slice(index, index + size)
+        const outcome = yield* send(
+          "UNWIND $rows AS row MATCH (n {id: row.id}) DETACH DELETE n",
+          { rows: slice },
+          {}
+        ).pipe(Effect.either)
+
+        if (outcome._tag === "Right") {
+          index += slice.length
+          continue
+        }
+        if (outcome.left._tag !== "HydraLimitError" || size === 1) {
+          return yield* Effect.fail(outcome.left)
+        }
+        size = Math.max(1, Math.floor(size / 2))
       }
     })
 

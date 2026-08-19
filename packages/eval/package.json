@@ -8,13 +8,15 @@
   },
   "scripts": {
     "extract": "tsx bin/extract.ts",
-    "drops": "tsx bin/drops.ts"
+    "drops": "tsx bin/drops.ts",
+    "canon-drift": "tsx bin/canon-drift.ts"
   },
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",
     "@palimpsest/hydra": "workspace:*",
     "@palimpsest/llm": "workspace:*",
     "@palimpsest/palimpsest": "workspace:*",
-    "effect": "^3.22.1"
+    "effect": "^3.22.1",
+    "@effect/platform-node": "^0.108.1"
   }
 }

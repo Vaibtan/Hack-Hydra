@@ -16,7 +16,9 @@
     "probe": "pnpm --filter @palimpsest/hydra run probe",
     "ingest-transcript": "pnpm --filter @palimpsest/palimpsest run ingest-transcript",
     "turn": "pnpm --filter @palimpsest/palimpsest run turn",
-    "extract": "pnpm --filter @palimpsest/eval run extract"
+    "extract": "pnpm --filter @palimpsest/eval run extract",
+    "ingest": "pnpm --filter @palimpsest/palimpsest run ingest",
+    "stats": "pnpm --filter @palimpsest/palimpsest run stats"
   },
   "devDependencies": {
     "@effect/vitest": "0.30.0",

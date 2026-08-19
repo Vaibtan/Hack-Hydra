@@ -58,6 +58,10 @@ pnpm turn --uid gpt4_2655b836 --sid answer_4be1b6b4_1 --idx 0
 
 # the day-1 gate: extraction recall vs has_answer on a stratified oracle slice
 pnpm extract --slice 20 --concurrency 8 [--misses]
+
+# a whole benchmark user: transcript, claims, entities, slots, tokens, edges
+pnpm ingest --uid 37d43f65 --dataset s
+pnpm stats  --uid 37d43f65 --slots
 ```
 
 `pnpm probe` needs the Docker node running; `pnpm test:unit` does not. The live suites and
@@ -150,3 +154,32 @@ so this number is the ceiling on everything downstream.
 Gate is ≥ 90 %: **pass**. 1 676 claims (1 213 from assistant turns, 441 filling a slot), 15 dropped
 spans, $0.31 of tokens for the whole slice. A second run makes zero API calls and prints the same
 numbers in 0.1 s.
+
+### Claim graph writes
+
+`ClaimGraph` turns a session's Claims into `Claim`, `Entity`, `Slot` and `Token` vertices and the
+`EVIDENCE`, `MENTIONS`, `FILLS`, `HITS` and `NAMES` edges. `Ingest` drives a whole user:
+
+- **Extraction fans out; writes are ordered.** A session is extracted knowing nothing about the
+  user, so its LLM call is keyed purely by its own content and is shared by every user whose
+  haystack contains it. That is the session-hash cache — LongMemEval_S references 23 867 sessions of
+  which 19 195 are distinct — and it is also why a 48-session haystack takes ~5 minutes instead of
+  ~30: the 48 calls go out at once.
+- **Canons are decided once, for the whole ingest**, by grouping entities into connected components
+  over their match keys (stems of the canon and every alias, sorted). It has to be a fixpoint:
+  a re-ingest reconciles the same claims against what the last one wrote, and a sequential
+  "first canon to claim a key wins" pass is not one — an entity registered late can introduce a key
+  an earlier entity would have matched, leaving one entity's alias standing as another's canon,
+  which the next run then merges.
+- **Derived counts are computed while writing, not read back.** `Token.df` and `Slot.n_claims` would
+  otherwise need `MATCH (t:Token)-[:HITS]->(c:Claim) … count(*)`, which joins every token against
+  every claim in the store and exceeds the engine's 30 s cap as soon as a few users share the graph.
+
+Measured on a 49-session, 533-turn haystack (`37d43f65`): **cold 295 s, warm 33 s** against budgets
+of 10 and 3 minutes; 1 985 claims, 1 806 entities, 325 slots, 4 414 tokens, 51 slots holding ≥ 2
+claims. A second ingest reproduces **every count exactly** and makes zero API calls.
+
+One engine characteristic worth knowing before building on it: `DETACH DELETE` retires about
+**2.3 vertices per second**, flat in vertex degree, so the 30 s cap allows ~65 vertices per
+statement and deleting a whole user is an hours-long operation. Every write here is
+content-addressed and idempotent precisely so that re-ingest never needs a reset.

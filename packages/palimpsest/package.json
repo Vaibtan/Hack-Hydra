@@ -18,6 +18,8 @@
   },
   "scripts": {
     "ingest-transcript": "tsx bin/ingest-transcript.ts",
-    "turn": "tsx bin/turn.ts"
+    "turn": "tsx bin/turn.ts",
+    "ingest": "tsx bin/ingest.ts",
+    "stats": "tsx bin/stats.ts"
   }
 }

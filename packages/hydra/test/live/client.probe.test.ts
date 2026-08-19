@@ -129,25 +129,32 @@ describe("HydraClient against the live node", () => {
   })
 
   it("chunks a batch larger than the 1 MB body cap transparently", async () => {
-    const bulkKeys = Array.from({ length: 400 }, (_, i) => k(`bulk|${i}`))
-    const padding = "x".repeat(4_000)
-    const written = await run(
+    // 150 x 8 KB is ~1.2 MB of body, over the cap. The keys are fixed, so a
+    // re-run overwrites the same vertices instead of adding more — which is why
+    // nothing is deleted afterwards: `DETACH DELETE` is far slower than the
+    // write (see the constants in Client.ts) and the test does not need it.
+    const bulkKeys = Array.from({ length: 150 }, (_, i) => k(`bulk|${i}`))
+    const padding = "x".repeat(8_000)
+    const outcome = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
-        yield* hydra.batchMerge(
+        const written = yield* hydra.batchMerge(
           "ProbeBulk",
           bulkKeys.map((key) => ({ key, properties: { bkey: key, uid: UID, text: padding } }))
         )
-        const result = yield* hydra.query(
-          "MATCH (n:ProbeBulk) WHERE n.uid = $uid RETURN count(*) AS c",
-          { uid: UID }
+        // Read one row back by key rather than counting the label: the count is
+        // graph-wide and this suite deliberately leaves its vertices behind.
+        const readBack = yield* hydra.query(
+          "MATCH (n:ProbeBulk) WHERE n.bkey = $bkey RETURN n.text AS text",
+          { bkey: bulkKeys[bulkKeys.length - 1]! }
         )
-        yield* hydra.deleteByKeys(bulkKeys)
-        return result.rows[0]!["c"]
+        return { written, text: String(readBack.rows[0]?.["text"] ?? "") }
       })
     )
-    // 400 rows x ~4 KB is ~1.6 MB of body, so this only passes if it chunked.
-    expect(written).toBe(400)
+    // Only passes if the client split the batch: a single statement carrying
+    // all 150 rows would be refused for exceeding the 1 MB body cap.
+    expect(outcome.written).toBe(150)
+    expect(outcome.text).toBe(padding)
   })
 
   it("MSpaths with a constant-property target selector returns every source->claim pair", async () => {
