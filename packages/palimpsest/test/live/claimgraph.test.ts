@@ -5,7 +5,16 @@ import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { ClaimGraph, Ingest, Supersede, Transcript, claimKind, stems, tokenKey } from "../../src/index.js"
+import {
+  ClaimGraph,
+  Ingest,
+  Supersede,
+  Transcript,
+  claimKind,
+  readUserStats,
+  stems,
+  tokenKey
+} from "../../src/index.js"
 
 /**
  * A whole user through the whole write path, against the live node and the real
@@ -49,22 +58,32 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
       Effect.gen(function* () {
         const ingest = yield* Ingest
         const claimGraph = yield* ClaimGraph
+        const supersede = yield* Supersede
         const hydra = yield* HydraClient
         const question = yield* loadQuestion("oracle", SOURCE).pipe(Effect.orDie)
 
         const first = yield* ingest.ingestUser(UID, question)
         const second = yield* ingest.ingestUser(UID, question)
 
-        // df, checked against the graph rather than against what we wrote.
-        const dfRows = yield* hydra.query(
-          "MATCH (t:Token) WHERE t.uid = $uid RETURN t.stem AS stem, t.df AS df ORDER BY df DESC LIMIT 5",
-          { uid: UID }
-        )
+        // df, checked against the graph rather than against what we wrote —
+        // but the tokens to check are named by walking this user's entities,
+        // because `MATCH (t:Token) WHERE t.uid = $uid` is refused outright once
+        // the store holds more than 250 000 Tokens of any label.
+        const entities = yield* claimGraph.readEntities(UID)
+        const candidates = [
+          ...new Set(entities.flatMap((entity) => stems(entity.canon)))
+        ].slice(0, 24)
+        const dfMap = yield* claimGraph.readTokenDf(UID, candidates)
+        const topDf = [...dfMap]
+          .filter(([, df]) => df > 0)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([stem, df]) => ({ stem, df }))
         // Counted with MSpaths rather than `MATCH (t)-[:HITS]->(c) … count(*)`:
         // that join is evaluated against the whole store, not the matched
         // subset, so it exceeds the engine's 30 s cap once a few users share
         // the graph. MSpaths is driven from the source values and stays fast.
-        const dfChecks = yield* Effect.forEach(dfRows.rows, (row) =>
+        const dfChecks = yield* Effect.forEach(topDf, (row) =>
           hydra
             .msPaths({
               sourceLabel: "Token",
@@ -89,12 +108,19 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
         )
 
         // One claim, and the anchors it was written with: MSpaths must reach it.
-        const sample = yield* hydra.query(
-          "MATCH (c:Claim) WHERE c.uid = $uid RETURN c.ckey AS ckey, c.text AS text ORDER BY ckey LIMIT 1",
-          { uid: UID }
+        // The claim is reached by walking a slot rather than by
+        // `MATCH (c:Claim) WHERE c.uid = $uid`, which the engine refuses once
+        // the store holds more than 250 000 Claims.
+        const contested = yield* supersede.contestedSlots(UID)
+        const slotClaims = yield* supersede.readSlotClaims(
+          UID,
+          contested.slice(0, 4).map((slot: { readonly skey: string }) => slot.skey)
         )
-        const ckey = String(sample.rows[0]!["ckey"])
-        const anchors = [...new Set(stems(String(sample.rows[0]!["text"])))].slice(0, 6)
+        const sampleClaim = [...slotClaims.values()].flat().sort((a, b) =>
+          a.ckey.localeCompare(b.ckey)
+        )[0]!
+        const ckey = sampleClaim.ckey
+        const anchors = [...new Set(stems(sampleClaim.text))].slice(0, 6)
         const paths = yield* hydra.msPaths({
           sourceLabel: "Token",
           sourceProperty: "tkey",
@@ -162,15 +188,14 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
     const counts = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
-        const mine = yield* hydra.query(
-          "MATCH (c:Claim) WHERE c.uid = $uid RETURN count(*) AS c",
-          { uid: UID }
-        )
-        const theirs = yield* hydra.query(
-          "MATCH (c:Claim) WHERE c.kind = $kind RETURN count(*) AS c",
-          { kind: claimKind("no-such-user") }
-        )
-        return [Number(mine.rows[0]!["c"]), Number(theirs.rows[0]!["c"])] as const
+        // Both by id off the User vertex. A label scan would be both wrong at
+        // scale and, past 250 000 Claims in the store, refused outright.
+        const mine = yield* readUserStats(hydra, UID)
+        const theirs = yield* readUserStats(hydra, "no-such-user")
+        return [
+          mine._tag === "Some" ? mine.value.claims : 0,
+          theirs._tag === "Some" ? theirs.value.claims : 0
+        ] as const
       })
     )
     expect(counts[0]).toBeGreaterThan(0)

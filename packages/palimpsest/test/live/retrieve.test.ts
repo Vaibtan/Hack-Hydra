@@ -49,7 +49,7 @@ describe.skipIf(!hasDataset)("retrieval", () => {
     expect(result.receipt.query1).toContain("algo.MSpaths")
     expect(result.receipt.query1Paths).toBeGreaterThan(0)
     expect(result.receipt.convergenceThreshold).toBe(2)
-    expect(result.receipt.anchorsResolved.length).toBeGreaterThan(1)
+    expect(result.receipt.anchorsReachingClaims.length).toBeGreaterThan(1)
     expect(result.receipt.convergence[0]!.convergence).toBeGreaterThanOrEqual(
       result.receipt.convergenceThreshold
     )
@@ -117,6 +117,6 @@ describe.skipIf(!hasDataset)("retrieval", () => {
       expect(absent.receipt.query1).toContain("algo.MSpaths")
     }
     // A confident wrong answer is worse than either, so record what happened.
-    expect(absent.receipt.anchorsUnresolved.length).toBeGreaterThan(0)
+    expect(absent.receipt.anchorsReachingNothing.length).toBeGreaterThan(0)
   })
 })

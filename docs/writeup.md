@@ -74,6 +74,7 @@ changed a decision. They are the most interesting page in the repository.
 |---|---|
 | **1024 rows per response**, with a `next_cursor` | Ignoring it does not fail, it silently truncates — including from `MSpaths`, which cannot take `SKIP`/`LIMIT`. Every recall number taken before this was found would have been wrong in the same invisible direction. Continuing needs **both** the cursor and the originating `query_id`. |
 | **`MATCH (n:L) WHERE n.p = $v` is a full label scan**, ~100 µs per vertex of that label *store-wide* | The blocker for scale. One user's Claim count cost 4.4 s at 58 k Claims, one Token count 9.5 s, `readSessions` 19.2 s — for numbers belonging to one user out of a hundred. Fixed by §2.3. |
+| **A label scan past 250 000 vertices of that label is refused outright** | `cypher_vertex_label_index_candidates … actual 250001 exceeds limit 250000`. The scan does not degrade, it *stops working* — reached at 60 ingested users. Nothing on the product path scans a label, so nothing broke; two tests did, and the spec's `STARTS WITH` prefix-fallback widening lever is retired with it. |
 | **No batched read by id** | `UNWIND $rows AS row MATCH (n {id: row.id}) RETURN …` is refused ("UNWIND batch supports one-hop relationships only" — `UNWIND` is a write form here), and so is `WHERE n.id IN [...]`. Many vertices at once must go through `MSpaths`. |
 | **Source-only `MSpaths` returns one path per source** unless `pathCount` is raised | Silent, like the row cap. The walk from `User` over `HAS_SESSION` returned 1 of 39 sessions. A constant target selector is exempt *and* faster — raising `pathCount` on the convergence query took its median from 0.12 s to 14 s for byte-identical evidence — so the client raises it on source-only walks only. |
 | **32 743-byte string property cap** | Four of 246 750 turns are longer, and they are exactly the long assistant outputs the `single-session-assistant` questions ask about. They spill into `HAS_CHUNK` vertices and reassemble on read, so Span offsets stay absolute. |
@@ -95,6 +96,14 @@ label in the whole store.
 At one user this is invisible. At twenty-six it was already 4.4 s per ask. At five hundred it is past
 the engine's own 30 s cap, on a read that exists only to describe a user the ingest had just
 finished writing. Eleven such reads were on the product path.
+
+It turned out to be worse than slow, and the confirmation arrived by accident. At sixty ingested
+users the `Token` label crossed 250 000 vertices and label scans began being **refused**:
+`cypher_vertex_label_index_candidates rejected by admission control: actual 250001 exceeds limit
+250000`. Two live tests failed; the product path did not notice, because by then it had no label
+scans left in it. Had this work not been done first, the entire system would simply have stopped
+working at sixty users, with no warning and no degradation curve — which is the same failure shape
+as the 1024-row wall, one more time.
 
 The fix is structural rather than clever: a `User` vertex per history (`uid|user`) carrying the
 counts, and `HAS_ENTITY` / `HAS_SLOT` / `HAS_SESSION` edges rooting the vertex sets. Then

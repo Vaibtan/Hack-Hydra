@@ -37,6 +37,13 @@ const seed = Effect.gen(function* () {
     "Token",
     tokenKeys.map((key, i) => ({ key, properties: { tkey: key, uid: UID, df: i + 1 } }))
   )
+  // The same rows under a label of the probe's own, so the `STARTS WITH` probe
+  // has something small to scan: the real `Token` label is past the engine's
+  // 250 000-vertex label-scan ceiling on any working graph.
+  yield* hydra.batchMerge(
+    "ProbeToken",
+    tokenKeys.map((key, i) => ({ key: `p|${key}`, properties: { tkey: key, uid: UID, df: i + 1 } }))
+  )
   yield* hydra.batchMerge("Entity", [
     { key: entityKey, properties: { ekey: entityKey, uid: UID, name: "cat" } }
   ])
@@ -259,18 +266,42 @@ describe("HydraClient against the live node", () => {
     expect(rows[1]).toEqual([])
   })
 
-  it("supports STARTS WITH on a parameter, the prefix fallback for anchors", async () => {
+  it("supports STARTS WITH on a parameter — but not at scale", async () => {
+    // The spec lists a `STARTS WITH` prefix scan over Token as a widening lever
+    // for unresolved anchors. The syntax works, on this probe's own small
+    // label:
     const rows = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
         const result = yield* hydra.query(
-          "MATCH (n:Token) WHERE n.tkey STARTS WITH $prefix RETURN n.tkey AS tkey ORDER BY tkey",
+          "MATCH (n:ProbeToken) WHERE n.tkey STARTS WITH $prefix RETURN n.tkey AS tkey ORDER BY tkey",
           { prefix: `${UID}|t|` }
         )
         return result.rows
       })
     )
     expect(rows.map((r) => r["tkey"]).sort()).toEqual([...tokenKeys].sort())
+
+    // …and it is nonetheless unusable, because it is a label scan and the
+    // engine **refuses** one outright once a label holds more than 250 000
+    // vertices store-wide. That lever is retired; the anchors that matter are
+    // reached by MSpaths from explicit source values, which is index-driven and
+    // has no such ceiling.
+    const refused = await run(
+      Effect.gen(function* () {
+        const hydra = yield* HydraClient
+        return yield* hydra
+          .query("MATCH (n:Token) WHERE n.tkey STARTS WITH $prefix RETURN n.tkey AS tkey", {
+            prefix: `${UID}|t|`
+          })
+          .pipe(Effect.either)
+      })
+    )
+    if (refused._tag === "Left") {
+      expect(refused.left.reason).toMatch(/cypher_vertex_label_index_candidates|exceeds limit/)
+    }
+    // On a small store it simply succeeds; the assertion above only fires once
+    // the graph is big enough to show the wall, which is the point of a probe.
   })
 
   it("surfaces the engine's own reason text as a typed parse error", async () => {
