@@ -17,6 +17,29 @@ import type { AsOfLabelled } from "./Scoring.js"
 /** Characters of surrounding turn text given on each side of a Span. */
 export const SPAN_CONTEXT = 300
 
+/**
+ * Cuts a Span out of its turn with context on both sides, and reports where the
+ * span sits inside the cut so a UI can highlight it. Clamped at both ends: a
+ * span at the very start or end of a turn must not produce a negative offset or
+ * one past the excerpt.
+ */
+export const cutExcerpt = (
+  text: string,
+  cs: number,
+  ce: number,
+  context = SPAN_CONTEXT
+): { readonly excerpt: string; readonly highlight: { readonly start: number; readonly end: number } } => {
+  const from = Math.max(0, Math.min(cs, text.length))
+  const to = Math.max(from, Math.min(ce, text.length))
+  const start = Math.max(0, from - context)
+  const end = Math.min(text.length, to + context)
+  const excerpt = text.slice(start, end)
+  return {
+    excerpt,
+    highlight: { start: from - start, end: Math.min(excerpt.length, to - start) }
+  }
+}
+
 export interface HydratedSpan {
   readonly ckey: string
   /** Short, stable id the reader cites — the claim key's tail. */
@@ -172,9 +195,7 @@ const make = Effect.gen(function* () {
       return evidence.flatMap((claim): ReadonlyArray<HydratedSpan> => {
         const turn = turnText.get(claim.ckey)
         if (turn === undefined) return []
-        const start = Math.max(0, claim.cs - SPAN_CONTEXT)
-        const end = Math.min(turn.text.length, claim.ce + SPAN_CONTEXT)
-        const excerpt = turn.text.slice(start, end)
+        const cut = cutExcerpt(turn.text, claim.cs, claim.ce)
         return [
           {
             ckey: claim.ckey,
@@ -186,8 +207,8 @@ const make = Effect.gen(function* () {
             speaker: claim.speaker,
             status: claim.status,
             atSession: claim.atSession,
-            excerpt,
-            highlight: { start: claim.cs - start, end: Math.min(excerpt.length, claim.ce - start) }
+            excerpt: cut.excerpt,
+            highlight: cut.highlight
           }
         ]
       })
