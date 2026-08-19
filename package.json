@@ -26,6 +26,8 @@
     "eval": "pnpm --filter @palimpsest/eval run eval",
     "serve": "pnpm --filter @palimpsest/server run serve",
     "smoke": "pnpm --filter @palimpsest/server run smoke",
+    "demo": "pnpm --filter @palimpsest/demo run dev",
+    "demo:build": "pnpm --filter @palimpsest/demo run build",
     "retrieval-metrics": "pnpm --filter @palimpsest/eval run retrieval-metrics",
     "trajectory": "pnpm --filter @palimpsest/palimpsest run trajectory"
   },
