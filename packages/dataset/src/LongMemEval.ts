@@ -32,6 +32,13 @@ export interface DatasetTurn {
 
 export interface DatasetSession {
   readonly sid: string
+  /**
+   * Unique within the question, unlike `sid`. 13 of the 500 `_s_cleaned`
+   * haystacks list the same session id twice — identical content inserted at
+   * two different dates — so `sid` alone cannot key a vertex. Repeats get a
+   * `#n` suffix; `sid` stays raw so `answer_session_ids` still matches.
+   */
+  readonly key: string
   /** 1-based rank by timestamp within the question; ties keep input order. */
   readonly sessionOrd: number
   readonly date: HaystackDate
@@ -97,18 +104,25 @@ export const parseQuestion = (raw: RawQuestion): DatasetQuestion => {
   // reproducible regardless of the engine's sort implementation.
   const ordered = [...unordered].sort((a, b) => a.date.ts - b.date.ts || a.index - b.index)
 
+  const seen = new Map<string, number>()
+
   return {
     questionId: raw.question_id,
     questionType: raw.question_type,
     question: raw.question,
     answer: raw.answer ?? "",
     questionDate: parseHaystackDate(raw.question_date),
-    sessions: ordered.map((session, i) => ({
-      sid: session.sid,
-      sessionOrd: i + 1,
-      date: session.date,
-      turns: session.turns
-    })),
+    sessions: ordered.map((session, i) => {
+      const repeat = seen.get(session.sid) ?? 0
+      seen.set(session.sid, repeat + 1)
+      return {
+        sid: session.sid,
+        key: repeat === 0 ? session.sid : `${session.sid}#${repeat}`,
+        sessionOrd: i + 1,
+        date: session.date,
+        turns: session.turns
+      }
+    }),
     answerSessionIds: raw.answer_session_ids ?? [],
     isAbstention: raw.question_id.endsWith("_abs")
   }

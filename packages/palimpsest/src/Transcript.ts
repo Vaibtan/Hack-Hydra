@@ -78,9 +78,9 @@ const make = Effect.gen(function* () {
       yield* hydra.batchMerge(
         "Session",
         sessions.map((session) => ({
-          key: sessionKey(uid, session.sid),
+          key: sessionKey(uid, session.key),
           properties: {
-            sess: sessionKey(uid, session.sid),
+            sess: sessionKey(uid, session.key),
             uid,
             sid: session.sid,
             session_ord: session.sessionOrd,
@@ -97,9 +97,9 @@ const make = Effect.gen(function* () {
       yield* hydra.batchMerge(
         "Turn",
         turns.map(({ session, turn, chunks }) => ({
-          key: turnKey(uid, session.sid, turn.turnIdx),
+          key: turnKey(uid, session.key, turn.turnIdx),
           properties: {
-            turn: turnKey(uid, session.sid, turn.turnIdx),
+            turn: turnKey(uid, session.key, turn.turnIdx),
             uid,
             sid: session.sid,
             session_ord: session.sessionOrd,
@@ -118,9 +118,9 @@ const make = Effect.gen(function* () {
         yield* hydra.batchMerge(
           "TurnChunk",
           overflow.map(({ session, turn, text, chunkIdx }) => ({
-            key: turnChunkKey(uid, session.sid, turn.turnIdx, chunkIdx),
+            key: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx),
             properties: {
-              tchunk: turnChunkKey(uid, session.sid, turn.turnIdx, chunkIdx),
+              tchunk: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx),
               uid,
               chunk_idx: chunkIdx,
               text
@@ -131,9 +131,9 @@ const make = Effect.gen(function* () {
           "HAS_CHUNK",
           overflow.map(({ session, turn, chunkIdx }) => ({
             srcLabel: "Turn",
-            srcKey: turnKey(uid, session.sid, turn.turnIdx),
+            srcKey: turnKey(uid, session.key, turn.turnIdx),
             dstLabel: "TurnChunk",
-            dstKey: turnChunkKey(uid, session.sid, turn.turnIdx, chunkIdx)
+            dstKey: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx)
           }))
         )
       }
@@ -142,9 +142,9 @@ const make = Effect.gen(function* () {
         "HAS_TURN",
         turns.map(({ session, turn }) => ({
           srcLabel: "Session",
-          srcKey: sessionKey(uid, session.sid),
+          srcKey: sessionKey(uid, session.key),
           dstLabel: "Turn",
-          dstKey: turnKey(uid, session.sid, turn.turnIdx)
+          dstKey: turnKey(uid, session.key, turn.turnIdx)
         }))
       )
 

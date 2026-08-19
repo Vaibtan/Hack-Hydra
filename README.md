@@ -65,6 +65,13 @@ pnpm stats  --uid 37d43f65 --slots
 
 # supersession chains, with CURRENT / SUPERSEDED labels, optionally as of session k
 pnpm slots --uid 852ce960 [--as-of 4] [--all]
+
+# the whole read path: verdict, receipt, evidence, answer
+pnpm ask --uid 852ce960 --date "2023/05/20 (Sat) 02:21" --question "..." [--as-of 4] [--full]
+
+# the day-3 gate over a stratified slice of real haystacks
+pnpm ingest-slice --slice 20 --dataset s --users 4 --prefix g2
+pnpm retrieval-metrics --slice 20 --prefix g2 [--misses]
 ```
 
 `pnpm probe` needs the Docker node running; `pnpm test:unit` does not. The live suites and
@@ -233,3 +240,51 @@ does not replace the old claims — it adds a second generation beside them**, a
 for the current generation, then disagrees with the edges actually present. The supported way to get
 a clean graph is a fresh key prefix: `pnpm ingest --uid <question_id> --as <new-prefix>`. Extraction
 is content-addressed, so the LLM calls are served from cache and a re-key costs cents.
+
+## Retrieval and reading
+
+A question becomes anchors — the deterministic stems of the question, unioned with the LLM's
+synonyms and hypernyms, because the write side expands too and the exact-match join in the middle
+only happens if both do. Then two bounded round trips:
+
+**Query 1** walks `Token -[HITS|NAMES|MENTIONS]-> … -> Claim` from those anchors to every Claim of
+the user, with the constant `kind` target selector so every source→claim pair comes back rather than
+one path per source. Relevance is **convergence** — how many *distinct* anchors reached the same
+claim — tie-broken by Σ idf, where `idf = log(1 + N/df)` and `df` came off the hydrated path.
+
+**Query 2** walks from the candidates' Slots back down `FILLS`, so a knowledge-update question sees
+the value that was replaced as well as the one that replaced it. Nothing is queried per claim.
+
+The verdict is structural: `A1` no anchor of the question exists in this user's graph, `A2` anchors
+exist but no claim is reached by at least `min(2, |anchors|)` of them — one named threshold, printed
+in every receipt. The receipt also carries the exact query text and parameters, which anchors
+resolved and which reached nothing, the path counts, and the convergence table, which is enough to
+re-run the read by hand and get the same paths.
+
+The **reader never sees a Claim's text.** A Claim is an index entry — a paraphrase produced by an
+earlier model — and answering from it would make the system a summary of a summary. What the reader
+gets is the verbatim turn text around each Span (± 300 chars), labelled CURRENT or SUPERSEDED, in
+event-date order. It answers only from that, does date arithmetic explicitly, and returns exactly
+`NOT_IN_MEMORY` when the spans do not hold the answer — reported distinctly from the structural
+A1/A2, because they mean different things: nothing was reachable, versus the right spans were
+reached and did not contain it.
+
+Worked example on `852ce960`, a knowledge-update question:
+
+```
+$ pnpm ask --uid 852ce960 --question "What was the amount I was pre-approved for …?"
+VERDICT        ANSWER
+ANSWER         $400,000
+cited          7d6fafd1
+...
+  threshold    convergence >= 2
+  anchors      13 asked, 11 reached a claim
+    unresolved preapproval wf
+  query 1      162 paths      query 2  15 paths
+
+$ pnpm ask --uid 852ce960 --as-of 4 --question "…"
+ANSWER         $350,000
+```
+
+Same graph, same question, two different answers — because as-of is a filter over `session_ord` and
+`at_session`, not a database snapshot.

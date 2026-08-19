@@ -53,13 +53,21 @@ const program = Effect.gen(function* () {
 
   const started = Date.now()
   let done = 0
-  const reports = yield* Effect.forEach(
+  const reportsOrNull = yield* Effect.forEach(
     slice,
     (question) =>
       Effect.gen(function* () {
         const uid = uidFor(question.questionId, prefix)
-        const report = yield* ingest.ingestUser(uid, question)
+        // One user's failure must not discard the rest of the run: a slice is
+        // an hour of API calls and the cache only helps if the process lives
+        // long enough to write it.
+        const outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
         done++
+        if (outcome._tag === "Left") {
+          console.log(`[${String(done).padStart(2)}/${slice.length}] ${uid.padEnd(22)} FAILED  ${outcome.left.message}`)
+          return null
+        }
+        const report = outcome.right
         console.log(
           `[${String(done).padStart(2)}/${slice.length}] ${uid.padEnd(22)} ` +
             `${String(report.stats.sessions).padStart(2)} sessions  ` +
@@ -73,8 +81,10 @@ const program = Effect.gen(function* () {
     { concurrency: userConcurrency }
   )
 
+  const reports = reportsOrNull.filter((report) => report !== null)
   const usage = yield* llm.usage
   console.log("")
+  console.log(`ingested   ${reports.length}/${slice.length} users`)
   console.log(`claims     ${reports.reduce((n, r) => n + r.stats.claims, 0)}`)
   console.log(`contested  ${reports.reduce((n, r) => n + r.stats.contestedSlots, 0)} slots`)
   console.log(`supersede  ${reports.reduce((n, r) => n + r.supersessions.edges, 0)} edges`)

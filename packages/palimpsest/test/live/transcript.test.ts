@@ -24,6 +24,7 @@ const HUGE_TURN = Array.from({ length: 7656 }, (_, i) => `line ${i} — ünïcö
 const sessions: ReadonlyArray<DatasetSession> = [
   {
     sid: "shared_session_1",
+    key: "shared_session_1",
     sessionOrd: 1,
     date: { raw: "2023/04/10 (Mon) 14:47", ts: Date.UTC(2023, 3, 10, 14, 47) / 1000, dateInt: 20230410 },
     turns: [
@@ -33,6 +34,7 @@ const sessions: ReadonlyArray<DatasetSession> = [
   },
   {
     sid: "shared_session_2",
+    key: "shared_session_2",
     sessionOrd: 2,
     date: { raw: "2023/04/10 (Mon) 17:15", ts: Date.UTC(2023, 3, 10, 17, 15) / 1000, dateInt: 20230410 },
     turns: [{ turnIdx: 0, role: "user", text: "The GPS stopped working.", hasAnswer: true }]

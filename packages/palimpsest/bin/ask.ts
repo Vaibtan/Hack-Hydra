@@ -2,13 +2,16 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { Retrieve, Supersede } from "../src/index.js"
+import { Reader, Retrieve, Supersede } from "../src/index.js"
 
 /**
- * `ask --uid <question_id> --question "..." [--as-of k] [--max-len 2] [--full]`
+ * `ask --uid <id> --question "..." [--date "2023/05/20 (Sat) 02:21"] [--as-of k]
+ *      [--max-len 2] [--no-read] [--full]`
  *
- * Prints the verdict, the receipt, and the evidence claim keys. No reader yet —
- * this is the retrieval layer on its own, which is what the receipt is for.
+ * The whole read path: verdict, receipt, evidence, and the reader's answer.
+ * A structural ABSENT (A1/A2) and the reader's own NOT_IN_MEMORY are reported
+ * distinctly, because they mean different things — nothing was reachable, versus
+ * the right spans were reached and did not contain the answer.
  */
 loadDotEnv()
 
@@ -22,8 +25,11 @@ const question = arg("question", "")
 const asOfRaw = arg("as-of", "")
 const maxLen = Number(arg("max-len", "2"))
 const full = process.argv.includes("--full")
+const questionDate = arg("date", "unknown")
+const noRead = process.argv.includes("--no-read")
 
 const AppLive = Retrieve.Default.pipe(
+  Layer.provideMerge(Reader.Default),
   Layer.provideMerge(Supersede.Default),
   Layer.provideMerge(HydraClient.Default),
   Layer.provideMerge(LlmLive()),
@@ -32,18 +38,36 @@ const AppLive = Retrieve.Default.pipe(
 
 const program = Effect.gen(function* () {
   const retrieve = yield* Retrieve
+  const reader = yield* Reader
   const started = Date.now()
   const result = yield* retrieve.ask(uid, question, {
     maxLen,
     ...(asOfRaw === "" ? {} : { asOf: Number(asOfRaw) })
   })
+  const answer =
+    noRead || result.verdict === "ABSENT"
+      ? null
+      : yield* reader.read(question, questionDate, result.evidence)
   const elapsed = ((Date.now() - started) / 1000).toFixed(1)
   const r = result.receipt
 
   console.log(`question       ${question}`)
   console.log(`uid            ${uid}${r.asOf === null ? "" : `   as of session ${r.asOf}`}`)
   console.log("")
-  console.log(`VERDICT        ${result.verdict}${result.reason === null ? "" : `  (${result.reason})`}`)
+  const source =
+    result.verdict === "ABSENT"
+      ? `ABSENT  structural: ${result.reason}`
+      : answer === null
+        ? "ANSWER  (reader skipped)"
+        : answer.notInMemory
+          ? "ABSENT  reader: NOT_IN_MEMORY"
+          : "ANSWER"
+  console.log(`VERDICT        ${source}`)
+  if (answer !== null && !answer.notInMemory) {
+    console.log(`ANSWER         ${answer.answer}`)
+    if (answer.reasoning.trim() !== "") console.log(`reasoning      ${answer.reasoning}`)
+    console.log(`cited          ${answer.citedIds.join(" ") || "-"}`)
+  }
   console.log(`evidence       ${result.evidence.length} claims`)
   console.log(`hash           ${result.hash.slice(0, 16)}`)
   console.log(`latency        ${elapsed} s`)

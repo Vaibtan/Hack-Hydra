@@ -131,7 +131,7 @@ const make = Effect.gen(function* () {
 
       const written: Array<WrittenClaim> = []
       const claimRows = claims.map((claim) => {
-        const ckey = claimKey(uid, claimDigest(claim, session.sid))
+        const ckey = claimKey(uid, claimDigest(claim, session.key))
         const skey =
           claim.slot === null
             ? null
@@ -226,7 +226,7 @@ const make = Effect.gen(function* () {
           srcLabel: "Claim",
           srcKey: ckey,
           dstLabel: "Turn",
-          dstKey: turnKey(uid, session.sid, claim.span.turnIdx),
+          dstKey: turnKey(uid, session.key, claim.span.turnIdx),
           properties: { cs: claim.span.cs, ce: claim.span.ce }
         }))
       )

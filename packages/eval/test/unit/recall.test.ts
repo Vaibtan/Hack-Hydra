@@ -19,6 +19,7 @@ const question = (
   isAbstention: false,
   sessions: sessions.map((session, i) => ({
     sid: session.sid,
+    key: session.sid,
     sessionOrd: i + 1,
     date,
     turns: Array.from({ length: session.turns }, (_, turnIdx) => ({
