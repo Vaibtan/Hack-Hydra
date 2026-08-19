@@ -33,7 +33,7 @@ Measured against HydraDB 0.1.0, not read from docs. Each one changed a design de
 | `UNWIND` batch | **1024 rows** (admission control) | Write batches are chunked at 1000. |
 | Query runtime | **30 s** | Arrives as a **500**, so it is classified by message, not status. |
 | Vertex ids | JSON numbers | Ids are the top 53 bits of SHA-256(key), not a full u64. |
-| `DETACH DELETE` | **~2.3 vertices/s**, flat in degree | Deleting a user takes hours. Every write is content-addressed so re-ingest never needs a reset; a prompt change gets a fresh key prefix instead. |
+| `DETACH DELETE` | **~2.3 vertices/s**, then **refused entirely** past ~1M edges (`delete_vertex_scan_edges … exceeds limit 1000000`) | Deletion is not available on a working graph, at any batch size. Every write is content-addressed so re-ingest never needs a reset; a prompt change gets a fresh key prefix instead. |
 | `MATCH` joins | evaluated store-wide | Per-user aggregates are denormalised at write time or read through `MSpaths`, which is driven from source values and stays fast. |
 | Second graph id | 403 with the local token | All users share `default`, partitioned by key prefix. |
 

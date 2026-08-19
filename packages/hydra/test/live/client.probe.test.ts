@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { Effect, Layer, Option } from "effect"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it } from "vitest"
 import { HydraClient, HydraParseError, vertexId } from "../../src/index.js"
 
 /**
@@ -25,9 +25,14 @@ const tokenKeys = [k("t|cat"), k("t|vet"), k("t|hamster")]
 const entityKey = k("e|cat")
 const claimKeys = [k("c|1"), k("c|2"), k("c|3")]
 
+/**
+ * Nothing is deleted, before or after. Every key here is fixed, so a re-run
+ * overwrites the same vertices — and on a graph of any size `DETACH DELETE` is
+ * first slow and then outright rejected (`delete_vertex_scan_edges … exceeds
+ * limit 1000000`), because the scan is proportional to the whole store.
+ */
 const seed = Effect.gen(function* () {
   const hydra = yield* HydraClient
-  yield* hydra.deleteByKeys([...tokenKeys, entityKey, ...claimKeys])
   yield* hydra.batchMerge(
     "Token",
     tokenKeys.map((key, i) => ({ key, properties: { tkey: key, uid: UID, df: i + 1 } }))
@@ -72,13 +77,7 @@ const seed = Effect.gen(function* () {
   ])
 })
 
-const cleanup = Effect.gen(function* () {
-  const hydra = yield* HydraClient
-  yield* hydra.deleteByKeys([...tokenKeys, entityKey, ...claimKeys])
-})
-
 beforeAll(() => run(seed))
-afterAll(() => run(cleanup))
 
 const convergenceQuery = (values: ReadonlyArray<string>, maxLen: number) => ({
   sourceLabel: "Token",
@@ -229,21 +228,29 @@ describe("HydraClient against the live node", () => {
   })
 
   it("filters on a relationship property, which is how as-of reads are pushed down", async () => {
+    // Anchored on the source vertex's id rather than `WHERE a.uid = $uid`: the
+    // uid form is a store-wide join over every SUPERSEDED_BY edge and exceeds
+    // the 30 s cap once real data shares the graph. What is being probed is
+    // that the *edge property* filter works, and that needs one claim.
     const rows = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
+        const older = vertexId(claimKeys[0]!)
         const now = yield* hydra.query(
-          "MATCH (a:Claim)-[r:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid AND r.at_session <= $k RETURN a.ckey AS older, b.ckey AS newer",
-          { uid: UID, k: 2 }
+          "MATCH (a:Claim {id: $id})-[r:SUPERSEDED_BY]->(b:Claim) WHERE r.at_session <= $k " +
+            "RETURN a.ckey AS older, b.ckey AS newer",
+          { id: older, k: 2 }
         )
         const before = yield* hydra.query(
-          "MATCH (a:Claim)-[r:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid AND r.at_session <= $k RETURN a.ckey AS older, b.ckey AS newer",
-          { uid: UID, k: 1 }
+          "MATCH (a:Claim {id: $id})-[r:SUPERSEDED_BY]->(b:Claim) WHERE r.at_session <= $k " +
+            "RETURN a.ckey AS older, b.ckey AS newer",
+          { id: older, k: 1 }
         )
         return [now.rows, before.rows] as const
       })
     )
     expect(rows[0]).toEqual([{ older: claimKeys[0], newer: claimKeys[1] }])
+    // The edge is stamped at session 2, so as of session 1 it is not visible.
     expect(rows[1]).toEqual([])
   })
 

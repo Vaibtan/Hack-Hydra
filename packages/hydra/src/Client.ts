@@ -101,6 +101,11 @@ const MERGE_ROWS_PER_CHUNK = 1_000
  * allows about 65 per statement. Deleting a whole benchmark user is an
  * hours-long operation and is not something to build on — every write here is
  * content-addressed and idempotent precisely so re-ingest never needs a reset.
+ *
+ * Past about a million edges in the store it stops being merely slow and is
+ * refused outright: `delete_vertex_scan_edges rejected by admission control:
+ * actual 1000001 exceeds limit 1000000`. The scan is proportional to the whole
+ * graph, so no batch size makes it work.
  */
 const DELETE_ROWS_PER_CHUNK = 40
 
@@ -392,7 +397,14 @@ const make = Effect.gen(function* () {
           index += slice.length
           continue
         }
-        if (outcome.left._tag !== "HydraLimitError" || size === 1) {
+        // The edge-scan limit is a property of the whole store, not of this
+        // batch, so halving cannot help — fail loudly instead of burning 30 s
+        // per futile retry.
+        if (
+          outcome.left._tag !== "HydraLimitError" ||
+          size === 1 ||
+          /delete_vertex_scan_edges/.test(outcome.left.reason)
+        ) {
           return yield* Effect.fail(outcome.left)
         }
         size = Math.max(1, Math.floor(size / 2))

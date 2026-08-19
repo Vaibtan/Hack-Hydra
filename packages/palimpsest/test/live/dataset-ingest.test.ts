@@ -3,7 +3,7 @@ import { datasetPath, loadQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { existsSync } from "node:fs"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
 import { Transcript } from "../../src/index.js"
 
 /**
@@ -25,23 +25,6 @@ const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraClient>): Promi
 const UID = "gpt4_2655b836"
 
 describe.skipIf(!hasOracle)("ingesting a real LongMemEval user", () => {
-  beforeAll(() =>
-    run(
-      Effect.gen(function* () {
-        const transcript = yield* Transcript
-        yield* transcript.remove(UID)
-      })
-    )
-  )
-  afterAll(() =>
-    run(
-      Effect.gen(function* () {
-        const transcript = yield* Transcript
-        yield* transcript.remove(UID)
-      })
-    )
-  )
-
   it("stores every turn verbatim, in timestamp order, and re-ingest is a no-op", async () => {
     const outcome = await run(
       Effect.gen(function* () {

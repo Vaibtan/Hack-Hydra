@@ -2,7 +2,7 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import type { DatasetSession } from "@palimpsest/dataset"
 import { Effect, Layer, Option } from "effect"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
 import { Transcript, turnKey } from "../../src/index.js"
 
 const layer = Transcript.Default.pipe(
@@ -41,14 +41,9 @@ const sessions: ReadonlyArray<DatasetSession> = [
   }
 ]
 
-const wipe = Effect.gen(function* () {
-  const transcript = yield* Transcript
-  yield* transcript.remove(UID_A)
-  yield* transcript.remove(UID_B)
-})
-
-beforeAll(() => run(wipe))
-afterAll(() => run(wipe))
+// Nothing is wiped. Keys are fixed, so a re-run overwrites the same vertices,
+// and `DETACH DELETE` is rejected outright once the store passes a million
+// edges — the scan is proportional to the whole graph, not to what is deleted.
 
 describe("Transcript ingest against the live node", () => {
   it("writes sessions, turns and HAS_TURN edges under the user's key prefix", async () => {

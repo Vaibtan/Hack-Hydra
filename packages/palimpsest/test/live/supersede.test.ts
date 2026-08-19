@@ -40,6 +40,7 @@ describe.skipIf(!hasDataset)("supersession pass", () => {
       Effect.gen(function* () {
         const ingest = yield* Ingest
         const supersede = yield* Supersede
+        const claimGraph = yield* ClaimGraph
         const question = yield* loadQuestion("s", SOURCE).pipe(Effect.orDie)
 
         const first = yield* ingest.ingestUser(UID, question)
@@ -47,13 +48,16 @@ describe.skipIf(!hasDataset)("supersession pass", () => {
         const chains = yield* Effect.forEach(contested, (slot) =>
           supersede.chain(UID, slot.skey).pipe(Effect.map((claims) => ({ slot, claims })))
         )
-        // A second ingest must not add an edge.
-        const second = yield* ingest.ingestUser(UID, question)
-        return { first, second, chains }
+        // Re-running the *pass* must not add an edge. (A second full ingest
+        // would prove it too, but that is 40 sessions of writes for a property
+        // the claim-graph test already covers.)
+        const again = yield* supersede.run(UID, contested)
+        const after = yield* claimGraph.stats(UID)
+        return { first, again, after, chains }
       })
     )
 
-    const { first, second, chains } = outcome
+    const { first, again, after, chains } = outcome
 
     expect(first.supersessions.edges).toBeGreaterThan(0)
     expect(first.stats.contestedSlots).toBeGreaterThan(0)
@@ -89,9 +93,9 @@ describe.skipIf(!hasDataset)("supersession pass", () => {
     expect(untouched.length).toBeGreaterThan(0)
 
     // Idempotent: same edges, every decision from cache, nothing new written.
-    expect(second.supersessions.edges).toBe(first.supersessions.edges)
-    expect(second.stats.supersessions).toBe(first.stats.supersessions)
-    expect(second.supersessions.cachedDecisions).toBe(second.supersessions.slotsContested)
+    expect(again.edges).toBe(first.supersessions.edges)
+    expect(after.supersessions).toBe(first.stats.supersessions)
+    expect(again.cachedDecisions).toBe(again.slotsContested)
   })
 
   it("replays the chain as of an earlier session", async () => {

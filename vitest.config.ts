@@ -24,8 +24,8 @@ export default defineConfig({
           name: "live",
           include: ["packages/*/test/live/**/*.test.ts"],
           setupFiles: ["./vitest.setup.ts"],
-          testTimeout: 300_000,
-          hookTimeout: 300_000,
+          testTimeout: 900_000,
+          hookTimeout: 900_000,
           // The live node is a single shared resource; parallel files would
           // fight over the same key space.
           fileParallelism: false
