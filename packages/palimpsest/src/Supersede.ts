@@ -1,5 +1,5 @@
 import type { LanguageModel } from "@effect/ai"
-import { HydraClient, type HydraError } from "@palimpsest/hydra"
+import { HydraClient, type HydraError, type HydraPath } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Schema } from "effect"
 import { claimKind } from "./Keys.js"
@@ -104,6 +104,47 @@ const renderPrompt = (
       return `${index + 1}. (session ${claim.sessionOrd}${date}) ${claim.text}`
     })
   ].join("\n")
+
+/**
+ * Folds `SUPERSEDED_BY` paths into "what replaced this claim, and when".
+ *
+ * A slot's history is meant to be a chain (1->2, 2->3) and the prompt asks for
+ * exactly that, but nothing structural forbids the model returning 1->2 *and*
+ * 1->3. With two edges out of one claim the label would otherwise depend on
+ * the order HydraDB happened to return the paths in, which would make the
+ * determinism claim false in a way no test would catch. The **earliest**
+ * replacement is the one that made the claim stale, so it wins; the claim key
+ * breaks a tie so the answer never depends on path order at all.
+ */
+export const foldSupersessionEdges = (
+  paths: ReadonlyArray<HydraPath>,
+  asOf?: number
+): ReadonlyMap<string, { readonly newer: string; readonly atSession: number }> => {
+  const byOlder = new Map<string, { newer: string; atSession: number }>()
+  for (const path of paths) {
+    const older = path.nodes[0]
+    const newer = path.nodes[path.nodes.length - 1]
+    const edge = path.relationships[0]
+    if (older === undefined || newer === undefined || edge === undefined) continue
+    const atSession = Number(edge.properties["at_session"] ?? 0)
+    // As-of is data-level: an edge written at a later session simply is not
+    // visible yet. No snapshot, no bookmark — one integer comparison.
+    if (asOf !== undefined && atSession > asOf) continue
+    const olderCkey = String(older.properties["ckey"] ?? "")
+    const newerCkey = String(newer.properties["ckey"] ?? "")
+    if (olderCkey === "" || newerCkey === "") continue
+    const existing = byOlder.get(olderCkey)
+    if (
+      existing !== undefined &&
+      (existing.atSession < atSession ||
+        (existing.atSession === atSession && existing.newer <= newerCkey))
+    ) {
+      continue
+    }
+    byOlder.set(olderCkey, { newer: newerCkey, atSession })
+  }
+  return byOlder
+}
 
 const make = Effect.gen(function* () {
   const hydra = yield* HydraClient
@@ -298,8 +339,9 @@ const make = Effect.gen(function* () {
     asOf?: number
   ): Effect.Effect<ReadonlyMap<string, { readonly newer: string; readonly atSession: number }>, HydraError> =>
     Effect.gen(function* () {
-      const byOlder = new Map<string, { newer: string; atSession: number }>()
-      if (ckeys.length === 0) return byOlder
+      if (ckeys.length === 0) {
+        return new Map<string, { readonly newer: string; readonly atSession: number }>()
+      }
 
       const paths = yield* hydra.msPaths({
         sourceLabel: "Claim",
@@ -313,21 +355,7 @@ const make = Effect.gen(function* () {
         maxLen: 1
       })
 
-      for (const path of paths) {
-        const older = path.nodes[0]
-        const newer = path.nodes[path.nodes.length - 1]
-        const edge = path.relationships[0]
-        if (older === undefined || newer === undefined || edge === undefined) continue
-        const atSession = Number(edge.properties["at_session"] ?? 0)
-        // As-of is data-level: an edge written at a later session simply is not
-        // visible yet. No snapshot, no bookmark — one integer comparison.
-        if (asOf !== undefined && atSession > asOf) continue
-        byOlder.set(String(older.properties["ckey"] ?? ""), {
-          newer: String(newer.properties["ckey"] ?? ""),
-          atSession
-        })
-      }
-      return byOlder
+      return foldSupersessionEdges(paths, asOf)
     })
 
   /**

@@ -1,5 +1,5 @@
 import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
-import { Llm, LlmLive, loadDotEnv, usageCostUsd } from "@palimpsest/llm"
+import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { extractSession, mergeEntities, type ExtractedEntity, type SessionExtraction } from "@palimpsest/palimpsest"
 import { Effect } from "effect"
 import { byType, questionRecall, stratifiedSlice, summarise } from "../src/index.js"
@@ -92,7 +92,7 @@ const program = Effect.gen(function* () {
   console.log("")
   console.log(`llm calls     ${usage.calls} live, ${usage.cacheHits} from cache`)
   console.log(`tokens        ${usage.inputTokens} in, ${usage.outputTokens} out`)
-  console.log(`cost          $${usageCostUsd(llm.model, usage).toFixed(4)}`)
+  console.log(`cost          $${(yield* llm.costUsd).toFixed(4)}`)
   console.log(`wall clock    ${elapsed.toFixed(1)} s`)
 
   if (showMisses) {

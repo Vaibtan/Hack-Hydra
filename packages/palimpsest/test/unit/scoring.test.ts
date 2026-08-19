@@ -2,6 +2,7 @@ import type { HydraPath } from "@palimpsest/hydra"
 import { describe, expect, it } from "vitest"
 import {
   applyAsOf,
+  beforeAsOf,
   convergenceThreshold,
   decide,
   idf,
@@ -233,5 +234,59 @@ describe("orderEvidence", () => {
 
   it("puts claims with no event date last, so date arithmetic reads in order", () => {
     expect(orderEvidence([undated, current], false).map((c) => c.ckey)).toEqual(["cur", "undated"])
+  })
+})
+
+
+describe("beforeAsOf", () => {
+  /**
+   * The audit's §2.2 case, exactly: a claim from the future that converges
+   * harder than anything the memory actually held at `k`. Filtering after the
+   * verdict let it decide A1/A2, fill the convergence table the receipt prints,
+   * and eat a top-K slot — so an as-of receipt described a memory that did not
+   * exist yet, and early-`k` recall degraded with nothing to show for it.
+   */
+  const reached = scoreReached(
+    [
+      path({ stem: "mortgage", df: 2 }, { ckey: "past", sessionOrd: 3 }),
+      path({ stem: "wells", df: 2 }, { ckey: "past", sessionOrd: 3 }),
+      path({ stem: "mortgage", df: 2 }, { ckey: "future", sessionOrd: 37 }),
+      path({ stem: "wells", df: 2 }, { ckey: "future", sessionOrd: 37 }),
+      path({ stem: "loan", df: 2 }, { ckey: "future", sessionOrd: 37 }),
+      path({ stem: "approval", df: 2 }, { ckey: "future", sessionOrd: 37 }),
+      path({ stem: "amount", df: 2 }, { ckey: "future", sessionOrd: 37 })
+    ],
+    100
+  )
+
+  it("keeps every claim when no as-of is given", () => {
+    expect(beforeAsOf(reached).map((claim) => claim.ckey).sort()).toEqual(["future", "past"])
+  })
+
+  it("removes a future claim from the candidates even when it converges hardest", () => {
+    const future = reached.find((claim) => claim.ckey === "future")!
+    expect(future.convergence).toBe(5)
+
+    const asOf3 = beforeAsOf(reached, 3)
+    expect(asOf3.map((claim) => claim.ckey)).toEqual(["past"])
+
+    const verdict = decide(asOf3, new Set(asOf3.flatMap((claim) => claim.anchors)).size)
+    expect(verdict.kind).toBe("ANSWER")
+    expect(verdict.candidates.map((claim) => claim.ckey)).toEqual(["past"])
+  })
+
+  it("removes it from the receipt's convergence table too", () => {
+    const table = rank(beforeAsOf(reached, 3)).map((claim) => claim.ckey)
+    expect(table).not.toContain("future")
+  })
+
+  it("can abstain as of k on a question it would answer today", () => {
+    // Before session 3 the memory holds nothing about this at all, and the
+    // honest receipt says so rather than reporting anchors that resolved
+    // against a claim from session 37.
+    const asOf2 = beforeAsOf(reached, 2)
+    const verdict = decide(asOf2, new Set(asOf2.flatMap((claim) => claim.anchors)).size)
+    expect(verdict.kind).toBe("ABSENT")
+    expect(verdict.reason).toBe("A1_no_anchors")
   })
 })

@@ -1,10 +1,10 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
-import { Llm, LlmLive, loadDotEnv, usageCostUsd } from "@palimpsest/llm"
+import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, Retrieve, Supersede } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
-import { gateByType, gateReport, scoreQuestion, stratifiedSlice } from "../src/index.js"
+import { benchmarkSlice, gateByType, gateReport, scoreQuestion } from "../src/index.js"
 
 /**
  * `retrieval-metrics --slice 20 [--prefix g2] [--max-len 2] [--top-k 25] [--misses]`
@@ -48,7 +48,7 @@ const program = Effect.gen(function* () {
   const claimGraph = yield* ClaimGraph
   const llm = yield* Llm
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
-  const slice = stratifiedSlice(questions, sliceSize)
+  const slice = benchmarkSlice(questions, sliceSize)
 
   // A user with no claims would score as A1_no_anchors and be counted as a
   // false abstention — a missing ingest quietly reported as a retrieval
@@ -81,6 +81,7 @@ const program = Effect.gen(function* () {
       Effect.gen(function* () {
         const t0 = Date.now()
         const result = yield* retrieve.ask(uidFor(question.questionId), question.question, {
+          questionDate: question.questionDate.raw,
           maxLen,
           topK
         })
@@ -118,10 +119,10 @@ const program = Effect.gen(function* () {
   console.log("")
 
   const usage = yield* llm.usage
-  console.log(`anchors      ${(results.reduce((n, r) => n + r.anchorsResolved, 0) / results.length).toFixed(1)} resolved of ${(results.reduce((n, r) => n + r.anchorsAsked, 0) / results.length).toFixed(1)} asked, per question`)
+  console.log(`anchors      ${(results.reduce((n, r) => n + r.anchorsReachingClaims, 0) / results.length).toFixed(1)} resolved of ${(results.reduce((n, r) => n + r.anchorsAsked, 0) / results.length).toFixed(1)} asked, per question`)
   console.log(`evidence     ${(results.reduce((n, r) => n + r.evidence, 0) / results.length).toFixed(1)} claims per question`)
   console.log(`llm calls    ${usage.calls} live, ${usage.cacheHits} from cache`)
-  console.log(`cost         $${usageCostUsd(llm.model, usage).toFixed(4)}`)
+  console.log(`cost         $${(yield* llm.costUsd).toFixed(4)}`)
   console.log(`wall clock   ${elapsed.toFixed(1)} s`)
 
   if (showMisses) {
@@ -132,7 +133,7 @@ const program = Effect.gen(function* () {
       console.log(
         `  ${result.questionId}  ${result.questionType}  verdict ${result.verdict}` +
           `${result.reason === null ? "" : ` (${result.reason})`}  ` +
-          `anchors ${result.anchorsResolved}/${result.anchorsAsked}  topconv ${result.topConvergence}`
+          `anchors ${result.anchorsReachingClaims}/${result.anchorsAsked}  topconv ${result.topConvergence}`
       )
       console.log(`    wanted   ${result.answerSessions.join(", ")}`)
       console.log(`    got      ${result.evidenceSessions.slice(0, 6).join(", ")}`)

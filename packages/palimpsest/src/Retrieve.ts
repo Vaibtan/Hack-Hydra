@@ -9,6 +9,7 @@ import { readUserStats } from "./User.js"
 import {
   DEFAULT_TOP_K,
   applyAsOf,
+  beforeAsOf,
   decide,
   orderEvidence,
   rank,
@@ -35,12 +36,26 @@ export interface Receipt {
   readonly uid: string
   readonly asOf: number | null
   readonly anchorTerms: ReadonlyArray<string>
-  readonly anchorsResolved: ReadonlyArray<string>
-  readonly anchorsUnresolved: ReadonlyArray<string>
+  /**
+   * The anchors that reached at least one Claim. Named for what it measures:
+   * the spec's `A1` is "no anchor *token exists*", and this is "no anchor
+   * *reached a claim*", which is the weaker and more useful test — a Token
+   * vertex with no HITS edge is indistinguishable from a missing one for the
+   * verdict, and the difference would cost a second query to tell apart.
+   */
+  readonly anchorsReachingClaims: ReadonlyArray<string>
+  readonly anchorsReachingNothing: ReadonlyArray<string>
   readonly historical: boolean
   readonly wantsCount: boolean
   readonly timeRef: string | null
   readonly convergenceThreshold: number
+  /**
+   * The idf denominator: the user's whole-history claim count, *not* the count
+   * as of `asOf`. idf only ranks within one question's candidates, so the
+   * denominator being from a later epoch shifts every score by the same
+   * constant factor and changes no order — but the number in the receipt is the
+   * present, and an as-of receipt says so here rather than pretending.
+   */
   readonly totalClaims: number
   readonly query1: string
   readonly query1Params: Record<string, string | number>
@@ -67,6 +82,13 @@ export interface AskResult {
 }
 
 export interface AskOptions {
+  /**
+   * The question's own date, verbatim. The anchor prompt already asks the model
+   * for a `time_ref` and reads better with it — "last month" is not a search
+   * term without one. It is part of the anchors cache key, so threading it
+   * re-asks once per question and then costs nothing.
+   */
+  readonly questionDate?: string
   readonly asOf?: number
   readonly historical?: boolean
   readonly topK?: number
@@ -116,7 +138,7 @@ const make = Effect.gen(function* () {
     options: AskOptions = {}
   ): Effect.Effect<AskResult, HydraError, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
-      const anchors = yield* questionAnchors(question)
+      const anchors = yield* questionAnchors(question, options.questionDate)
       const historical = options.historical ?? anchors.historical
       const topK = options.topK ?? DEFAULT_TOP_K
       const total = yield* totalClaims(uid)
@@ -135,7 +157,10 @@ const make = Effect.gen(function* () {
       }
       const rendered = renderMsPathsQuery(config)
       const paths = yield* hydra.msPaths(config)
-      const reached = scoreReached(paths, total)
+      // The as-of cut comes first, so the verdict, the top-K and the receipt
+      // all describe the memory as it stood at `k` — not as it stands now with
+      // the future filtered out afterwards.
+      const reached = beforeAsOf(scoreReached(paths, total), options.asOf)
 
       // An anchor that reached nothing is indistinguishable from one that does
       // not exist, and for the verdict the difference does not matter: neither
@@ -148,8 +173,8 @@ const make = Effect.gen(function* () {
         uid,
         asOf: options.asOf ?? null,
         anchorTerms: anchors.terms,
-        anchorsResolved: [...resolved].sort(),
-        anchorsUnresolved: anchors.terms.filter((stem) => !resolved.has(stem)),
+        anchorsReachingClaims: [...resolved].sort(),
+        anchorsReachingNothing: anchors.terms.filter((stem) => !resolved.has(stem)),
         historical,
         wantsCount: anchors.wantsCount,
         timeRef: anchors.timeRef,

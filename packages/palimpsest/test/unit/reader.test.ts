@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { cutExcerpt } from "../../src/index.js"
+import { cutExcerpt, renderReaderPrompt, type HydratedSpan } from "../../src/index.js"
 
 /**
  * The span window. The reader is only ever shown verbatim turn text, so this
@@ -61,5 +61,56 @@ describe("cutExcerpt", () => {
       expect(cut.highlight.end).toBeLessThanOrEqual(cut.excerpt.length)
       expect(cut.highlight.end).toBeGreaterThanOrEqual(cut.highlight.start)
     }
+  })
+})
+
+/**
+ * The excerpt-order label.
+ *
+ * `orderEvidence` puts CURRENT before SUPERSEDED unless the question is
+ * historical, so the prompt's old "oldest first" was wrong exactly on the
+ * knowledge-update questions — the ones where the reader has to tell the
+ * replaced value from the one that replaced it. A label that misdescribes the
+ * order is worse than no label: it tells the model to trust a sequence that
+ * isn't there.
+ */
+const span = (
+  id: string,
+  sessionOrd: number,
+  status: "CURRENT" | "SUPERSEDED"
+): HydratedSpan => ({
+  ckey: `u|c|${id}`,
+  id,
+  sid: `s${sessionOrd}`,
+  sessionOrd,
+  sessionDate: 20230100 + sessionOrd,
+  tEvent: 0,
+  speaker: "user",
+  status,
+  atSession: status === "SUPERSEDED" ? sessionOrd + 1 : null,
+  excerpt: `excerpt ${id}`,
+  highlight: { start: 0, end: 7 }
+})
+
+describe("renderReaderPrompt", () => {
+  const spans = [span("aaa", 3, "CURRENT"), span("bbb", 1, "SUPERSEDED")]
+  const prompt = renderReaderPrompt("What am I pre-approved for?", "2023/12/18 (Mon) 04:17", spans)
+
+  it("describes the order the excerpts are actually in", () => {
+    expect(prompt).toContain("CURRENT first and then superseded, each group oldest first")
+    // The claim in the label has to hold for the list beneath it.
+    expect(prompt.indexOf("[aaa]")).toBeLessThan(prompt.indexOf("[bbb]"))
+    expect(prompt).not.toContain("EXCERPTS (2), oldest first")
+  })
+
+  it("carries the question date, the count, and each excerpt's status", () => {
+    expect(prompt).toContain("QUESTION DATE: 2023/12/18 (Mon) 04:17")
+    expect(prompt).toContain("EXCERPTS (2)")
+    expect(prompt).toContain("SUPERSEDED by a later statement (at session 2)")
+  })
+
+  it("shows verbatim excerpts and never a claim's text", () => {
+    expect(prompt).toContain("excerpt aaa")
+    expect(prompt).toContain("excerpt bbb")
   })
 })

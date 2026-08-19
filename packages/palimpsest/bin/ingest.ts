@@ -1,7 +1,7 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
-import { Llm, LlmLive, loadDotEnv, usageCostUsd } from "@palimpsest/llm"
+import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { ClaimGraph, Ingest, Supersede, Transcript } from "../src/index.js"
 
@@ -97,7 +97,7 @@ const program = Effect.gen(function* () {
   console.log("")
   console.log(`llm calls  ${usage.calls} live, ${usage.cacheHits} from cache`)
   console.log(`tokens     ${usage.inputTokens} in, ${usage.outputTokens} out`)
-  console.log(`cost       $${usageCostUsd(llm.model, usage).toFixed(4)}`)
+  console.log(`cost       $${(yield* llm.costUsd).toFixed(4)}`)
   console.log(`wall clock ${((Date.now() - started) / 1000).toFixed(1)} s`)
 })
 

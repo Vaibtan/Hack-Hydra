@@ -53,7 +53,7 @@ const program = Effect.gen(function* () {
     points,
     (k) =>
       Effect.gen(function* () {
-        const result = yield* retrieve.ask(uid, question, { asOf: k })
+        const result = yield* retrieve.ask(uid, question, { questionDate, asOf: k })
         if (result.verdict === "ABSENT") {
           return { k, label: `ABSENT (${result.reason})`, evidence: 0, hash: result.hash }
         }

@@ -1,10 +1,10 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
-import { Llm, LlmLive, loadDotEnv, usageCostUsd } from "@palimpsest/llm"
+import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, Ingest, Supersede, Transcript } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
-import { stratifiedSlice } from "../src/index.js"
+import { benchmarkSlice } from "../src/index.js"
 
 /**
  * `ingest-slice --slice 20 [--dataset s] [--users 3] [--prefix g2]`
@@ -44,7 +44,7 @@ const program = Effect.gen(function* () {
   const ingest = yield* Ingest
   const llm = yield* Llm
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
-  const slice = stratifiedSlice(questions, sliceSize)
+  const slice = benchmarkSlice(questions, sliceSize)
 
   console.log(`dataset    ${dataset}`)
   console.log(`slice      ${slice.length} questions, ${slice.reduce((n, q) => n + q.sessions.length, 0)} sessions`)
@@ -89,7 +89,7 @@ const program = Effect.gen(function* () {
   console.log(`contested  ${reports.reduce((n, r) => n + r.stats.contestedSlots, 0)} slots`)
   console.log(`supersede  ${reports.reduce((n, r) => n + r.supersessions.edges, 0)} edges`)
   console.log(`llm calls  ${usage.calls} live, ${usage.cacheHits} from cache`)
-  console.log(`cost       $${usageCostUsd(llm.model, usage).toFixed(4)}`)
+  console.log(`cost       $${(yield* llm.costUsd).toFixed(4)}`)
   console.log(`wall clock ${((Date.now() - started) / 60_000).toFixed(1)} min`)
 })
 

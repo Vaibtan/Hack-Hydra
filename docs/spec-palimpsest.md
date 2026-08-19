@@ -160,6 +160,15 @@ distractor sessions across users are extracted once and only *re-keyed* per user
 5. **As-of filter** (if `k` given): drop claims with `session_ord > k`, ignore edges with
    `at_session > k`. Then label each claim `CURRENT` / `SUPERSEDED_BY <ckey>@<session>`.
    If the question is not `historical`, superseded claims are kept but demoted below current ones.
+
+   > **Erratum (2026-08-19).** Listing as-of as step 5 is wrong: the *claim* half of the filter
+   > belongs before step 3. Applied here, the verdict, the top-K cut and the receipt are all
+   > computed over claims the memory is not supposed to hold yet — so an as-of receipt reports
+   > anchors resolving against future claims and a convergence table of claims that do not exist,
+   > and top-K is spent on them. The implementation filters `session_ord > k` immediately after
+   > Query 1 and keeps this step for the supersession-edge visibility and the Query-2 slot-mates,
+   > which genuinely can only be cut here. The idf denominator remains the whole-history claim
+   > count and the receipt says so: it scales every score by one constant and changes no order.
 6. **Hydrate spans**: batch `UNWIND … MATCH (t:Turn {id: row.id}) RETURN …`; cut span ± 300 chars.
 7. **Order** evidence by `t_event` (unknown last) then `session_ord`.
 8. **Reader** (LLM): question, `question_date`, ordered evidence (verbatim text, session date,

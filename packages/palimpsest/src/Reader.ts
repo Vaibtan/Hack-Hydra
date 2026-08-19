@@ -64,6 +64,28 @@ const Answer = Schema.Struct({
   reasoning: Schema.String
 })
 
+/**
+ * The premise-checking variant. A question can be unanswerable because its
+ * *presupposition* is false rather than because the evidence is thin —
+ * "how many engineers do I lead as Software Engineer Manager?" asked by
+ * someone who never became a manager. Retrieval reaches real claims about
+ * engineers and counts, converges hard, and the reader answers a number. The
+ * count is real; the premise is not.
+ *
+ * Whether making the reader test the premise helps is an empirical question
+ * with a cost — it can only trade abstention recall against false abstention on
+ * answerable questions — so both variants exist and the eval runs the A/B.
+ */
+const PremiseAnswer = Schema.Struct({
+  answer: Schema.String,
+  cited_ids: Schema.Array(Schema.String),
+  reasoning: Schema.String,
+  /** Every presupposition of the question is supported by the excerpts. */
+  premise_supported: Schema.Boolean,
+  /** Which presupposition failed, when one did. */
+  premise_note: Schema.String
+})
+
 export const NOT_IN_MEMORY = "NOT_IN_MEMORY"
 
 const SYSTEM = `You answer a question about one person using only the transcript excerpts given.
@@ -85,7 +107,22 @@ Rules
   restate the question or explain unless the question asks why.
 - cited_ids: the ids of the excerpts you actually used. Cite at least one whenever you answer.`
 
-const renderPrompt = (
+const PREMISE_RULE = `
+- Before answering, check every presupposition of the question against the excerpts — that the
+  person has the thing, holds the role, did the event, made the purchase. A question can name
+  something that never happened and still overlap the excerpts heavily. If a presupposition is
+  contradicted by the excerpts, or simply absent from them, set premise_supported to false, name the
+  failing presupposition in premise_note, and answer exactly ${NOT_IN_MEMORY}.
+- premise_supported: true only when every presupposition holds. premise_note: empty when it does.`
+
+const PREMISE_SYSTEM = SYSTEM + PREMISE_RULE
+
+/**
+ * The reader's prompt. Exported so the excerpt-order label can be tested
+ * against the order `orderEvidence` actually produces — they disagreed, and
+ * exactly on the questions where it mattered.
+ */
+export const renderReaderPrompt = (
   question: string,
   questionDate: string,
   spans: ReadonlyArray<HydratedSpan>
@@ -106,10 +143,22 @@ const renderPrompt = (
     `QUESTION DATE: ${questionDate}`,
     `QUESTION: ${question}`,
     "",
-    `EXCERPTS (${spans.length}), oldest first:`,
+    // `orderEvidence` puts CURRENT before SUPERSEDED unless the question is
+    // historical, so "oldest first" was wrong exactly when supersession
+    // mattered — on the knowledge-update questions. Say what the order is.
+    `EXCERPTS (${spans.length}), CURRENT first and then superseded, each group oldest first:`,
     "",
     body.join("\n\n")
   ].join("\n")
+}
+
+export interface ReadOptions {
+  /**
+   * Make the reader test the question's presuppositions before answering.
+   * Off by default: it is a measured trade, not a strict improvement, and the
+   * numbers for both variants are in `results/table-*.md`.
+   */
+  readonly premiseCheck?: boolean
 }
 
 export interface ReadAnswer {
@@ -119,6 +168,12 @@ export interface ReadAnswer {
   readonly reasoning: string
   readonly spans: ReadonlyArray<HydratedSpan>
   readonly cached: boolean
+  /** Null unless the premise check ran. */
+  readonly premiseSupported: boolean | null
+  readonly premiseNote: string
+  /** What this read cost the provider — the "reader tokens" column of the eval. */
+  readonly inputTokens: number
+  readonly outputTokens: number
 }
 
 const make = Effect.gen(function* () {
@@ -214,13 +269,22 @@ const make = Effect.gen(function* () {
       })
     })
 
-  const read = (
+  /**
+   * Reads an answer out of spans that are already in hand.
+   *
+   * Split from `read` because the baselines need it: BM25 and full-context are
+   * only meaningful as comparisons if they face the *same reader prompt* and
+   * differ solely in what got selected. Anything that can produce a
+   * `HydratedSpan` — the graph, a BM25 ranking over turns, or a whole haystack
+   * — can be read the same way.
+   */
+  const readSpans = (
     question: string,
     questionDate: string,
-    evidence: ReadonlyArray<AsOfLabelled>
-  ): Effect.Effect<ReadAnswer, HydraError, LanguageModel.LanguageModel | Llm> =>
+    spans: ReadonlyArray<HydratedSpan>,
+    options: ReadOptions = {}
+  ): Effect.Effect<ReadAnswer, never, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
-      const spans = yield* hydrate(evidence)
       if (spans.length === 0) {
         return {
           answer: NOT_IN_MEMORY,
@@ -228,7 +292,44 @@ const make = Effect.gen(function* () {
           citedIds: [],
           reasoning: "no evidence to read",
           spans,
-          cached: true
+          cached: true,
+          premiseSupported: null,
+          premiseNote: "",
+          inputTokens: 0,
+          outputTokens: 0
+        }
+      }
+
+      const prompt = renderReaderPrompt(question, questionDate, spans)
+
+      if (options.premiseCheck === true) {
+        const generated = yield* llm
+          .generateObject({
+            kind: "read",
+            system: PREMISE_SYSTEM,
+            prompt,
+            schema: PremiseAnswer,
+            objectName: "answer"
+          })
+          .pipe(Effect.orDie)
+        const answer = generated.value.answer.trim()
+        return {
+          answer,
+          // A failed premise *is* a refusal, whatever the answer field says —
+          // the two disagree often enough that trusting only the string would
+          // undercount the thing being measured.
+          notInMemory:
+            answer === NOT_IN_MEMORY ||
+            answer.startsWith(NOT_IN_MEMORY) ||
+            !generated.value.premise_supported,
+          citedIds: generated.value.cited_ids,
+          reasoning: generated.value.reasoning,
+          spans,
+          cached: generated.cached,
+          premiseSupported: generated.value.premise_supported,
+          premiseNote: generated.value.premise_note,
+          inputTokens: generated.inputTokens,
+          outputTokens: generated.outputTokens
         }
       }
 
@@ -236,7 +337,7 @@ const make = Effect.gen(function* () {
         .generateObject({
           kind: "read",
           system: SYSTEM,
-          prompt: renderPrompt(question, questionDate, spans),
+          prompt,
           schema: Answer,
           objectName: "answer"
         })
@@ -249,11 +350,26 @@ const make = Effect.gen(function* () {
         citedIds: generated.value.cited_ids,
         reasoning: generated.value.reasoning,
         spans,
-        cached: generated.cached
+        cached: generated.cached,
+        premiseSupported: null,
+        premiseNote: "",
+        inputTokens: generated.inputTokens,
+        outputTokens: generated.outputTokens
       }
     })
 
-  return { hydrate, read } as const
+  const read = (
+    question: string,
+    questionDate: string,
+    evidence: ReadonlyArray<AsOfLabelled>,
+    options: ReadOptions = {}
+  ): Effect.Effect<ReadAnswer, HydraError, LanguageModel.LanguageModel | Llm> =>
+    Effect.gen(function* () {
+      const spans = yield* hydrate(evidence)
+      return yield* readSpans(question, questionDate, spans, options)
+    })
+
+  return { hydrate, read, readSpans } as const
 })
 
 export class Reader extends Effect.Service<Reader>()("palimpsest/Reader", { effect: make }) {}

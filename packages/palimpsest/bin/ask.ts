@@ -41,6 +41,7 @@ const program = Effect.gen(function* () {
   const reader = yield* Reader
   const started = Date.now()
   const result = yield* retrieve.ask(uid, question, {
+    questionDate,
     maxLen,
     ...(asOfRaw === "" ? {} : { asOf: Number(asOfRaw) })
   })
@@ -76,9 +77,9 @@ const program = Effect.gen(function* () {
   console.log(`  threshold    convergence >= ${r.convergenceThreshold}`)
   console.log(`  claims       ${r.totalClaims} in this user's graph`)
   console.log(`  historical   ${r.historical}   wants_count ${r.wantsCount}   time_ref ${r.timeRef ?? "-"}`)
-  console.log(`  anchors      ${r.anchorTerms.length} asked, ${r.anchorsResolved.length} reached a claim`)
-  console.log(`    resolved   ${r.anchorsResolved.join(" ")}`)
-  console.log(`    unresolved ${r.anchorsUnresolved.join(" ") || "-"}`)
+  console.log(`  anchors      ${r.anchorTerms.length} asked, ${r.anchorsReachingClaims.length} reached a claim`)
+  console.log(`    reached    ${r.anchorsReachingClaims.join(" ")}`)
+  console.log(`    unreached  ${r.anchorsReachingNothing.join(" ") || "-"}`)
   console.log(`  query 1      ${r.query1Paths} paths`)
   if (full) {
     console.log(`    ${r.query1}`)

@@ -22,7 +22,7 @@ import { HydraClient, vertexId } from "../../src/index.js"
  * This probe pins the fact so it cannot quietly stop being true.
  */
 const UID = "probe-byid"
-const ROWS = 20_000
+const ROWS = 50_000
 
 const layer = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
@@ -54,33 +54,47 @@ const timed = async <A>(effect: Effect.Effect<A, unknown, HydraClient>): Promise
 
 describe("id-keyed reads versus label scans", () => {
   it("resolves one vertex by id an order of magnitude faster than by property", async () => {
-    const [byId, byIdMs] = await timed(
-      Effect.gen(function* () {
-        const hydra = yield* HydraClient
-        return yield* hydra.getById("ProbeScan", target, ["skey", "n"])
-      })
-    )
+    const byId = Effect.gen(function* () {
+      const hydra = yield* HydraClient
+      return yield* hydra.getById("ProbeScan", target, ["skey", "n"])
+    })
+    const byProperty = Effect.gen(function* () {
+      const hydra = yield* HydraClient
+      return yield* hydra.query(
+        "MATCH (n:ProbeScan) WHERE n.skey = $skey RETURN n.skey AS skey, n.n AS n",
+        { skey: target }
+      )
+    })
 
-    const [byProperty, scanMs] = await timed(
-      Effect.gen(function* () {
-        const hydra = yield* HydraClient
-        return yield* hydra.query(
-          "MATCH (n:ProbeScan) WHERE n.skey = $skey RETURN n.skey AS skey, n.n AS n",
-          { skey: target }
-        )
-      })
-    )
+    // Interleaved, best of three, after a warm-up on both sides: a first touch
+    // pays HydraDB's page cache, and the live suite is noisy enough that
+    // measuring one path and then the other would compare different weather.
+    // The gap this is about survives being warm — that is the point of it.
+    await run(byId)
+    await run(byProperty)
+    let bestById = Number.POSITIVE_INFINITY
+    let bestScan = Number.POSITIVE_INFINITY
+    let idResult = await run(byId)
+    let scanResult = await run(byProperty)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const [id, idMs] = await timed(byId)
+      const [scan, scanMs] = await timed(byProperty)
+      idResult = id
+      scanResult = scan
+      bestById = Math.min(bestById, idMs)
+      bestScan = Math.min(bestScan, scanMs)
+    }
 
     // Same vertex, same properties — only the access path differs.
-    expect(byId._tag).toBe("Some")
-    expect(byId._tag === "Some" ? Number(byId.value["n"]) : -1).toBe(ROWS - 1)
-    expect(byProperty.rows).toHaveLength(1)
+    expect(idResult._tag).toBe("Some")
+    expect(idResult._tag === "Some" ? Number(idResult.value["n"]) : -1).toBe(ROWS - 1)
+    expect(scanResult.rows).toHaveLength(1)
 
     console.log(
-      `      by id ${byIdMs} ms · label scan over ${ROWS} vertices ${scanMs} ms · ` +
-        `${(scanMs / Math.max(1, byIdMs)).toFixed(1)}x`
+      `      by id ${bestById} ms · label scan over ${ROWS} vertices ${bestScan} ms · ` +
+        `${(bestScan / Math.max(1, bestById)).toFixed(1)}x`
     )
-    expect(scanMs).toBeGreaterThan(byIdMs * 10)
+    expect(bestScan).toBeGreaterThan(bestById * 10)
   })
 
   it("costs the same by id whether the vertex is the first or the last written", async () => {

@@ -23,7 +23,7 @@ export interface QuestionRetrieval {
   readonly sessionHit: boolean
   readonly evidence: number
   readonly anchorsAsked: number
-  readonly anchorsResolved: number
+  readonly anchorsReachingClaims: number
   readonly topConvergence: number
   readonly latencyMs: number
 }
@@ -46,7 +46,7 @@ export const scoreQuestion = (
     sessionHit: answerSessions.some((sid) => evidenceSessions.includes(sid)),
     evidence: result.evidence.length,
     anchorsAsked: result.receipt.anchorTerms.length,
-    anchorsResolved: result.receipt.anchorsResolved.length,
+    anchorsReachingClaims: result.receipt.anchorsReachingClaims.length,
     topConvergence: result.receipt.convergence[0]?.convergence ?? 0,
     latencyMs
   }

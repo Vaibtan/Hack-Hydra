@@ -111,10 +111,59 @@ const DELETE_ROWS_PER_CHUNK = 40
 
 /**
  * Reads are paged at 1024 rows. This bounds how many pages one statement may
- * pull before we assume something is wrong — 200 pages is 200k rows, far past
- * the engine's own 100k result-vertex cap.
+ * pull before we assume something is wrong — 200 pages is 204 800 rows, far
+ * past the engine's own 100 k result-vertex cap.
+ *
+ * Hitting it is an **error**, not a stopping point. Returning the rows gathered
+ * so far would be the 1024-row wall all over again, one order of magnitude up:
+ * a truncated result that looks exactly like a complete one.
  */
-const MAX_RESULT_PAGES = 200
+export const MAX_RESULT_PAGES = 200
+
+/** One response's worth of a paged read. */
+export interface Page {
+  readonly rows: ReadonlyArray<Row>
+  readonly nextCursor: string | number | null
+  readonly queryId: string | null
+}
+
+/**
+ * Follows a read's cursor to exhaustion.
+ *
+ * Split out from `send` so the page cap has a test that does not need a live
+ * node — the failure it guards against is one nobody would notice in
+ * production, because the wrong answer is well-formed.
+ */
+export const followCursor = <E>(
+  first: Page,
+  nextPage: (cursor: string | number, queryId: string | null) => Effect.Effect<Page, E>,
+  query: string
+): Effect.Effect<ReadonlyArray<Row>, E | HydraLimitError> =>
+  Effect.gen(function* () {
+    const rows = [...first.rows]
+    let cursor = first.nextCursor
+    let queryId = first.queryId
+
+    for (let page = 1; cursor !== null && cursor !== ""; page++) {
+      if (page > MAX_RESULT_PAGES) {
+        return yield* new HydraLimitError({
+          reason:
+            `result exceeded ${MAX_RESULT_PAGES} pages (${rows.length} rows) and the cursor is ` +
+            `still open — refusing to return a silently truncated result`,
+          status: 413,
+          query
+        })
+      }
+      const next = yield* nextPage(cursor, queryId)
+      // An empty page with no further cursor is how a read ends on a boundary.
+      if (next.rows.length === 0) break
+      rows.push(...next.rows)
+      cursor = next.nextCursor
+      queryId = next.queryId ?? queryId
+    }
+
+    return rows
+  })
 
 /**
  * The engine answers an oversize string property with a 500 and no reason, so
@@ -244,17 +293,18 @@ const make = Effect.gen(function* () {
       const first = yield* post(body, query)
       if (first.bookmark !== null) yield* Ref.set(bookmarkRef, Option.some(first.bookmark))
 
-      const rows = [...first.rows]
-      let cursor = (first as { nextCursor?: string | number | null }).nextCursor ?? null
-      let queryId = first.queryId
+      const asPage = (result: QueryResult & { readonly queryId: string | null }): Page => ({
+        rows: result.rows,
+        nextCursor: (result as { nextCursor?: string | number | null }).nextCursor ?? null,
+        queryId: result.queryId
+      })
 
-      for (let page = 1; cursor !== null && cursor !== "" && page <= MAX_RESULT_PAGES; page++) {
-        const next = yield* post({ ...body, cursor, query_id: queryId }, query)
-        if (next.rows.length === 0) break
-        rows.push(...next.rows)
-        cursor = (next as { nextCursor?: string | number | null }).nextCursor ?? null
-        queryId = next.queryId ?? queryId
-      }
+      const rows = yield* followCursor(
+        asPage(first),
+        (cursor, queryId) =>
+          post({ ...body, cursor, query_id: queryId }, query).pipe(Effect.map(asPage)),
+        query
+      )
 
       return { columns: first.columns, rows, bookmark: first.bookmark, readEpoch: first.readEpoch }
     })

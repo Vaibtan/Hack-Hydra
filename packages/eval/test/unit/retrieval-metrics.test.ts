@@ -29,7 +29,7 @@ const result = (
     verdict,
     reason,
     evidence: sids.map((sid) => ({ sid, ckey: `c-${sid}` })),
-    receipt: { anchorTerms: ["a", "b"], anchorsResolved: ["a"], convergence: [{ convergence: 3 }] },
+    receipt: { anchorTerms: ["a", "b"], anchorsReachingClaims: ["a"], convergence: [{ convergence: 3 }] },
     hash: "",
     anchors: {}
   }) as unknown as AskResult
@@ -68,7 +68,7 @@ const scored = (
   sessionHit,
   evidence: sessionHit ? 3 : 0,
   anchorsAsked: 5,
-  anchorsResolved: 3,
+  anchorsReachingClaims: 3,
   topConvergence: 2,
   latencyMs: 1000
 })

@@ -1,9 +1,9 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraClient, type HydraPath } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { Supersede, type SlotClaim } from "../../src/index.js"
+import { Supersede, foldSupersessionEdges, type SlotClaim } from "../../src/index.js"
 
 /**
  * The supersession pass with the model stubbed, so the *structural* rules are
@@ -119,5 +119,50 @@ describe("Supersede.detect", () => {
     // No uid anywhere, so an identical slot history is one cache entry for
     // every user that has it.
     expect(prompt).not.toContain("|c|")
+  })
+})
+
+describe("foldSupersessionEdges", () => {
+  /**
+   * `SUPERSEDED_BY` paths as HydraDB returns them: one relationship, older
+   * first.
+   */
+  const edge = (older: string, newer: string, atSession: number): HydraPath => ({
+    nodes: [
+      { id: 1, labels: ["Claim"], properties: { ckey: older } },
+      { id: 2, labels: ["Claim"], properties: { ckey: newer } }
+    ],
+    relationships: [
+      { id: 3, type: "SUPERSEDED_BY", src: 1, dst: 2, properties: { at_session: atSession } }
+    ]
+  })
+
+  it("labels a claim with what replaced it", () => {
+    const folded = foldSupersessionEdges([edge("c1", "c2", 7)])
+    expect(folded.get("c1")).toEqual({ newer: "c2", atSession: 7 })
+  })
+
+  it("keeps the earliest replacement when one claim has two outgoing edges", () => {
+    // The prompt asks for a chain, never a fan-out, but nothing structural
+    // forbids the model returning 1->2 and 1->3. The earliest edge is the one
+    // that made the claim stale.
+    const forward = foldSupersessionEdges([edge("c1", "c3", 30), edge("c1", "c2", 7)])
+    const reversed = foldSupersessionEdges([edge("c1", "c2", 7), edge("c1", "c3", 30)])
+    expect(forward.get("c1")).toEqual({ newer: "c2", atSession: 7 })
+    // The whole point: the answer cannot depend on the order paths arrived in,
+    // or the determinism hash would depend on it too.
+    expect(reversed).toEqual(forward)
+  })
+
+  it("breaks a same-session tie by claim key rather than by path order", () => {
+    const forward = foldSupersessionEdges([edge("c1", "cb", 7), edge("c1", "ca", 7)])
+    const reversed = foldSupersessionEdges([edge("c1", "ca", 7), edge("c1", "cb", 7)])
+    expect(forward.get("c1")?.newer).toBe("ca")
+    expect(reversed).toEqual(forward)
+  })
+
+  it("ignores an edge written after the as-of session", () => {
+    expect(foldSupersessionEdges([edge("c1", "c2", 37)], 4).size).toBe(0)
+    expect(foldSupersessionEdges([edge("c1", "c2", 3)], 4).get("c1")?.newer).toBe("c2")
   })
 })

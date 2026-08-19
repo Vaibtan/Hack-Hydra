@@ -109,6 +109,28 @@ export const scoreReached = (
   }))
 }
 
+/**
+ * The as-of cut, applied to the reached claims **before** the verdict.
+ *
+ * The spec (§3.4) lists as-of as step 5, after the structural verdict and the
+ * top-K cut, and that is wrong — see the erratum in the spec. A receipt
+ * computed over claims the memory is not supposed to have yet is a receipt that
+ * lies at every scrubber position but the last: it reports anchors resolving
+ * against future claims, a convergence table of claims that do not exist, and
+ * an A1/A2 decision taken on evidence the answer may not use. Worse, top-K is
+ * consumed by future claims, so recall degrades for early `k` for no reason
+ * anyone could see.
+ *
+ * The later `applyAsOf` still runs, because it does the other half: supersession
+ * edges written after `k` are invisible, and the slot-mates pulled in by Query 2
+ * have to be cut too.
+ */
+export const beforeAsOf = <A extends { readonly sessionOrd: number }>(
+  claims: ReadonlyArray<A>,
+  asOf?: number
+): ReadonlyArray<A> =>
+  asOf === undefined ? claims : claims.filter((claim) => claim.sessionOrd <= asOf)
+
 export type AbstentionReason = "A1_no_anchors" | "A2_no_convergence"
 
 export interface Verdict {

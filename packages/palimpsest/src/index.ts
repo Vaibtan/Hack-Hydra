@@ -45,11 +45,12 @@ export { ClaimGraph, claimDigest } from "./ClaimGraph.js"
 export type { SessionWrite, WrittenClaim } from "./ClaimGraph.js"
 export { Ingest } from "./Ingest.js"
 export type { IngestReport, SessionProgress } from "./Ingest.js"
-export { Supersede } from "./Supersede.js"
+export { Supersede, foldSupersessionEdges } from "./Supersede.js"
 export type { ChainClaim, SlotClaim, SupersedeReport, SupersessionEdge } from "./Supersede.js"
 export {
   DEFAULT_TOP_K,
   applyAsOf,
+  beforeAsOf,
   convergenceThreshold,
   decide,
   idf,
@@ -62,5 +63,5 @@ export { questionAnchors } from "./Anchors.js"
 export type { QuestionAnchors } from "./Anchors.js"
 export { MAX_SLOT_EXPANSION, Retrieve, determinismHash } from "./Retrieve.js"
 export type { AskOptions, AskResult, Receipt } from "./Retrieve.js"
-export { NOT_IN_MEMORY, Reader, SPAN_CONTEXT, cutExcerpt } from "./Reader.js"
-export type { HydratedSpan, ReadAnswer } from "./Reader.js"
+export { NOT_IN_MEMORY, Reader, SPAN_CONTEXT, cutExcerpt, renderReaderPrompt } from "./Reader.js"
+export type { HydratedSpan, ReadAnswer, ReadOptions } from "./Reader.js"
