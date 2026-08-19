@@ -2,7 +2,7 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv, usageCostUsd } from "@palimpsest/llm"
-import { Retrieve, Supersede } from "@palimpsest/palimpsest"
+import { ClaimGraph, Retrieve, Supersede } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
 import { gateByType, gateReport, scoreQuestion, stratifiedSlice } from "../src/index.js"
 
@@ -37,6 +37,7 @@ const pct = (value: number | null): string =>
 
 const AppLive = Retrieve.Default.pipe(
   Layer.provideMerge(Supersede.Default),
+  Layer.provideMerge(ClaimGraph.Default),
   Layer.provideMerge(HydraClient.Default),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
@@ -44,9 +45,29 @@ const AppLive = Retrieve.Default.pipe(
 
 const program = Effect.gen(function* () {
   const retrieve = yield* Retrieve
+  const claimGraph = yield* ClaimGraph
   const llm = yield* Llm
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const slice = stratifiedSlice(questions, sliceSize)
+
+  // A user with no claims would score as A1_no_anchors and be counted as a
+  // false abstention — a missing ingest quietly reported as a retrieval
+  // failure. Refuse to measure rather than publish a wrong number.
+  const missing = yield* Effect.forEach(
+    slice,
+    (question) =>
+      claimGraph
+        .stats(uidFor(question.questionId))
+        .pipe(Effect.map((stats) => (stats.claims === 0 ? question.questionId : null))),
+    { concurrency: 4 }
+  )
+  const notIngested = missing.filter((id) => id !== null)
+  if (notIngested.length > 0) {
+    console.error(`${notIngested.length} of ${slice.length} users have no claims in the graph:`)
+    console.error(`  ${notIngested.join(", ")}`)
+    console.error(`Run: pnpm ingest-slice --slice ${sliceSize} --dataset ${dataset} --prefix ${prefix}`)
+    return yield* Effect.sync(() => process.exit(2))
+  }
 
   console.log(`dataset      ${dataset}`)
   console.log(`slice        ${slice.length} questions   prefix ${prefix || "(none)"}`)
