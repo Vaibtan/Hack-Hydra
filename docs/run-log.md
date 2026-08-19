@@ -92,3 +92,24 @@ pnpm eval --slice 100 --system all --prefix g2 --concurrency 4 --skip-missing
 **$1.02**, four systems × 60 questions (18 abstention, 42 answerable), judged by `gpt-4o`. The
 40 un-indexed users are excluded rather than counted as retrieval failures, and every file says so.
 Re-runs are $0.00.
+
+## Session total, 2026-08-19
+
+Priced from the cache itself (`inputTokens`/`outputTokens` on every entry, at $0.20/$1.20 per M for
+`gpt-5.6-luna` and $2.50/$10.00 for `gpt-4o`):
+
+| model | calls | input | output | cost |
+|---|---:|---:|---:|---:|
+| `gpt-5.6-luna` | 8 183 | 23 713 835 | 21 378 005 | $30.40 |
+| `gpt-4o` (judge) | 135 | 22 143 | 330 | $0.06 |
+| **cache total** | **8 318** | | | **$30.46** |
+
+The overnight session before this one accounted for $10.65 of that, so **this session spent about
+$19.81** — roughly $18 of it the 60-user ingest, ~$1.02 the four-system eval, and the rest reader
+and anchor calls during development.
+
+By kind: 4 384 `supersede`, 3 428 `extract`, 283 `read`, 135 `judge`, 88 `anchors`.
+
+**Deleting `.cache/llm` costs $30.46 to rebuild.** Every measurement in the repository replays from
+it for $0.00.
+
