@@ -70,11 +70,20 @@ const workspaceRoot = (): string => {
 const outDir = resolve(workspaceRoot(), arg("out", "results"))
 const judgeModel = arg("judge", JUDGE_MODEL)
 /**
- * B2's context budget in characters (~4 chars per token). A LongMemEval_S
- * haystack is ~115 k tokens; this is the documented truncation policy and the
- * results row records how many sessions it dropped.
+ * B2's context budget in characters (~4 chars per token).
+ *
+ * The largest LongMemEval_S haystack is 513 954 characters — about 128 k tokens
+ * — so 520 000 lets **every** haystack through whole and B2 is never truncated.
+ * That is deliberate: the point of the full-context baseline is to be the
+ * strongest possible "just send everything", and a truncated version of it
+ * would be a straw man. `gpt-5.6-luna` accepts it.
+ *
+ * The truncation policy still exists for a model with a smaller window: the
+ * **oldest** sessions are dropped, and every results row records how many.
+ * Dropping the newest would flatter this baseline on exactly the
+ * knowledge-update questions it should find hard.
  */
-const fullCtxChars = Number(arg("fullctx-chars", process.env["PALIMPSEST_FULLCTX_CHARS"] ?? "480000"))
+const fullCtxChars = Number(arg("fullctx-chars", process.env["PALIMPSEST_FULLCTX_CHARS"] ?? "520000"))
 
 const ALL_SYSTEMS: ReadonlyArray<SystemName> = [
   "palimpsest",
