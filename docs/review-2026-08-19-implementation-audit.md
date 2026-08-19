@@ -239,4 +239,4 @@ The `supersede`, `anchors` and `read` cache kinds are cheap (cents) and may be c
    and record the new latency. Nothing else is safe to scale before this.
 2. §2.2, §2.3, §2.5 — small, test-covered.
 3. #8 harness per §3.1, with §2.4 as an A/B inside it. 100-slice run. Table committed.
-4. #10 per §3.2, #11, #12, #13 in ticket order.
+4. #10 per §3.2, #11, #12, #13 in ticket order. The full 500-question run for all three systems is decided (2026-08-19) — budget ~$60–80, ceiling $150; not optional.
