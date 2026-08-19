@@ -360,10 +360,6 @@ const make = Effect.gen(function* () {
       const sessions = yield* count("Session")
       const turns = yield* count("Turn")
 
-      const superseded = yield* hydra.query(
-        "MATCH (a:Claim)-[r:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid RETURN count(*) AS c",
-        { uid }
-      )
       // `n_claims` is denormalised onto the Slot at write time; the equivalent
       // `MATCH (c:Claim)-[:FILLS]->(s:Slot) … count(*)` join exceeds the
       // engine's 30 s cap once several users share the graph.
@@ -372,6 +368,49 @@ const make = Effect.gen(function* () {
         { uid }
       )
 
+      // Supersession edges are counted by walking out of the contested slots'
+      // claims, not with `MATCH (a:Claim)-[:SUPERSEDED_BY]->(b:Claim) WHERE
+      // a.uid = $uid`, which is a store-wide join and measured **24.7 s** on a
+      // graph holding a handful of users — over the cap before it is useful.
+      // Every supersession edge is inside a slot with ≥ 2 claims by
+      // construction, so this walk is exhaustive.
+      const contestedSlots = yield* hydra.query(
+        "MATCH (s:Slot) WHERE s.uid = $uid AND s.n_claims >= 2 RETURN s.skey AS skey",
+        { uid }
+      )
+      const slotClaims = yield* hydra.msPaths({
+        sourceLabel: "Slot",
+        sourceProperty: "skey",
+        sourceValues: contestedSlots.rows.map((row) => String(row["skey"])),
+        targetLabel: "Claim",
+        targetProperty: "kind",
+        targetValues: [claimKind(uid)],
+        relTypes: ["FILLS"],
+        relDirection: "incoming",
+        maxLen: 1
+      })
+      const ckeys = [
+        ...new Set(
+          slotClaims
+            .map((path) => String(path.nodes[path.nodes.length - 1]?.properties["ckey"] ?? ""))
+            .filter((ckey) => ckey !== "")
+        )
+      ]
+      const supersessionPaths =
+        ckeys.length === 0
+          ? []
+          : yield* hydra.msPaths({
+              sourceLabel: "Claim",
+              sourceProperty: "ckey",
+              sourceValues: ckeys,
+              targetLabel: "Claim",
+              targetProperty: "kind",
+              targetValues: [claimKind(uid)],
+              relTypes: ["SUPERSEDED_BY"],
+              relDirection: "outgoing",
+              maxLen: 1
+            })
+
       return {
         claims,
         entities,
@@ -379,7 +418,7 @@ const make = Effect.gen(function* () {
         tokens,
         sessions,
         turns,
-        supersessions: Number(superseded.rows[0]?.["c"] ?? 0),
+        supersessions: supersessionPaths.filter((path) => path.relationships.length === 1).length,
         contestedSlots: Number(contested.rows[0]?.["c"] ?? 0)
       }
     })

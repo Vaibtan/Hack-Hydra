@@ -1,3 +1,5 @@
 export { byType, questionRecall, summarise } from "./ExtractionRecall.js"
 export type { QuestionRecall, RecallSummary, TurnCoverage } from "./ExtractionRecall.js"
 export { stratifiedSlice } from "./Slice.js"
+export { gateByType, gateReport, scoreQuestion } from "./RetrievalMetrics.js"
+export type { GateReport, QuestionRetrieval } from "./RetrievalMetrics.js"

@@ -9,7 +9,9 @@
   "scripts": {
     "extract": "tsx bin/extract.ts",
     "drops": "tsx bin/drops.ts",
-    "canon-drift": "tsx bin/canon-drift.ts"
+    "canon-drift": "tsx bin/canon-drift.ts",
+    "ingest-slice": "tsx bin/ingest-slice.ts",
+    "retrieval-metrics": "tsx bin/retrieval-metrics.ts"
   },
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",

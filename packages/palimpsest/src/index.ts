@@ -47,3 +47,7 @@ export {
   scoreReached
 } from "./Scoring.js"
 export type { AbstentionReason, AsOfLabelled, ReachedClaim, Verdict } from "./Scoring.js"
+export { questionAnchors } from "./Anchors.js"
+export type { QuestionAnchors } from "./Anchors.js"
+export { Retrieve, determinismHash } from "./Retrieve.js"
+export type { AskOptions, AskResult, Receipt } from "./Retrieve.js"

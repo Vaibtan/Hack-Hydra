@@ -19,7 +19,10 @@
     "extract": "pnpm --filter @palimpsest/eval run extract",
     "ingest": "pnpm --filter @palimpsest/palimpsest run ingest",
     "stats": "pnpm --filter @palimpsest/palimpsest run stats",
-    "slots": "pnpm --filter @palimpsest/palimpsest run slots"
+    "slots": "pnpm --filter @palimpsest/palimpsest run slots",
+    "ask": "pnpm --filter @palimpsest/palimpsest run ask",
+    "ingest-slice": "pnpm --filter @palimpsest/eval run ingest-slice",
+    "retrieval-metrics": "pnpm --filter @palimpsest/eval run retrieval-metrics"
   },
   "devDependencies": {
     "@effect/vitest": "0.30.0",

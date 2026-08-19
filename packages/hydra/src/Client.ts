@@ -86,16 +86,30 @@ const chunkRows = <T>(rows: ReadonlyArray<T>, maxRows: number): Array<Array<T>> 
 }
 
 /**
- * Upserts are cheap. Deletes are not: measured against HydraDB 0.1.0,
- * `DETACH DELETE` retires roughly **2.3 vertices per second** and the rate is
- * flat in vertex degree (5 -> 2.3 s, 20 -> 10 s, 50 -> 21.6 s), so the 30 s
- * runtime cap allows about 65 vertices per statement. Deleting a whole
- * benchmark user is therefore an hours-long operation and is not something to
- * build on — every write in this codebase is content-addressed and idempotent
- * precisely so that re-ingest never needs a reset.
+ * Admission control rejects an `UNWIND` batch of more than 1 024 rows outright:
+ * `client_query_batch_items rejected by admission control: actual 2000 exceeds
+ * limit 1024`. Writes themselves are fast at this size — 500 vertex upserts in
+ * ~55 ms and 1 000 edge upserts in ~40 ms, even on a graph holding a million
+ * edges — so the admission cap, not throughput, is what sets this number.
  */
 const MERGE_ROWS_PER_CHUNK = 1_000
+
+/**
+ * Deletes are a different animal: `DETACH DELETE` retires roughly **2.3
+ * vertices per second**, flat in vertex degree (5 -> 2.3 s, 20 -> 10 s,
+ * 50 -> 21.6 s) and slower still for large vertices, so the 30 s runtime cap
+ * allows about 65 per statement. Deleting a whole benchmark user is an
+ * hours-long operation and is not something to build on — every write here is
+ * content-addressed and idempotent precisely so re-ingest never needs a reset.
+ */
 const DELETE_ROWS_PER_CHUNK = 40
+
+/**
+ * Reads are paged at 1024 rows. This bounds how many pages one statement may
+ * pull before we assume something is wrong — 200 pages is 200k rows, far past
+ * the engine's own 100k result-vertex cap.
+ */
+const MAX_RESULT_PAGES = 200
 
 /**
  * The engine answers an oversize string property with a 500 and no reason, so
@@ -151,18 +165,14 @@ const make = Effect.gen(function* () {
    * forms built in this module — the reserved `rows` list of maps that the
    * client transport accepts.
    */
-  const send = (
-    query: string,
-    parameters: Record<string, unknown>,
-    options?: QueryOptions
-  ): Effect.Effect<QueryResult, HydraParseError | HydraLimitError | HydraUnavailable> =>
+  const post = (
+    body: Record<string, unknown>,
+    query: string
+  ): Effect.Effect<
+    QueryResult & { readonly queryId: string | null },
+    HydraParseError | HydraLimitError | HydraUnavailable
+  > =>
     Effect.gen(function* () {
-      const stored = yield* Ref.get(bookmarkRef)
-      const bookmark = options?.fresh === true ? undefined : (options?.bookmark ?? Option.getOrUndefined(stored))
-      const body: Record<string, unknown> = { cell_id: cellId, query }
-      if (Object.keys(parameters).length > 0) body["parameters"] = parameters
-      if (bookmark !== undefined) body["bookmark"] = bookmark
-
       const payload = JSON.stringify(body)
       if (Buffer.byteLength(payload, "utf8") > MAX_BODY_BYTES) {
         return yield* new HydraLimitError({
@@ -192,11 +202,56 @@ const make = Effect.gen(function* () {
         return yield* errorFromBody(response.status, json, query)
       }
 
-      const result = decodeResponse(json as Parameters<typeof decodeResponse>[0])
-      if (result.bookmark !== null) {
-        yield* Ref.set(bookmarkRef, Option.some(result.bookmark))
+      const raw = json as Parameters<typeof decodeResponse>[0] & {
+        query_id?: string
+        next_cursor?: string | number | null
       }
-      return result
+      return {
+        ...decodeResponse(raw),
+        queryId: raw.query_id ?? null,
+        nextCursor: raw.next_cursor ?? null
+      } as QueryResult & { readonly queryId: string | null }
+    })
+
+  /**
+   * One statement, all of its rows.
+   *
+   * HydraDB returns **at most 1024 rows per response** and hands back a
+   * `next_cursor` when there are more — including from `algo.MSpaths`, which
+   * cannot take `SKIP`/`LIMIT` at all. Ignoring that cursor does not fail, it
+   * silently truncates, which is the worst possible failure mode for a
+   * retrieval system: recall quietly capped with no error anywhere. So every
+   * read follows the cursor to exhaustion. Continuing requires **both** the
+   * cursor and the originating `query_id`; the cursor alone returns no rows.
+   */
+  const send = (
+    query: string,
+    parameters: Record<string, unknown>,
+    options?: QueryOptions
+  ): Effect.Effect<QueryResult, HydraParseError | HydraLimitError | HydraUnavailable> =>
+    Effect.gen(function* () {
+      const stored = yield* Ref.get(bookmarkRef)
+      const bookmark = options?.fresh === true ? undefined : (options?.bookmark ?? Option.getOrUndefined(stored))
+      const body: Record<string, unknown> = { cell_id: cellId, query }
+      if (Object.keys(parameters).length > 0) body["parameters"] = parameters
+      if (bookmark !== undefined) body["bookmark"] = bookmark
+
+      const first = yield* post(body, query)
+      if (first.bookmark !== null) yield* Ref.set(bookmarkRef, Option.some(first.bookmark))
+
+      const rows = [...first.rows]
+      let cursor = (first as { nextCursor?: string | number | null }).nextCursor ?? null
+      let queryId = first.queryId
+
+      for (let page = 1; cursor !== null && cursor !== "" && page <= MAX_RESULT_PAGES; page++) {
+        const next = yield* post({ ...body, cursor, query_id: queryId }, query)
+        if (next.rows.length === 0) break
+        rows.push(...next.rows)
+        cursor = (next as { nextCursor?: string | number | null }).nextCursor ?? null
+        queryId = next.queryId ?? queryId
+      }
+
+      return { columns: first.columns, rows, bookmark: first.bookmark, readEpoch: first.readEpoch }
     })
 
   const query = (

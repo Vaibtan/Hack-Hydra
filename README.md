@@ -83,6 +83,13 @@ Six operations, and nothing about the Cypher subset leaks past them:
 | `deleteByKeys(keys)` | batched `DETACH DELETE` |
 | `lastBookmark` | the causal floor from the last write, replayed into the next read |
 
+It also hides the **1024-row wall**. HydraDB returns at most 1024 rows per response and hands back a
+`next_cursor` when there are more — including from `algo.MSpaths`, which cannot take `SKIP`/`LIMIT`
+at all. Ignoring that cursor does not fail; it silently truncates, which for a retrieval system means
+recall quietly capped with no error anywhere. Every read here follows the cursor to exhaustion, and
+continuing needs **both** the cursor and the originating `query_id` — the cursor alone answers
+`result cursor does not belong to this query request`.
+
 Vertex ids are content-addressed from the key string: the top 53 bits of `SHA-256(key)`. The spec
 says `xxhash64`; the width is narrower because HydraDB node ids travel as JSON numbers, which cannot
 carry a full u64. Same property (stable id per key), ~5e-5 birthday collision probability at 10^6
