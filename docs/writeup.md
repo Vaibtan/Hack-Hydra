@@ -171,19 +171,56 @@ No widening lever was needed — plain `maxLen 2`, top-K 25. 14.7 of 16.4 anchor
 question; 24.9 evidence claims per question; median latency 0.12 s. A re-run reproduces every
 number for $0.00.
 
-### Answer accuracy — see `results/table-100.md`
+### Answer accuracy — `results/table-60.md`
 
 Ask → reader → the official LongMemEval judge (`gpt-4o`, temperature 0, five templates copied
 verbatim from upstream's `evaluate_qa.py`, upstream's `'yes' in response.lower()` scoring inherited
-quirk and all). Three systems, the same reader prompt and the same judge, differing in exactly one
-thing — how the text handed to the reader was chosen:
+quirk and all). Four systems, the same reader prompt and the same judge, differing in exactly one
+thing — how the text handed to the reader was chosen.
 
-- **Palimpsest** — anchor convergence over the claim graph;
-- **B1, BM25 top-10 turns** — k1 1.5, b 0.75, over the user's turns using the *same* `stems()`
-  tokenizer, so the comparison is about index structure and not tokenisation;
-- **B2, full context** — the whole haystack, dropping the **oldest** sessions when it does not fit
-  and recording how many, because dropping the newest would flatter it on exactly the
-  knowledge-update questions it should find hard.
+**On 60 questions** (18 abstention, 42 answerable). The run was scoped to 100 and the ingest reached
+60 users before the node failed twice (§9); the other 40 are *excluded* rather than counted as
+retrieval failures, and every results file says so.
+
+| system | accuracy | abstention acc | false-abst | SessionRecall@25 | reader tok p50 | latency p50 |
+|---|---:|---:|---:|---:|---:|---:|
+| **Palimpsest** | 79.6 % | 66.7 % | 3.7 % | 98.1 % | **3 658** | 15.2 s |
+| Palimpsest + premise check | 68.5 % | 83.3 % | 18.5 % | 98.1 % | 3 796 | 17.5 s |
+| B1 · BM25 top-10 turns | 75.9 % | 83.3 % | 13.0 % | 94.4 % | 2 787 | 2.6 s |
+| B2 · full context | **83.3 %** | 66.7 % | 3.7 % | 100 % | 111 057 | 3.4 s |
+
+Three things this says, none of which is the thing the pitch originally wanted to say.
+
+**Full context wins on accuracy, at thirty times the reader tokens.** 83.3 % against 79.6 %, for
+111 057 tokens against 3 658. The brief's premise that full-context loses 30–60 % simply does not
+hold for a mid-2026 model with a 128 k window — the spec anticipated this and said the pitch must
+not depend on it, and it does not. The honest claim is *comparable accuracy at a thirtieth of the
+context*, plus the three things sending everything cannot do: an answer you can check against a
+span, a memory you can query as of a past session, and an explicit supersession chain. It is worth
+adding that B2 is not free — 111 k tokens per question is the whole haystack every time, and it
+grows with the history where the graph does not.
+
+**The premise check is a bad trade, and is not adopted.** Audit §2.4 asked for it to be measured
+before adoption rather than assumed: it buys +16.6 pp of abstention accuracy for −11.1 pp of
+accuracy and +14.8 pp of false-abstention, which blows through the 10 % gate. The damage is
+concentrated in `single-session-preference` (accuracy 45.5 % → 27.3 %, false-abstention 9.1 % →
+45.5 %) — asked what someone would enjoy, it reads the question's presuppositions as unmet and
+refuses. It stays available as `--system palimpsest-premise` and reported, not switched on. False
+premises remain unsolved.
+
+**A1 and A2 are zero in every row of every system.** Structural abstention does not fire on a
+populated graph, which is §6's whole point, now measured over 18 abstention questions rather than 2.
+
+Against **BM25** — which is the comparison this design is actually making, since it shares the
+tokenizer, the reader and the judge and differs only in the index — Palimpsest is +3.7 pp accuracy,
+SessionRecall@25 98.1 % against 94.4 %, and false-abstention 3.7 % against 13.0 %. BM25 is
+meaningfully cheaper and much faster, and on this slice it is not far behind; the gap it cannot
+close is that a term index has no notion of supersession, no chronology and no way to be asked what
+was true in March.
+
+A note on latency: Palimpsest's 15.2 s median is dominated by HydraDB's cold page cache — this run
+followed a node restart, and on a warm node the same retrieval measures 0.12 s median (§2.3). The
+reader call is the other few seconds and is common to all four systems.
 
 ## 5. Positioning
 
@@ -228,8 +265,10 @@ Claim is reached by enough anchors (`A2`) — backed by the exact query and its 
 a good story and it is **not what the measurement shows** on a populated graph.
 
 With ~2 000 claims per user and ~15 resolved anchors, *something always converges*. On the day-3
-slice, `A1`/`A2` fired on **neither** of the two `_abs` questions. The structural verdict does not
-carry abstention when the graph is well populated.
+slice, `A1`/`A2` fired on **neither** of the two `_abs` questions — and over **18** abstention
+questions and four systems in `results/table-60.md`, the A1 and A2 columns are **zero in every
+single row**. The structural verdict does not carry abstention when the graph is well populated,
+and that is now measured rather than suspected.
 
 What the structure actually delivers is **proof of what was searched** — the exact query, the
 resolved and unresolved anchors, the path counts, the convergence table. That is a real and
@@ -251,9 +290,16 @@ asked by a senior engineer who never became a manager. Retrieval converges hard 
 engineers and counts, and the reader answers a number. The count is real; the premise is not.
 
 The cheapest plausible fix is to make the reader test the question's presuppositions before
-answering. It is implemented as an A/B (`--system palimpsest-premise`) rather than adopted, because
-it can only trade abstention recall against false abstention on answerable questions, and that trade
-has to be measured before it is taken. Both variants are in `results/table-100.md`.
+answering. It was implemented as an A/B (`--system palimpsest-premise`) rather than adopted, because
+it can only trade abstention recall against false abstention, and that trade had to be measured
+before it was taken. **Measured, it is a bad trade and is not adopted**: +16.6 pp abstention
+accuracy for −11.1 pp accuracy and +14.8 pp false-abstention, well past the 10 % gate. The damage is
+concentrated in `single-session-preference`, where asking what someone would enjoy reads as a
+question whose presuppositions are unmet (accuracy 45.5 % → 27.3 %, false-abstention 9.1 % →
+45.5 %). Both variants are in `results/table-60.md`.
+
+It is worth adding that **full context makes the same mistake**: given the entire haystack, B2 also
+answers "5 engineers" to `031748ae_abs`. The false-premise failure is not retrieval's.
 
 There is one place where structural abstention *does* fire, and it is worth showing: **under
 as-of**. Asked as of session 2, the graph really is thin, and the demo user's mortgage question
@@ -321,7 +367,22 @@ small graph, and as-of is how a large graph becomes small.
     numbers keep meaning what they meant; at 30 and above it is all thirty `_abs` questions plus a
     stratified remainder.
 
-## 9. Reproducing any of it
+## 9. What is not finished
+
+The 100-question ingest reached **60 of 100 users** and stopped there. Twice during it the WSL2 VM
+hosting HydraDB collapsed — once under memory pressure at seven concurrent users, once at three
+with the host still holding 3 GB free — and each time the node came back **read-only**, because a
+node killed mid-write cannot reclaim its own writer lease (§2.2). Recovery is understood and takes
+about five minutes, and is written down in `docs/run-log.md`; the graph, the LLM cache and every
+committed number survived both. But two node failures in one run was the agreed line to stop and
+report on rather than push through, so the results above are over 60 questions and not 100, and the
+full 500-question run has not been attempted.
+
+Nothing about it is blocked: the remaining 40 users are an idempotent re-run of the same command,
+the already-ingested 60 replay from cache for free, and the harness produces the 100- and
+500-question tables from the same code path with no changes.
+
+## 10. Reproducing any of it
 
 Everything above replays from `.cache/llm` for **$0.00**; the cache is what the money bought.
 `docs/run-log.md` records what each run cost and what it projected beforehand. `README.md` has the
