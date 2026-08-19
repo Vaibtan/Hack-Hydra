@@ -22,6 +22,21 @@ convergence.
 | **Receipt** | The exact MSpaths query text, which anchors resolved and which didn't, the path count, and the convergence table. Enough for a judge to re-run it. | attached to every verdict |
 | **Bookmark** | HydraDB's causal token, returned by every write and replayed on the next read so ingest→ask is read-your-writes. | `HydraClient.lastBookmark` |
 
+## Engine facts the design is shaped by
+
+Measured against HydraDB 0.1.0, not read from docs. Each one changed a design decision.
+
+| Limit | Value | Consequence |
+|---|---|---|
+| Rows per response | **1024**, with a `next_cursor` | Every read follows the cursor. Ignoring it silently truncates — including `algo.MSpaths`, which cannot take `SKIP`/`LIMIT`. Continuing needs the cursor **and** the `query_id`. |
+| String property | **32 743 UTF-8 bytes** | Long turns spill into `HAS_CHUNK` vertices, reassembled on read. |
+| `UNWIND` batch | **1024 rows** (admission control) | Write batches are chunked at 1000. |
+| Query runtime | **30 s** | Arrives as a **500**, so it is classified by message, not status. |
+| Vertex ids | JSON numbers | Ids are the top 53 bits of SHA-256(key), not a full u64. |
+| `DETACH DELETE` | **~2.3 vertices/s**, flat in degree | Deleting a user takes hours. Every write is content-addressed so re-ingest never needs a reset; a prompt change gets a fresh key prefix instead. |
+| `MATCH` joins | evaluated store-wide | Per-user aggregates are denormalised at write time or read through `MSpaths`, which is driven from source values and stays fast. |
+| Second graph id | 403 with the local token | All users share `default`, partitioned by key prefix. |
+
 ## Decisions that are settled
 
 TypeScript + Effect only · HydraDB-only retrieval, no vector or BM25 in *our* read path · as-of is
