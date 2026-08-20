@@ -76,9 +76,14 @@ Back to the knowledge-update question. Click **Run the whole trajectory**.
 
 > The same question, asked as of every session in turn. Watch the answer move.
 >
-> **NOT_IN_MEMORY** through sessions 1 and 2 — before he ever said it, the memory says so, instead
-> of leaking a value it will only learn later. At session 3 it becomes **$350,000**. It holds there
-> for thirty-four sessions. At session 37 it becomes **$400,000**.
+> Session 1, **NOT_IN_MEMORY**. Session 2, **ABSENT — A2**: and this is the one place the
+> *structural* verdict earns its keep. I said a moment ago that A1 and A2 never fire on a populated
+> graph. As of session 2 the graph is not populated yet, so it fires. As-of is how a large memory
+> becomes a small one.
+>
+> Either way, before he ever said it the memory says so, instead of leaking a value it will only
+> learn later. At session 3 it becomes **$350,000**. It holds there for thirty-four sessions. At
+> session 37 it becomes **$400,000**.
 >
 > There is no snapshot here, no branch, no second copy of the graph. As-of is two integer
 > comparisons: `session_ord ≤ k` on claims, `at_session ≤ k` on supersession edges. HydraDB's
@@ -123,17 +128,27 @@ Click **Ask 8 times** in the determinism panel.
 
 ## 4:20 — 4:50 · The numbers
 
-Cut to `results/table-100.md` (or the terminal).
+Cut to `results/table-60.md` (or the terminal).
 
-> On a 100-question slice of LongMemEval_S — real haystacks, forty-odd distractor sessions each,
-> all thirty unanswerable questions included — scored by the official LongMemEval judge, against
-> BM25 top-10 turns and full-context over the whole haystack, same reader prompt and same judge for
-> all three.
+> On sixty questions of LongMemEval_S — real haystacks, forty-odd distractor sessions each — scored
+> by the official LongMemEval judge, against BM25 top-10 turns and full context over the whole
+> haystack. Same reader prompt and same judge for all three.
 
-Read the accuracy, the abstention column, and the reader-token column.
+Read the accuracy column, then the reader-token column.
 
-> The reader-token column is the one to look at next to accuracy. Full context sends the whole
-> haystack; this sends the spans that converged.
+> Full context is actually **more accurate** than we are — 83 against 80. And it spends a hundred
+> and eleven thousand tokens per question to do it, where this spends three and a half thousand.
+>
+> That is the honest comparison, and I would rather say it than hide it: comparable accuracy at a
+> thirtieth of the context, plus three things sending everything cannot do — an answer you can check
+> against a span, a memory you can ask as of a past session, and an explicit supersession chain.
+> Full context also makes exactly the same false-premise mistake we do.
+
+**Say the caveat out loud**, because a reviewer will find it anyway:
+
+> This is sixty questions, not the hundred I planned. The node fell over twice during the ingest, I
+> stopped where the plan said to stop, and the missing users are excluded rather than scored as
+> failures. It is in the run log.
 
 ## 4:50 — 5:00 · Close
 

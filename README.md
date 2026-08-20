@@ -193,6 +193,18 @@ vs `has_answer`**: the fraction of answer-bearing turns that at least one Claim'
 micro-averaged over turns. A turn no Claim points at can never be surfaced whatever retrieval does,
 so this number is the ceiling on everything downstream.
 
+`benchmarkSlice` decides what `--slice N` means for ingest, the retrieval gate *and* the answer
+harness alike, so they cannot disagree about which questions they are talking about. Below 30 it is
+`stratifiedSlice` unchanged, which is what the day-1 and day-3 gate numbers were measured with; at
+30 and above it is every `_abs` question plus a stratified remainder.
+
+`Judge` ports the five official LongMemEval judge templates verbatim from upstream's
+`evaluate_qa.py`, including its `'yes' in response.lower()` scoring rule. `Bm25` is baseline B1 —
+Okapi BM25 over the user's turns, using the *same* `stems()` tokenizer so the comparison is about
+the index structure and not about tokenisation — and its `fullContextSpans` is B2, the whole
+haystack. All of it is cached under a `judge` kind, so a table re-runs for $0.00 and returns the
+same labels; a judge that drifts would make two runs of the same system incomparable.
+
 ### Day-1 gate result
 
 `pnpm extract --slice 20` on the oracle file, `gpt-5.6-luna`, 20 questions / 33 sessions:
@@ -375,7 +387,8 @@ it carries *proof of what was searched*. Abstention is caught one layer later, b
 
 So on this slice abstention recall is 1/2 from the reader and 0/2 from the structure. The honest
 claim is not "we abstain better", it is "we can show exactly what was searched and what was found" —
-and false-premise questions are the open problem.
+and false-premise questions are the open problem. Measured over 18 abstention questions rather than
+2, the picture is the same: **A1 and A2 are zero in every row of every system** — see below.
 
 ### The as-of trajectory
 
@@ -383,22 +396,73 @@ and false-premise questions are the open problem.
 database snapshot — as-of is nothing but `session_ord ≤ k` and `at_session ≤ k`:
 
 ```
-> as of s 1  20230712   0 ev   NOT_IN_MEMORY
-  as of s 2  20230802   0 ev   NOT_IN_MEMORY
-> as of s 3  20230811  15 ev   $350,000
+> as of s 1  20230712   1 ev   NOT_IN_MEMORY
+> as of s 2  20230802   0 ev   ABSENT (A2_no_convergence)
+> as of s 3  20230811  24 ev   $350,000
   …                            $350,000
-> as of s37  20231130  17 ev   $400,000
-  as of s38  20231211  17 ev   $400,000
-  as of s39  20231214  17 ev   $400,000
+> as of s37  20231130  29 ev   $400,000
+  as of s38  20231211  29 ev   $400,000
+  as of s39  20231214  29 ev   $400,000
 
-distinct answers   3
+distinct answers   4
   from session  1: NOT_IN_MEMORY
+  from session  2: ABSENT (A2_no_convergence)
   from session  3: $350,000
   from session 37: $400,000
 ```
 
 Before the fact was ever stated the memory says so, rather than leaking a value it will only learn
 later. That is the property a snapshot-free as-of has to earn, and it is the one the scrubber shows.
+
+Session 2 is worth a second look, because it is the one place **structural** abstention earns its
+keep. The as-of cut now runs *before* the verdict rather than after it, so as of session 2 the
+graph really is thin and `A2` fires — where previously the reader said `NOT_IN_MEMORY` over
+evidence from session 37 that the memory was not supposed to hold yet. `A1`/`A2` are verdicts about
+a small graph, and as-of is how a large graph becomes small.
+
+### Answer accuracy, against two baselines
+
+`pnpm eval` runs the whole path — ask → reader → the official LongMemEval judge (`gpt-4o`,
+temperature 0) — for Palimpsest and two baselines. All three see the **same reader prompt** and the
+**same judge**, and differ in exactly one thing: how the text handed to the reader was chosen.
+
+`results/table-60.md`, with the per-question rows in `results/*-60.json`:
+
+| system | accuracy | abstention acc | false-abst | SessionRecall@25 | reader tok p50 | latency p50 |
+|---|---:|---:|---:|---:|---:|---:|
+| **Palimpsest** | 79.6 % | 66.7 % | 3.7 % | 98.1 % | **3 658** | 15.2 s |
+| Palimpsest + premise check | 68.5 % | 83.3 % | 18.5 % | 98.1 % | 3 796 | 17.5 s |
+| B1 · BM25 top-10 turns | 75.9 % | 83.3 % | 13.0 % | 94.4 % | 2 787 | 2.6 s |
+| B2 · full context | **83.3 %** | 66.7 % | 3.7 % | 100 % | 111 057 | 3.4 s |
+
+**This is 60 questions, not the 100 that were planned.** The ingest reached 60 users before the
+node failed twice and the run was stopped (`docs/run-log.md`); the other 40 users are *excluded*
+rather than counted as retrieval failures, and every file the harness writes says so on its face.
+
+Three things the numbers say, none of them the thing the pitch originally wanted to say:
+
+- **Full context wins on accuracy, at thirty times the reader tokens.** 83.3 % against 79.6 %, for
+  111 057 tokens against 3 658. The brief's premise that full context loses 30–60 % does not hold
+  for a mid-2026 model with a 128 k window. The honest claim is comparable accuracy at a thirtieth
+  of the context, plus the three things sending everything cannot do: an answer you can check
+  against a span, a memory you can query as of a past session, and an explicit supersession chain.
+  B2 is also not free — it sends the whole haystack every time, and that grows with the history
+  where the graph does not.
+- **The premise check is a bad trade and is not switched on.** It buys +16.6 pp of abstention
+  accuracy for −11.1 pp of accuracy and +14.8 pp of false-abstention, well past the 10 % gate. It
+  stays available as `--system palimpsest-premise` and is reported rather than adopted.
+- **A1 and A2 are zero in every row of every system.** Structural abstention does not fire on a
+  populated graph. Abstention here is entirely the reader's, and false premises remain unsolved —
+  B2 makes the *same* false-premise error, so that failure is not retrieval's.
+
+Against **BM25**, which is the comparison this design is actually making, Palimpsest is +3.7 pp
+accuracy, SessionRecall@25 98.1 % against 94.4 %, and false-abstention 3.7 % against 13.0 %. BM25 is
+cheaper and much faster, and on this slice it is not far behind; what it cannot do is supersession,
+chronology, or being asked what was true in March.
+
+Palimpsest's 15.2 s median latency here is HydraDB's cold page cache — this run followed a node
+restart. On a warm node the same retrieval measures **0.12 s** (see the day-3 gate above); the
+reader call is the rest and is common to all systems.
 
 ## `packages/server`
 
