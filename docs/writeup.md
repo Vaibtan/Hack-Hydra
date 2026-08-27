@@ -187,7 +187,7 @@ verbatim from upstream's `evaluate_qa.py`, upstream's `'yes' in response.lower()
 quirk and all). Four systems, the same reader prompt and the same judge, differing in exactly one
 thing — how the text handed to the reader was chosen.
 
-**On 60 questions** (18 abstention, 42 answerable). The run was scoped to 100 and the ingest reached
+**On 60 questions** — **54 answerable and 6 abstention**. The run was scoped to 100 and the ingest reached
 60 users before the node failed twice (§9); the other 40 are *excluded* rather than counted as
 retrieval failures, and every results file says so.
 
@@ -218,11 +218,23 @@ refuses. It stays available as `--system palimpsest-premise` and reported, not s
 premises remain unsolved.
 
 **A1 and A2 are zero in every row of every system.** Structural abstention does not fire on a
-populated graph, which is §6's whole point, now measured over 18 abstention questions rather than 2.
+populated graph, which is §6's whole point. Note the sample honestly: the 40 un-indexed users took
+24 of the 30 abstention questions with them, so this is **6** abstention questions, not the 30 the
+slice was designed to carry. The A1/A2 result is consistent with the day-3 slice and with the
+mechanism, but 6 questions is not a measurement of abstention.
 
-Against **BM25** — which is the comparison this design is actually making, since it shares the
-tokenizer, the reader and the judge and differs only in the index — Palimpsest is +3.7 pp accuracy,
-SessionRecall@25 98.1 % against 94.4 %, and false-abstention 3.7 % against 13.0 %. BM25 is
+**None of the accuracy differences are statistically significant.** Over the 54 answerable
+questions the raw counts are Palimpsest 43, full context 45, BM25 41. McNemar's exact test on the
+paired outcomes gives *p* = 0.73 for Palimpsest against BM25 (8 discordant pairs, 5 versus 3) and
+*p* = 0.69 for full context against Palimpsest (6 discordant, 4 versus 2). At this sample size the
+accuracy column separates nothing, and no claim in this document rests on it. What *is* separated by
+more than noise is the token cost — 3 658 against 111 057 is a 30x ratio, not a two-question
+difference — and the retrieval metrics, where SessionRecall@25 is 98.1 % against BM25's 94.4 % and
+false-abstention 3.7 % against 13.0 %.
+
+Against **BM25** — the comparison this design is actually making, since it shares the tokenizer, the
+reader and the judge and differs only in the index — the honest summary is: indistinguishable on
+answer accuracy at n = 54, better on retrieval recall and much better on false abstention. BM25 is
 meaningfully cheaper and much faster, and on this slice it is not far behind; the gap it cannot
 close is that a term index has no notion of supersession, no chronology and no way to be asked what
 was true in March.

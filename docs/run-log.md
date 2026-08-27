@@ -89,7 +89,7 @@ for 60 % of the users. The remaining 40 would land the projection close to targe
 pnpm eval --slice 100 --system all --prefix g2 --concurrency 4 --skip-missing
 ```
 
-**$1.02**, four systems × 60 questions (18 abstention, 42 answerable), judged by `gpt-4o`. The
+**$1.02**, four systems × 60 questions (**54 answerable, 6 abstention**), judged by `gpt-4o`. The
 40 un-indexed users are excluded rather than counted as retrieval failures, and every file says so.
 Re-runs are $0.00.
 

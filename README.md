@@ -387,8 +387,9 @@ it carries *proof of what was searched*. Abstention is caught one layer later, b
 
 So on this slice abstention recall is 1/2 from the reader and 0/2 from the structure. The honest
 claim is not "we abstain better", it is "we can show exactly what was searched and what was found" —
-and false-premise questions are the open problem. Measured over 18 abstention questions rather than
-2, the picture is the same: **A1 and A2 are zero in every row of every system** — see below.
+and false-premise questions are the open problem. **A1 and A2 are zero in every row of every
+system** in the answer-accuracy run below too — though that run kept only 6 of the 30 abstention
+questions, so it corroborates the mechanism rather than measuring abstention.
 
 ### The as-of trajectory
 
@@ -435,7 +436,7 @@ temperature 0) — for Palimpsest and two baselines. All three see the **same re
 | B1 · BM25 top-10 turns | 75.9 % | 83.3 % | 13.0 % | 94.4 % | 2 787 | 2.6 s |
 | B2 · full context | **83.3 %** | 66.7 % | 3.7 % | 100 % | 111 057 | 3.4 s |
 
-**This is 60 questions, not the 100 that were planned.** The ingest reached 60 users before the
+**This is 60 questions (54 answerable, 6 abstention), not the 100 that were planned.** The ingest reached 60 users before the
 node failed twice and the run was stopped (`docs/run-log.md`); the other 40 users are *excluded*
 rather than counted as retrieval failures, and every file the harness writes says so on its face.
 
@@ -455,10 +456,15 @@ Three things the numbers say, none of them the thing the pitch originally wanted
   populated graph. Abstention here is entirely the reader's, and false premises remain unsolved —
   B2 makes the *same* false-premise error, so that failure is not retrieval's.
 
-Against **BM25**, which is the comparison this design is actually making, Palimpsest is +3.7 pp
-accuracy, SessionRecall@25 98.1 % against 94.4 %, and false-abstention 3.7 % against 13.0 %. BM25 is
-cheaper and much faster, and on this slice it is not far behind; what it cannot do is supersession,
-chronology, or being asked what was true in March.
+**The accuracy column separates nothing at this sample size.** Over the 54 answerable questions the
+raw counts are Palimpsest 43, full context 45, BM25 41 — two questions apart. McNemar's exact test
+gives *p* = 0.73 for Palimpsest vs BM25 and *p* = 0.69 for full context vs Palimpsest. Treat the
+accuracy numbers as "indistinguishable", not as a ranking. What *is* larger than noise is the 30x
+token ratio, and the retrieval metrics: SessionRecall@25 98.1 % against BM25's 94.4 %, and
+false-abstention 3.7 % against 13.0 %.
+
+BM25 is cheaper and much faster, and on this slice it answers about as well; what it cannot do is
+supersession, chronology, or being asked what was true in March.
 
 Palimpsest's 15.2 s median latency here is HydraDB's cold page cache — this run followed a node
 restart. On a warm node the same retrieval measures **0.12 s** (see the day-3 gate above); the
