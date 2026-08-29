@@ -8,6 +8,7 @@ import {
   Supersede,
   Transcript,
   SourceIndex,
+  answerV2,
   ingestGenerationConfig,
   prepareDerivedIndexAssertions,
   readUserStats,
@@ -17,7 +18,7 @@ import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { createHash } from "node:crypto"
 import { BadRequest, GraphError, NotFound, PalimpsestApi } from "./Api.js"
-import { projectRetrievalReceipt } from "./ReceiptProjection.js"
+import { projectPlan, projectRetrievalReceipt } from "./ReceiptProjection.js"
 
 /**
  * The five endpoints.
@@ -180,12 +181,56 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
           yield* requireUser(path.uid)
           const started = Date.now()
           const questionDate = payload.questionDate ?? "unknown"
+          const pipeline = payload.pipeline ?? "v1"
+
+          // v2 goes through the same orchestrator the eval uses. The demo and
+          // the benchmark must not be able to run different pipelines: the
+          // numbers in the writeup come from one and the video from the other,
+          // and a divergence between them would be invisible to both.
+          if (pipeline === "v2" && payload.retrieveOnly !== true) {
+            const answered = yield* answerV2(
+              retrieve,
+              reader,
+              path.uid,
+              payload.question,
+              questionDate,
+              {
+                ...(payload.questionDate === undefined ? {} : { questionDate: payload.questionDate }),
+                ...(payload.asOf === undefined ? {} : { asOf: payload.asOf }),
+                ...(payload.historical === undefined ? {} : { historical: payload.historical }),
+                ...(payload.premiseCheck === undefined ? {} : { premiseCheck: payload.premiseCheck }),
+                // The demo defaults to `fast`: a 5 s answer that is
+                // occasionally thinner beats an 8 s one in front of an
+                // audience, and the eval measures both.
+                profile: payload.profile ?? "fast"
+              }
+            ).pipe(Effect.mapError(graphError))
+
+            const receipt = projectRetrievalReceipt(answered.ask.receipt)
+            const spans = answered.read?.spans ?? []
+            return {
+              verdict: answered.verdict,
+              reason: answered.reason,
+              answer: answered.verdict === "ABSENT" ? null : (answered.read?.answer ?? null),
+              notInMemory: answered.verdict === "ABSENT" || (answered.read?.notInMemory ?? true),
+              reasoning: answered.read?.reasoning ?? "",
+              citedIds: answered.read?.citedIds ?? [],
+              premiseSupported: answered.read?.premiseSupported ?? null,
+              premiseNote: answered.sufficiency.premise || (answered.read?.premiseNote ?? ""),
+              evidence: spans,
+              receipt,
+              plan: projectPlan(answered),
+              hash: answered.read?.spanHash ?? answered.ask.hash,
+              latencyMs: Date.now() - started
+            }
+          }
 
           const result = yield* retrieve
             .ask(path.uid, payload.question, {
               ...(payload.questionDate === undefined ? {} : { questionDate: payload.questionDate }),
               ...(payload.asOf === undefined ? {} : { asOf: payload.asOf }),
-              ...(payload.historical === undefined ? {} : { historical: payload.historical })
+              ...(payload.historical === undefined ? {} : { historical: payload.historical }),
+              pipeline
             })
             .pipe(Effect.mapError(graphError))
 
@@ -209,6 +254,7 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
               premiseNote: "",
               evidence: spans,
               receipt,
+              plan: null,
               hash: result.hash,
               latencyMs: Date.now() - started
             }
@@ -231,6 +277,7 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
             premiseNote: answer.premiseNote,
             evidence: answer.spans,
             receipt,
+            plan: null,
             hash: result.hash,
             latencyMs: Date.now() - started
           }

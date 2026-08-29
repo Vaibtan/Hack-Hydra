@@ -100,6 +100,67 @@ export const Receipt = Schema.Struct({
   convergence: Schema.Array(ConvergenceRow)
 })
 
+
+/**
+ * The v2 plan, as the demo renders it: route -> arms -> scope -> select ->
+ * sufficiency -> read, each with what it decided.
+ *
+ * Null on v1, which has no plan. The panel therefore has to handle its absence
+ * rather than assuming it — a demo that only works on v2 would quietly stop
+ * being able to show the comparison the whole talk is about.
+ */
+export const PlanArm = Schema.Struct({
+  label: Schema.String,
+  kind: Schema.String,
+  claims: Schema.Number,
+  paths: Schema.Number,
+  query: Schema.NullOr(Schema.String),
+  timedOut: Schema.Boolean
+})
+
+export const PlanTimeScope = Schema.Struct({
+  phrase: Schema.NullOr(Schema.String),
+  interval: Schema.NullOr(Schema.Tuple(Schema.Number, Schema.Number)),
+  inScope: Schema.Number,
+  outOfScope: Schema.Number,
+  applied: Schema.Boolean
+})
+
+export const PlanSelection = Schema.Struct({
+  kept: Schema.Array(Schema.String),
+  dropped: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
+  reasons: Schema.Record({ key: Schema.String, value: Schema.String }),
+  fallback: Schema.Boolean
+})
+
+export const PlanSufficiency = Schema.Struct({
+  tier: Schema.String,
+  missing: Schema.String,
+  premise: Schema.String,
+  skipped: Schema.Boolean,
+  secondPass: Schema.Boolean
+})
+
+export const RetrievalPlan = Schema.Struct({
+  route: Schema.String,
+  routeReason: Schema.String,
+  flags: Schema.Array(Schema.String),
+  subQuestions: Schema.Array(Schema.String),
+  probes: Schema.Array(Schema.String),
+  extraTerms: Schema.Array(Schema.String),
+  arms: Schema.Array(PlanArm),
+  union: Schema.Struct({ candidates: Schema.Number, dropped: Schema.Number }),
+  timeScope: PlanTimeScope,
+  selection: PlanSelection,
+  sufficiency: PlanSufficiency,
+  intervalSentence: Schema.NullOr(Schema.String),
+  /** Per-stage wall time. Concurrent stages overlap, so these do not sum. */
+  stages: Schema.Record({ key: Schema.String, value: Schema.Number }),
+  askMs: Schema.Number,
+  /** The HydraDB stages alone, so the index has an honest number of its own. */
+  graphMs: Schema.Number
+})
+
 export const AskRequest = Schema.Struct({
   question: Schema.String,
   /** Opaque causal floor returned by a prior ingest; absent means no read-your-writes guarantee. */
@@ -111,7 +172,11 @@ export const AskRequest = Schema.Struct({
   historical: Schema.optional(Schema.Boolean),
   /** Skip the reader and return the structural verdict and evidence only. */
   retrieveOnly: Schema.optional(Schema.Boolean),
-  premiseCheck: Schema.optional(Schema.Boolean)
+  premiseCheck: Schema.optional(Schema.Boolean),
+  /** `v1` is the shipped path; `v2` is the retrieval plan. Defaults to `v1`. */
+  pipeline: Schema.optional(Schema.Literal("v1", "v2")),
+  /** `fast` drops the sufficiency check and its second pass. Defaults to `full`. */
+  profile: Schema.optional(Schema.Literal("full", "fast"))
 })
 
 export const AskResponse = Schema.Struct({
@@ -127,6 +192,8 @@ export const AskResponse = Schema.Struct({
   premiseNote: Schema.String,
   evidence: Schema.Array(EvidenceSpan),
   receipt: Receipt,
+  /** The v2 plan, or null on v1 — which has no plan to show. */
+  plan: Schema.NullOr(RetrievalPlan),
   /** sha256 over the sorted evidence keys. Same graph, same question, same hash. */
   hash: Schema.String,
   latencyMs: Schema.Number
