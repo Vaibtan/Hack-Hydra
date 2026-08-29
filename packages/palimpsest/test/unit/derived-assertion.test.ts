@@ -29,6 +29,8 @@ const sourceSpan = (overrides: Partial<HydratedSpan> = {}): HydratedSpan => ({
   ckey: "user-a|c|assertion-a",
   id: "sertion-a",
   sid: "session-a",
+  sessionKey: "session-a",
+  turnIdx: 2,
   sessionOrd: 3,
   sessionDate: 20260820,
   tEvent: 20260820,

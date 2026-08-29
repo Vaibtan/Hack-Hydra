@@ -45,6 +45,9 @@ export interface HydratedSpan {
   /** Short, stable id the reader cites — the claim key's tail. */
   readonly id: string
   readonly sid: string
+  /** The Session key (`sid` plus `#n` where a haystack repeats one), for Turn keys. */
+  readonly sessionKey: string
+  readonly turnIdx: number
   readonly sessionOrd: number
   readonly sessionDate: number
   readonly tEvent: number
@@ -264,6 +267,8 @@ const make = Effect.gen(function* () {
             ckey: claim.ckey,
             id: claim.ckey.slice(-8),
             sid: claim.sid,
+            sessionKey: claim.sessionKey,
+            turnIdx: claim.turnIdx,
             sessionOrd: claim.sessionOrd,
             sessionDate: claim.sessionDate,
             tEvent: claim.tEvent,

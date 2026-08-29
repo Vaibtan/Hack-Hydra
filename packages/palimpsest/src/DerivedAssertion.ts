@@ -56,6 +56,9 @@ export const sourceLinkedChainEvidence = (
     tEvent: claim.tEvent,
     tPrec: claim.tPrec,
     sid: claim.sid,
+    // The chain records carry the logical session id as their source witness,
+    // which is the same value `Claim.source_session_id` holds.
+    sessionKey: claim.sourceLogicalSessionId,
     turnIdx: claim.turnIdx,
     cs: claim.cs,
     ce: claim.ce,

@@ -20,6 +20,13 @@ export interface ReachedClaim {
   readonly tEvent: number
   readonly tPrec: string
   readonly sid: string
+  /**
+   * The Session *key*, which is `sid` plus a `#n` suffix on the 13 haystacks
+   * that list the same session id twice at different dates. Turn keys are built
+   * from this, never from `sid` — `sid` alone does not identify a session, and
+   * hydrating a whole turn by the wrong one silently reads the other revision.
+   */
+  readonly sessionKey: string
   readonly turnIdx: number
   readonly cs: number
   readonly ce: number
@@ -87,6 +94,9 @@ export const scoreReached = (
           tEvent: propNumber(target, "t_event"),
           tPrec: propString(target, "t_prec"),
           sid: propString(target, "sid"),
+          // Falls back to `sid` for a graph written before the property
+          // existed; every `g3` Claim carries it.
+          sessionKey: propString(target, "source_session_id") || propString(target, "sid"),
           turnIdx: propNumber(target, "turn_idx"),
           cs: propNumber(target, "cs"),
           ce: propNumber(target, "ce")

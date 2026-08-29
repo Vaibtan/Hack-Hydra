@@ -82,6 +82,8 @@ const span = (
   ckey: `u|c|${id}`,
   id,
   sid: `s${sessionOrd}`,
+  sessionKey: `s${sessionOrd}`,
+  turnIdx: 0,
   sessionOrd,
   sessionDate: 20230100 + sessionOrd,
   tEvent: 0,

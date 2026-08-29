@@ -11,6 +11,7 @@ const claim = (over: Partial<ReachedClaim> & { ckey: string }): ReachedClaim => 
   tEvent: 0,
   tPrec: "none",
   sid: "s1",
+  sessionKey: "s1",
   turnIdx: 0,
   cs: 0,
   ce: 1,
