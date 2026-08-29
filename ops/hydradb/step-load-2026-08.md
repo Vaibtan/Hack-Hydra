@@ -115,6 +115,38 @@ does not treat. It is not applied.
 A cold ask is reported and is **not** a target (spec, *Latency*). Nothing in the
 20-question smoke eval hit the 25 s read ceiling.
 
+### A first-touch eval row is a cold row
+
+The `graphMs <= 1.5 s` target is a **warm** one, and an eval that reads each user
+for the first time cannot measure it. Measured on the 20-user graph, at
+`--concurrency 6`, every row cold:
+
+| stage | p50 |
+|---|---:|
+| understand (anchors, from cache) | 17 ms |
+| userStats | 11 ms |
+| **convergence (Query 1)** | **15 979 ms** |
+| slotKeys | 2 024 ms |
+| candidateEdges | 3 161 ms |
+| slotClaims (Query 2) | 4 648 ms |
+| slotMateEdges | 1 304 ms |
+| hydrate | 692 ms |
+| read (from cache) | 18 ms |
+| **`graphMs`** | **26 469 ms** |
+
+Warm, the same graph gives `graphMs` p50 **68 ms**.
+
+The fix costs nothing: an eval replays entirely from `.cache/llm`, so **running it
+twice and taking the second run** gives warm `graphMs` at $0.00. Every latency
+number reported for the gate comes from a second pass, and says so.
+
+The table also sizes the concurrency change honestly. Level 1 pairs `userStats`
+(11 ms) with the convergence walk (16 s) and saves 11 ms; level 2 pairs
+`slotKeys` with `candidateEdges` and saves 2.0 s. Sequentially the stages sum to
+~27.1 s against 26.5 s measured — about 2 s of 27. The structure is what the
+ticket says it is; what it buys on a *cold* graph is small next to the
+convergence walk.
+
 ### Two settings are chosen per phase, not once
 
 `runtime_config_sha256` therefore differs between the ingest and the eval, and
