@@ -4,8 +4,11 @@ import { dirname, resolve } from "node:path"
 import {
   errorClasses,
   paired,
+  renderAblations,
   renderErrorClasses,
+  renderLatency,
   renderPaired,
+  type AblationRow,
   renderTable,
   summariseByType,
   type ErrorClassCounts,
@@ -86,6 +89,7 @@ interface Envelope {
   readonly sufficiencyModel?: string
   readonly judgeModel?: string
   readonly extractionGeneration?: string
+  readonly ablations?: ReadonlyArray<string>
   readonly rows: ReadonlyArray<EvalRow>
 }
 
@@ -97,14 +101,36 @@ const load = (): ReadonlyArray<Envelope> => {
   const files = readdirSync(resultsDir).filter(
     (name) => name.endsWith(selector) && !name.startsWith("table")
   )
-  const envelopes = files.map(
-    (name) => JSON.parse(readFileSync(resolve(resultsDir, name), "utf8")) as Envelope
-  )
+  const envelopes = files
+    .map((name) => JSON.parse(readFileSync(resolve(resultsDir, name), "utf8")) as Envelope)
+    // An ablation is a different pipeline wearing the same system name. Mixing
+    // one into the accuracy table would silently average a measurement with the
+    // thing it is a control for.
+    .filter((envelope) => (envelope.ablations ?? []).length === 0)
   return [...envelopes].sort((a, b) => {
     const ai = SYSTEM_ORDER.indexOf(a.system)
     const bi = SYSTEM_ORDER.indexOf(b.system)
     return (ai === -1 ? SYSTEM_ORDER.length : ai) - (bi === -1 ? SYSTEM_ORDER.length : bi)
   })
+}
+
+/**
+ * The ablation runs beside the full one.
+ *
+ * Read separately and by their declared `ablations` field rather than by
+ * filename: the name is a convenience and the envelope is the record.
+ */
+const loadAblations = (): ReadonlyArray<AblationRow> => {
+  if (!existsSync(resultsDir)) return []
+  return readdirSync(resultsDir)
+    .filter((name) => name.endsWith(".json") && !name.startsWith("table"))
+    .map((name) => JSON.parse(readFileSync(resolve(resultsDir, name), "utf8")) as Envelope)
+    .filter(
+      (envelope) =>
+        (envelope.ablations ?? []).length > 0 &&
+        (label === "" || envelope.split === label || String(envelope.rows.length) === label)
+    )
+    .map((envelope) => ({ ablations: envelope.ablations ?? [], rows: envelope.rows }))
 }
 
 const main = async (): Promise<void> => {
@@ -189,6 +215,25 @@ const main = async (): Promise<void> => {
       "candidate union, so its funnel collapses to `retrieval miss` or `reader`.",
     "",
     renderErrorClasses(counts),
+    "",
+    "## Latency and reader cost",
+    "",
+    "`graphMs` is the HydraDB stages alone — arms, edges, hydration — and never includes an LLM " +
+      "round trip; `askMs` is the whole ask. p90 is here because a p50 alone hides the shape: a " +
+      "pipeline whose median ask is 3 s and whose ninetieth percentile is 40 s is not a 3 s " +
+      "pipeline, and the one question in ten that takes 40 s is the one the audience asks.",
+    "",
+    renderLatency(bySystem),
+    "",
+    "## Ablations",
+    "",
+    "Each row is the full v2 plan with one stage switched off. The difference is that stage's " +
+      "contribution *in the presence of every other stage* — two stages that each look worthless " +
+      "alone can be jointly necessary, and one that looks valuable may only be compensating for a " +
+      "weakness elsewhere. A stage whose removal helps is reported the same way as one whose " +
+      "removal hurts; that is the number most worth having.",
+    "",
+    renderAblations(byName.get("palimpsest-v2") ?? [], loadAblations()),
     "",
     "## Paired comparisons",
     "",

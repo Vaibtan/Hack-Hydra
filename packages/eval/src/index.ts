@@ -27,10 +27,12 @@ export {
   paired,
   pairedDifferenceCi,
   pairedTable,
+  renderAblations,
   renderErrorClasses,
+  renderLatency,
   renderPaired
 } from "./Tables.js"
-export type { ErrorClass, ErrorClassCounts, PairedResult, PairedTable } from "./Tables.js"
+export type { AblationRow, ErrorClass, ErrorClassCounts, PairedResult, PairedTable } from "./Tables.js"
 export { oracleSessionSpans } from "./Oracle.js"
 export { GATE_BOUNDS, falseAbstentions, readGate, renderGate, worstTypeRegression } from "./Gate.js"
 export type { AdoptionGateReport, Criterion } from "./Gate.js"

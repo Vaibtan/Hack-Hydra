@@ -248,3 +248,110 @@ export const renderErrorClasses = (
   }
   return out.join("\n")
 }
+
+// ------------------------------------------------------------------ latency
+
+const quantile = (values: ReadonlyArray<number>, q: number): number => {
+  if (values.length === 0) return Number.NaN
+  const sorted = [...values].sort((a, b) => a - b)
+  const at = Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))
+  return sorted[at]!
+}
+
+/**
+ * Latency and reader cost, p50 and p90.
+ *
+ * p50 *and* p90, because the targets are p50 numbers and a p50 alone hides the
+ * shape: a pipeline whose median ask is 3 s and whose ninetieth percentile is
+ * 40 s is not a 3 s pipeline, and the one question in ten that takes 40 s is
+ * the one the audience asks.
+ *
+ * `graphMs` is the HydraDB stages alone — arms, edges, hydration — and never
+ * includes an LLM round trip. `askMs` is the whole thing. A row that recorded
+ * neither (v1 before the timings landed, or any baseline) shows a dash rather
+ * than a zero, because zero is a measurement and absent is not.
+ */
+export const renderLatency = (
+  bySystem: ReadonlyArray<readonly [string, ReadonlyArray<EvalRow>]>
+): string => {
+  const cell = (values: ReadonlyArray<number>, q: number, unit: "ms" | "tok"): string => {
+    if (values.length === 0) return "—"
+    const v = quantile(values, q)
+    if (unit === "tok") return Math.round(v).toLocaleString("en-US")
+    return v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`
+  }
+  const lines = [
+    "| system | graphMs p50 | graphMs p90 | askMs p50 | askMs p90 | reader tokens p50 | p90 |",
+    "|---|---:|---:|---:|---:|---:|---:|"
+  ]
+  for (const [system, rows] of bySystem) {
+    const graph = rows.flatMap((row) => (row.graphMs === undefined ? [] : [row.graphMs]))
+    const ask = rows.flatMap((row) => (row.askMs === undefined ? [] : [row.askMs]))
+    const tokens = rows.map((row) => row.readerInputTokens)
+    lines.push(
+      `| ${system} | ${cell(graph, 0.5, "ms")} | ${cell(graph, 0.9, "ms")} | ` +
+        `${cell(ask, 0.5, "ms")} | ${cell(ask, 0.9, "ms")} | ` +
+        `${cell(tokens, 0.5, "tok")} | ${cell(tokens, 0.9, "tok")} |`
+    )
+  }
+  return lines.join("\n")
+}
+
+// ----------------------------------------------------------------- ablations
+
+export interface AblationRow {
+  /** The flags this run had set, e.g. `noSelect`. */
+  readonly ablations: ReadonlyArray<string>
+  readonly rows: ReadonlyArray<EvalRow>
+}
+
+/**
+ * One row per ablated stage: what the full pipeline scored, what it scored
+ * without that stage, and the difference.
+ *
+ * The difference is the stage's contribution *in the presence of every other
+ * stage*, which is the only thing an ablation can measure and is worth saying
+ * plainly. Two stages that each look worthless alone can be jointly necessary,
+ * and a stage that looks valuable here may only be compensating for a weakness
+ * elsewhere in the plan.
+ *
+ * A stage whose removal *helps* is reported with the same emphasis as one whose
+ * removal hurts. That is the number most worth having.
+ */
+export const renderAblations = (
+  full: ReadonlyArray<EvalRow>,
+  ablations: ReadonlyArray<AblationRow>
+): string => {
+  const correct = (rows: ReadonlyArray<EvalRow>): number => rows.filter((row) => row.judged).length
+  const answerable = (rows: ReadonlyArray<EvalRow>): ReadonlyArray<EvalRow> =>
+    rows.filter((row) => !row.isAbstention)
+
+  const base = correct(answerable(full))
+  const n = answerable(full).length
+  if (ablations.length === 0) {
+    return "_No ablation runs in this directory._"
+  }
+
+  const lines = [
+    `| stage switched off | correct of ${n} | vs full | latency p50 |`,
+    "|---|---:|---:|---:|"
+  ]
+  const askP50 = (rows: ReadonlyArray<EvalRow>): string => {
+    const ask = rows.flatMap((row) => (row.askMs === undefined ? [] : [row.askMs]))
+    if (ask.length === 0) return "—"
+    const v = quantile(ask, 0.5)
+    return v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`
+  }
+  lines.push(`| _none (full plan)_ | ${base} | — | ${askP50(full)} |`)
+  for (const ablation of [...ablations].sort((a, b) =>
+    a.ablations.join().localeCompare(b.ablations.join())
+  )) {
+    const got = correct(answerable(ablation.rows))
+    const delta = got - base
+    lines.push(
+      `| ${ablation.ablations.join(" + ")} | ${got} | ${delta > 0 ? "+" : ""}${delta} | ` +
+        `${askP50(ablation.rows)} |`
+    )
+  }
+  return lines.join("\n")
+}
