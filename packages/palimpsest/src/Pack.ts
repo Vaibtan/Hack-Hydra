@@ -114,6 +114,8 @@ export interface Packable {
   readonly cs: number
   readonly ce: number
   readonly excerpt: string
+  /** Where the span sits inside `excerpt` — what locates the excerpt in the turn. */
+  readonly highlight: { readonly start: number; readonly end: number }
 }
 
 export const estimateTokens = (spans: ReadonlyArray<{ readonly excerpt: string }>): number =>
@@ -208,36 +210,82 @@ export const spanHash = (
     .digest("hex")
 
 /**
- * Collapses spans that came from the same turn.
+ * The excerpt's own window inside the turn.
  *
- * A turn selected through several claims is one excerpt, not three: the reader
- * pays for the same text once, and the widest span wins so no highlighted
- * region is lost. Keeps the first occurrence's position, so the selector's
- * ranking survives.
+ * `cutExcerpt` puts the span at `highlight.start` characters into the excerpt,
+ * so the excerpt covers `[cs - highlight.start, that + excerpt.length)` of the
+ * turn. Nothing else in a `Packable` says where in the turn its text came from.
+ */
+const excerptWindow = (span: Packable): { readonly from: number; readonly to: number } => {
+  const from = span.cs - span.highlight.start
+  return { from, to: from + span.excerpt.length }
+}
+
+/**
+ * Collapses spans that came from the same turn — but only where the text
+ * actually covers them.
+ *
+ * A turn selected through several claims should be one excerpt: the reader pays
+ * for the same text once. The trap is that "one excerpt" is only true when one
+ * of the excerpts *contains* the other's span. Hydration cuts ±300 characters
+ * around each span, so two claims 2 000 characters apart in one turn produce two
+ * **disjoint** windows; keeping the longer text and widening `cs`/`ce` to their
+ * union then throws away one claim's evidence while `spanHash` records the union
+ * as seen — two runs that showed the reader genuinely different text would hash
+ * the same, which is the one thing the span hash exists to prevent.
+ *
+ * So spans merge only when the retained excerpt covers both, and otherwise both
+ * survive as separate rows of the same turn. The proper fix is upstream — group
+ * by turn *before* hydrating and cut one window over the union — and this stays
+ * as the check that the invariant held.
  */
 export const dedupeByTurn = <A extends Packable>(spans: ReadonlyArray<A>): ReadonlyArray<A> => {
-  const byTurn = new Map<string, A>()
+  const out: Array<A> = []
+  const seatsByTurn = new Map<string, Array<number>>()
+
   for (const span of spans) {
     const key = `${span.sessionKey}|${span.turnIdx}`
-    const existing = byTurn.get(key)
-    if (existing === undefined) {
-      byTurn.set(key, span)
+    const seats = seatsByTurn.get(key)
+    if (seats === undefined) {
+      seatsByTurn.set(key, [out.length])
+      out.push(span)
       continue
     }
-    // Same turn: keep the widest span, and the longer excerpt with it.
-    if (span.excerpt.length > existing.excerpt.length) {
-      byTurn.set(key, {
-        ...span,
-        cs: Math.min(existing.cs, span.cs),
-        ce: Math.max(existing.ce, span.ce)
-      })
-    } else {
-      byTurn.set(key, {
-        ...existing,
-        cs: Math.min(existing.cs, span.cs),
-        ce: Math.max(existing.ce, span.ce)
-      })
+
+    const incoming = excerptWindow(span)
+    let merged = false
+    for (const seat of seats) {
+      const held = out[seat]!
+      const window = excerptWindow(held)
+      const low = Math.min(held.cs, span.cs)
+      const high = Math.max(held.ce, span.ce)
+      const heldCovers = low >= window.from && high <= window.to
+      const spanCovers = low >= incoming.from && high <= incoming.to
+      if (!heldCovers && !spanCovers) continue
+      // Both texts may cover the union; keep the one with more context around
+      // it, so merging never costs the reader bytes it would otherwise see.
+      const keepHeld =
+        heldCovers && (!spanCovers || held.excerpt.length >= span.excerpt.length)
+      const winner = keepHeld ? held : span
+      const from = keepHeld ? window.from : incoming.from
+      out[seat] = {
+        ...winner,
+        cs: low,
+        ce: high,
+        highlight: { start: low - from, end: high - from }
+      }
+      merged = true
+      break
     }
+    if (merged) continue
+
+    // Disjoint windows in one turn: two excerpts, honestly. Hydration cuts
+    // +-SPAN_CONTEXT around each span, so two claims far apart in a long turn
+    // produce text that does not overlap, and pretending otherwise is what
+    // makes the span hash lie.
+    seats.push(out.length)
+    out.push(span)
   }
-  return [...byTurn.values()]
+
+  return out
 }

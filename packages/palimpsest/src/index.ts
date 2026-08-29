@@ -220,7 +220,7 @@ export {
 export type { AbstentionReason, AsOfLabelled, ReachedClaim, Verdict } from "./Scoring.js"
 export { questionAnchors } from "./Anchors.js"
 export type { QuestionAnchors } from "./Anchors.js"
-export { MAX_SLOT_EXPANSION, READ_TIMEOUT_MS, Retrieve, determinismHash } from "./Retrieve.js"
+export { DEFAULT_READ_TIMEOUT_MS, MAX_SLOT_EXPANSION, Retrieve, determinismHash, readTimeoutMs } from "./Retrieve.js"
 export type { AskOptions, AskProfile, AskResult, AskTimings, Pipeline, Receipt } from "./Retrieve.js"
 export { NOT_IN_MEMORY, Reader, SPAN_CONTEXT, cutExcerpt, renderReaderPrompt } from "./Reader.js"
 export type { HydratedSpan, ReadAnswer, ReadOptions } from "./Reader.js"

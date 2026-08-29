@@ -54,6 +54,24 @@ describe("write chunking", () => {
     expect(sizes).toEqual([1000, 500, 250, 250, 250, 250])
   })
 
+  it("re-chunks only what is left, when a LATER chunk is the one refused", async () => {
+    // Every other test in this file refuses the *first* chunk, so
+    // `chunks.slice(index)` was never exercised: replacing it with
+    // `chunks.flat()` left them all green while production re-sent every row
+    // already committed and returned `written` larger than the payload.
+    let calls = 0
+    const sizes: Array<number> = []
+    const send = (chunk: ReadonlyArray<Readonly<Record<string, unknown>>>) => {
+      calls++
+      sizes.push(chunk.length)
+      // The third 1 000-row chunk crosses the cap; everything else is fine.
+      return calls === 3 && chunk.length > 500 ? Effect.fail(limit()) : Effect.succeed(undefined as unknown)
+    }
+    expect(await run(writeChunked(send, rows(3000), 1000))).toBe(3000)
+    // 1000, 1000 committed; the third is refused and the *remainder* halves.
+    expect(sizes).toEqual([1000, 1000, 1000, 500, 500])
+  })
+
   it("loses no rows when it re-chunks mid-write", async () => {
     let seen = 0
     const send = (chunk: ReadonlyArray<Readonly<Record<string, unknown>>>) => {

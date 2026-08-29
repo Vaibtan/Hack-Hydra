@@ -107,29 +107,47 @@ export const enforceSelection = (
     guaranteed.add(candidate.ckey)
   }
 
-  const wanted = ordered.filter(
-    (candidate) => guaranteed.has(candidate.ckey) || keptIds.has(shortId(candidate.ckey))
-  )
   const rejected = ordered.filter(
     (candidate) => !guaranteed.has(candidate.ckey) && !keptIds.has(shortId(candidate.ckey))
   )
 
-  // The cap counts turns, so several claims from one turn cost one place.
-  const kept: Array<Candidate> = []
-  const cappedOut: Array<Candidate> = []
+  // The cap counts turns, so several claims from one turn cost one place — and
+  // it is applied to the *selector's* rows, never to the guaranteed ones.
+  //
+  // The order this walks in is the whole of the guarantee. `ordered` sorts by
+  // convergence, and a probe hit has convergence **0** by construction: the
+  // probe arm resolves a Slot by key, not through question anchors, and the
+  // claim it exists for is the one "nothing lexical reaches". So walking
+  // `ordered` and capping as it goes puts every guaranteed probe hit last and
+  // discards it first — which is what this function did, silently, while its
+  // own docstring promised the opposite. `applyBudget` in `Pack.ts` had it
+  // right: a protected row is skipped when cutting, not sorted into the cut.
   const turns = new Set<string>()
-  for (const candidate of wanted) {
+  const keptKeys = new Set<string>()
+  const take = (candidate: Candidate): void => {
+    turns.add(`${candidate.sessionKey}|${candidate.turnIdx}`)
+    keptKeys.add(candidate.ckey)
+  }
+
+  for (const candidate of ordered) {
+    if (guaranteed.has(candidate.ckey)) take(candidate)
+  }
+  const cappedOut: Array<Candidate> = []
+  for (const candidate of ordered) {
+    if (guaranteed.has(candidate.ckey)) continue
+    if (!keptIds.has(shortId(candidate.ckey))) continue
     const turn = `${candidate.sessionKey}|${candidate.turnIdx}`
     if (turns.size >= maxTurns && !turns.has(turn)) {
       cappedOut.push(candidate)
       continue
     }
-    turns.add(turn)
-    kept.push(candidate)
+    take(candidate)
   }
 
   return {
-    kept,
+    // Emitted in `ordered` order, because the budget stage cuts from the tail
+    // of the selector's ranking and that ranking is this one.
+    kept: ordered.filter((candidate) => keptKeys.has(candidate.ckey)),
     dropped: [
       ...rejected.map((candidate) => ({ candidate, reason: "selector" as const })),
       ...cappedOut.map((candidate) => ({ candidate, reason: "turn_cap" as const }))

@@ -113,18 +113,27 @@ const program = Effect.gen(function* () {
     EMPTY
   )
 
-  // Vertices and edges as the writer creates them, so the number is derivable
-  // from the counts rather than from a scan the engine refuses past 250 000.
+  // Vertices, from the counts the ingest itself wrote. `TurnChunk` is the one
+  // label not represented: it exists only for turns over HydraDB's 32 743-byte
+  // string cap and nothing counts them, so this is a floor, not an exact count.
   const vertices =
     total.sessions + total.turns + total.claims + total.entities + total.slots + total.tokens +
     present.length
-  const edges =
-    total.turns + // Session -[HAS_TURN]-> Turn
-    total.claims * 2 + // Claim -[EVIDENCE]-> Turn, and its Slot FILLS or a mention
-    total.supersessions +
-    total.entities +
-    total.slots +
-    total.sessions
+
+  // **Edges are deliberately not reported.**
+  //
+  // An earlier version of this file printed a number, and that number went into
+  // ops/hydradb/step-load-2026-08.md as a measured graph size. It was wrong by
+  // roughly an order of magnitude: it charged two edges per claim, when
+  // `ClaimGraph.writeSession` writes one `EVIDENCE`, one `FILLS`, one `MENTIONS`
+  // per distinct mentioned entity, **one `HITS` per token** (up to
+  // `MAX_TOKENS_PER_CLAIM` = 24) and one `NAMES` per entity-name token, plus
+  // `Transcript` writes one `HAS_CHUNK` per spilled chunk.
+  //
+  // The honest options are to count them — which needs a store-wide scan the
+  // engine refuses past 250 000 candidates of a label — or to record them at
+  // write time, which `UserStats` does not. So this prints the components it
+  // actually knows and leaves the total to whoever adds the counter.
 
   // ---- warm ask latency -------------------------------------------------
   const splitPath = resolve(workspaceRoot(), SPLIT_FILE)
@@ -174,8 +183,8 @@ const program = Effect.gen(function* () {
   console.log(`slots         ${total.slots}   (${total.contestedSlots} contested)`)
   console.log(`tokens        ${total.tokens}`)
   console.log(`supersessions ${total.supersessions}`)
-  console.log(`vertices      ~${vertices}`)
-  console.log(`edges         ~${edges}`)
+  console.log(`vertices      >=${vertices}   (TurnChunk not counted)`)
+  console.log(`edges         not derivable from the stored counts - see the comment above`)
   console.log(
     `warm ask      graphMs p50 ${median(graphMs)} ms, askMs p50 ${median(askMs)} ms ` +
       `over ${graphMs.length} dev questions`
@@ -183,7 +192,7 @@ const program = Effect.gen(function* () {
   console.log(`cold ask      graphMs p50 ${median(coldGraphMs)} ms (first ask on an unread user)`)
   console.log("")
   console.log(
-    `| ${complete.length} | ${total.sessions} | ~${vertices} / ~${edges} | ` +
+    `| ${complete.length} | ${total.sessions} | >=${vertices} | ${total.claims} | ` +
       `${median(graphMs)} ms | ${median(askMs)} ms | ${median(coldGraphMs)} ms |`
   )
 })

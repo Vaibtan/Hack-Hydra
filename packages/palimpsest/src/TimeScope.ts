@@ -132,8 +132,16 @@ const normalise = (phrase: string): string =>
     .replace(/\s+/g, " ")
     .trim()
 
+/**
+ * A month name, or a genuine abbreviation of one.
+ *
+ * `startsWith`, not a three-character equality in both directions: the latter
+ * made "decade" December ("last decade" resolved to a single month), "junior"
+ * June, "marathon" March and "septic" September — guesses, which this module's
+ * contract forbids. A prefix still accepts "jan", "sept" and "dec".
+ */
 const monthIndex = (word: string): number =>
-  MONTHS.findIndex((month) => month === word || month.slice(0, 3) === word.slice(0, 3))
+  word.length < 3 ? -1 : MONTHS.findIndex((month) => month.startsWith(word))
 
 const count = (word: string): number | null => {
   if (/^\d+$/.test(word)) return Number(word)
@@ -259,8 +267,16 @@ export const resolveTimeInterval = (
       const day = count(rest[1] ?? "")
       if (day !== null && day >= 1 && day <= 31) {
         const withYear = rest[2] !== undefined ? /^(19|20)\d{2}$/.exec(rest[2]) : null
-        const targetYear = withYear !== null ? Number(rest[2]) : year
-        return singleDay(targetYear * 10000 + (month + 1) * 100 + day, phrase)
+        if (withYear !== null) {
+          return singleDay(Number(rest[2]) * 10000 + (month + 1) * 100 + day, phrase)
+        }
+        // Without a year, the most recent occurrence at or before the question
+        // date — the same rule the month-only branch above uses. Taking the
+        // question's own year unshifted put "december 3" asked in May 2023 in
+        // *December 2023*, a window no claim in the haystack can intersect, and
+        // handed the reader a date the conversation cannot contain.
+        const candidate = year * 10000 + (month + 1) * 100 + day
+        return singleDay(candidate <= questionDate ? candidate : candidate - 10000, phrase)
       }
     }
   }

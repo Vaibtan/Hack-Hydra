@@ -176,7 +176,22 @@ export const determinismHash = (ckeys: ReadonlyArray<string>): string =>
  * node with its read cache disabled takes far longer than any product budget,
  * and "more than 25 s" is not a number.
  */
-export const READ_TIMEOUT_MS = Number(process.env["PALIMPSEST_READ_TIMEOUT_MS"] ?? 25_000)
+export const DEFAULT_READ_TIMEOUT_MS = 25_000
+
+/**
+ * Read per call, not once at module load.
+ *
+ * Every CLI calls `loadDotEnv()` in its body, but ESM evaluates the whole import
+ * graph — including this module — *before* the first statement of the entry
+ * point runs. A constant initialised from `process.env` here is therefore frozen
+ * before the workspace `.env` has been read, and the documented override was
+ * silently ignored for exactly the case it exists for: raising the ceiling to
+ * measure a cold convergence walk that the ceiling would otherwise hide.
+ */
+export const readTimeoutMs = (): number => {
+  const configured = Number(process.env["PALIMPSEST_READ_TIMEOUT_MS"])
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_READ_TIMEOUT_MS
+}
 
 const make = Effect.gen(function* () {
   const hydra = yield* HydraClient
@@ -186,14 +201,17 @@ const make = Effect.gen(function* () {
     stage: string,
     effect: Effect.Effect<A, HydraError>
   ): Effect.Effect<A, HydraError> =>
-    Effect.timeoutFail(effect, {
-      duration: Duration.millis(READ_TIMEOUT_MS),
-      onTimeout: () =>
-        new HydraLimitError({
-          reason: `retrieval stage ${stage} exceeded ${READ_TIMEOUT_MS} ms`,
-          status: 408,
-          query: `<ask:${stage}>`
-        })
+    Effect.suspend(() => {
+      const ceiling = readTimeoutMs()
+      return Effect.timeoutFail(effect, {
+        duration: Duration.millis(ceiling),
+        onTimeout: () =>
+          new HydraLimitError({
+            reason: `retrieval stage ${stage} exceeded ${ceiling} ms`,
+            status: 408,
+            query: `<ask:${stage}>`
+          })
+      })
     })
 
   /**

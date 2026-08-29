@@ -98,6 +98,52 @@ describe("the turn cap", () => {
   it("defaults to thirty", () => {
     expect(MAX_KEPT_TURNS).toBe(30)
   })
+
+  it("never spends the cap on a probe hit, however low its convergence", () => {
+    // The bug this pins: `ordered` sorts by convergence and a probe hit has
+    // convergence 0 by construction, so walking `ordered` and capping as it
+    // goes discards the guaranteed row first — the `(me, age)` claim the probe
+    // arm exists for.
+    const converged = Array.from({ length: 32 }, (_, i) =>
+      spread(`conv${String(i).padStart(10, "0")}`, { convergence: 5 }, i)
+    )
+    const probe = spread(
+      "probe000000001",
+      { kind: "probe", arms: ["probe:me|age"], convergence: 0 },
+      99
+    )
+    const report = enforceSelection(
+      [...converged, probe],
+      new Set(converged.map((c) => shortId(c.ckey)))
+    )
+    expect(report.kept.map((c) => c.ckey)).toContain(probe.ckey)
+    expect(report.dropped.find((d) => d.candidate.ckey === probe.ckey)).toBeUndefined()
+    // The cap still binds — it just spends itself on selector rows.
+    expect(report.dropped.filter((d) => d.reason === "turn_cap").length).toBeGreaterThan(0)
+  })
+
+  it("keeps every guaranteed row even when they alone exceed the cap", () => {
+    const probes = Array.from({ length: 40 }, (_, i) =>
+      spread(`probe${String(i).padStart(9, "0")}`, { kind: "probe", convergence: 0 }, i)
+    )
+    const report = enforceSelection(probes, new Set(), { maxTurns: 5 })
+    expect(report.kept).toHaveLength(40)
+    expect(report.dropped).toHaveLength(0)
+  })
+
+  it("emits the kept set in the selector's ranking, for the budget to cut from", () => {
+    const rows = [
+      spread("c00000000001", { convergence: 1 }, 1),
+      spread("c00000000002", { kind: "probe", convergence: 0 }, 2),
+      spread("c00000000003", { convergence: 9 }, 3)
+    ]
+    const report = enforceSelection(rows, new Set(rows.map((c) => shortId(c.ckey))))
+    expect(report.kept.map((c) => c.ckey)).toEqual([
+      "c00000000003",
+      "c00000000001",
+      "c00000000002"
+    ])
+  })
 })
 
 describe("the fallback", () => {

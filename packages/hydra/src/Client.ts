@@ -345,10 +345,15 @@ export const classifyHydraHttpError = (
 
   const reason = error?.message ?? `HTTP ${status}`
   const code = error?.code ?? `http_${status}`
-  // The 30 s runtime cap arrives as a 500, so it has to be recognised by its
-  // message rather than its status — callers need to tell "your statement was
-  // too big" apart from "the engine is down", because the first can be retried
-  // by splitting the batch and the second cannot.
+  // Recognised by message, not status. On this build the 30 s runtime cap is a
+  // **408** (`GraphError::QueryTimeout`, `client/http.rs`) and admission control
+  // a **429**, not the 500 an earlier note recorded — but the message test is
+  // kept because it is what makes the classification survive a status the
+  // engine changes, and because callers need to tell "your statement was too
+  // big" from "the engine is down": the first can be retried by splitting the
+  // batch and the second cannot. The 500 short-circuit above therefore never
+  // swallows a limit, which matters — `writeChunked` and `deleteByKeys` halve
+  // only on `HydraLimitError`.
   const isLimit = /timeout|exceeded|too large|too many|limit is/i.test(reason)
   if (isLimit) return new HydraLimitError({ reason, status, query })
   if (status === 400 || status === 422) return new HydraParseError({ reason, code, query })

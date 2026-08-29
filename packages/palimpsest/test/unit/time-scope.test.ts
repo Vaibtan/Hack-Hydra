@@ -120,6 +120,26 @@ describe("named months and explicit dates", () => {
     expect(span(at("in mar 2021"))).toEqual([20210301, 20210401])
     expect(span(at("last sept"))).toEqual([20220901, 20221001])
   })
+
+  it("does not read a month out of a word that merely starts like one", () => {
+    // A bidirectional three-character match made "last decade" a single month
+    // (December 2022) and "junior" June — guesses, which the contract forbids.
+    expect(at("last decade")).toBeNull()
+    expect(at("in junior")).toBeNull()
+    expect(at("last marathon")).toBeNull()
+    expect(at("in septic")).toBeNull()
+  })
+
+  it("shifts a bare month-and-day into the past, like the month-only form", () => {
+    // Asked in May 2023, "december 3" is 2022 — the question is retrospective,
+    // and a window after the question date can intersect no claim at all.
+    expect(span(at("december 3"))).toEqual([20221203, 20221204])
+    expect(span(at("august 12"))).toEqual([20220812, 20220813])
+    // A month already past this year stays this year.
+    expect(span(at("march 14"))).toEqual([20230314, 20230315])
+    // The question's own day is not pushed back a year.
+    expect(span(at("may 20"))).toEqual([20230520, 20230521])
+  })
 })
 
 describe("relative days and weekends", () => {

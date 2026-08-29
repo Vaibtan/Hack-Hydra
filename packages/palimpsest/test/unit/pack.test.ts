@@ -87,13 +87,27 @@ describe("adjudication", () => {
   })
 })
 
-const span = (ckey: string, chars: number, sessionKey = "s1", turnIdx = 0, cs = 0, ce = 10) => ({
+/**
+ * `highlight.start` is where the span sits inside the excerpt, so the excerpt
+ * covers `[cs - highlight.start, + excerpt.length)` of the turn. Default 0,
+ * i.e. the excerpt starts at the span.
+ */
+const span = (
+  ckey: string,
+  chars: number,
+  sessionKey = "s1",
+  turnIdx = 0,
+  cs = 0,
+  ce = 10,
+  highlightStart = 0
+) => ({
   ckey,
   sessionKey,
   turnIdx,
   cs,
   ce,
-  excerpt: "x".repeat(chars)
+  excerpt: "x".repeat(chars),
+  highlight: { start: highlightStart, end: Math.min(chars, highlightStart + (ce - cs)) }
 })
 
 describe("the token budget", () => {
@@ -168,18 +182,42 @@ describe("the span hash", () => {
 })
 
 describe("dedupe by turn", () => {
-  it("collapses several claims from one turn into one excerpt", () => {
-    const spans = [
-      span("a", 100, "s1", 4, 10, 20),
-      span("b", 300, "s1", 4, 5, 40),
-      span("c", 100, "s1", 5, 0, 9)
-    ]
-    const deduped = dedupeByTurn(spans)
+  it("collapses claims from one turn when the text covers both", () => {
+    // Both spans sit inside the wider excerpt's window, so one excerpt is
+    // honestly one excerpt.
+    const wide = span("b", 300, "s1", 4, 5, 40, 0) // covers turn [5, 305)
+    const inner = span("a", 100, "s1", 4, 10, 20, 0) // covers turn [10, 110)
+    const deduped = dedupeByTurn([wide, inner])
+    expect(deduped).toHaveLength(1)
+    expect([deduped[0]!.cs, deduped[0]!.ce]).toEqual([5, 40])
+    expect(deduped[0]!.excerpt.length).toBe(300)
+  })
+
+  it("does NOT merge two disjoint windows of the same turn", () => {
+    // The failure this pins: an assistant turn of 3 000 characters with a claim
+    // at [0,50] and another at [2000,2900]. Hydration cuts +-300, so the
+    // excerpts are turn[0..350] and turn[1700..3000] — disjoint. Merging them
+    // would show the reader only the second while `spanHash` recorded
+    // `s1|4|0|2900`, asserting bytes 0..2900 were seen.
+    const first = span("a", 350, "s1", 4, 0, 50, 0) // covers turn [0, 350)
+    const second = span("b", 1300, "s1", 4, 2000, 2900, 300) // covers turn [1700, 3000)
+    const deduped = dedupeByTurn([first, second])
     expect(deduped).toHaveLength(2)
-    const turn4 = deduped.find((s) => s.turnIdx === 4)!
-    // The widest span survives, so no highlighted region is lost.
-    expect([turn4.cs, turn4.ce]).toEqual([5, 40])
-    expect(turn4.excerpt.length).toBe(300)
+    expect(deduped.map((s) => [s.cs, s.ce])).toEqual([
+      [0, 50],
+      [2000, 2900]
+    ])
+    // And the hash records two spans, not one union that nobody read.
+    expect(spanHash(deduped)).not.toBe(spanHash([{ ...first, cs: 0, ce: 2900 }]))
+  })
+
+  it("keeps the widest window when one excerpt swallows another", () => {
+    const narrow = span("a", 60, "s1", 4, 100, 110, 0) // covers [100, 160)
+    const wide = span("b", 600, "s1", 4, 120, 130, 120) // covers [0, 600)
+    const deduped = dedupeByTurn([narrow, wide])
+    expect(deduped).toHaveLength(1)
+    expect([deduped[0]!.cs, deduped[0]!.ce]).toEqual([100, 130])
+    expect(deduped[0]!.excerpt.length).toBe(600)
   })
 
   it("keeps the selector's ranking, taking the first occurrence's position", () => {
@@ -189,5 +227,19 @@ describe("dedupe by turn", () => {
 
   it("does not merge the same turn index of two different sessions", () => {
     expect(dedupeByTurn([span("a", 10, "s1", 3), span("b", 10, "s2", 3)])).toHaveLength(2)
+  })
+
+  it("never widens a span past the text that was actually cut", () => {
+    // Property: every surviving row's [cs, ce) lies inside its own excerpt.
+    const rows = dedupeByTurn([
+      span("a", 350, "s1", 4, 0, 50, 0),
+      span("b", 1300, "s1", 4, 2000, 2900, 300),
+      span("c", 400, "s1", 4, 100, 140, 100)
+    ])
+    for (const row of rows) {
+      const from = row.cs - row.highlight.start
+      expect(row.cs).toBeGreaterThanOrEqual(from)
+      expect(row.ce).toBeLessThanOrEqual(from + row.excerpt.length)
+    }
   })
 })

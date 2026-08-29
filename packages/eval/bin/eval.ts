@@ -225,6 +225,32 @@ const program = Effect.gen(function* () {
     }
   }
 
+  // The size the population *should* be, kept before `--skip-missing` can
+  // shrink it, so a partial run cannot describe itself as a whole one.
+  const requestedCount = slice.length
+
+  // `--slice` never loads the split file, and `benchmarkSlice(100)` contains 40
+  // of the 140 test questions — so the *default* invocation used to answer,
+  // judge and write test rows with `gate: null` still in the file. The refusal
+  // has no escape hatch on purpose: an escape hatch is how a test number
+  // becomes a tuning signal.
+  if (splitFile === null && existsSync(resolve(workspaceRoot(), SPLIT_FILE))) {
+    const committed = JSON.parse(
+      readFileSync(resolve(workspaceRoot(), SPLIT_FILE), "utf8")
+    ) as SplitFile
+    if (committed.gate === null) {
+      const testIds = new Set(committed.test)
+      const leaked = slice.filter((question) => testIds.has(question.questionId))
+      if (leaked.length > 0) {
+        console.error(
+          `refusing --slice ${sliceSize}: it contains ${leaked.length} of the ${committed.test.length} ` +
+            `test questions and ${SPLIT_FILE} has no gate record. Use --split dev.`
+        )
+        return yield* Effect.sync(() => process.exit(2))
+      }
+    }
+  }
+
   const needsGraph = systems.some((system) => system.startsWith("palimpsest"))
 
   console.log(`dataset      ${dataset}`)
@@ -252,6 +278,18 @@ const program = Effect.gen(function* () {
       { concurrency: 8 }
     )
     const notIngested = missing.filter((id) => id !== null)
+    if (notIngested.length > 0 && skipMissing && split === "test") {
+      // The test half is read once and must be read whole. A subset of it is
+      // exactly the users the ingest happened to succeed on, which is not a
+      // random sample of the population, and the writeup would report it as
+      // "the 140-question test".
+      console.error(
+        `refusing --skip-missing on --split test: ${notIngested.length} of ${slice.length} ` +
+          "users are not indexed. Finish the ingest, or record a capacity-capped population " +
+          `in ${SPLIT_FILE} and regenerate the split.`
+      )
+      return yield* Effect.sync(() => process.exit(2))
+    }
     if (notIngested.length > 0 && skipMissing) {
       console.log(
         `skipping     ${notIngested.length} of ${slice.length} questions whose users are not indexed`
@@ -442,8 +480,8 @@ const program = Effect.gen(function* () {
             split: split === "" ? null : split,
             profile,
             slice: slice.length,
-            requestedSlice: split === "" ? sliceSize : slice.length,
-            partial: split === "" && slice.length !== sliceSize,
+            requestedSlice: split === "" ? sliceSize : requestedCount,
+            partial: slice.length !== (split === "" ? sliceSize : requestedCount),
             readerModel: llm.model,
             // Distinct env vars from #31; until they exist the selector and the
             // sufficiency check are the reader model, and the envelope says so
@@ -476,14 +514,15 @@ const program = Effect.gen(function* () {
     `Dataset \`longmemeval_${dataset}\`, prefix \`${prefix}\`, profile \`${profile}\`. Reader ` +
       `\`${llm.model}\`, judge \`${judgeModel}\` with the official LongMemEval templates. Every ` +
       "number replays from `.cache/llm` for $0.00.",
-    ...(split !== "" || slice.length === sliceSize
+    ...(slice.length === (split === "" ? sliceSize : requestedCount)
       ? []
       : [
           "",
-          `> **Partial slice.** ${slice.length} of a requested ${sliceSize} questions. The other ` +
-            `${sliceSize - slice.length} users are not indexed in this graph, so they are excluded ` +
-            "rather than counted as retrieval failures. Every column below is over the " +
-            `${slice.length} that are.`
+          `> **Partial ${split === "" ? "slice" : `${split} split`}.** ${slice.length} of a ` +
+            `requested ${split === "" ? sliceSize : requestedCount} questions. The other ` +
+            `${(split === "" ? sliceSize : requestedCount) - slice.length} users are not indexed ` +
+            "in this graph, so they are excluded rather than counted as retrieval failures. " +
+            `Every column below is over the ${slice.length} that are.`
         ]),
     "",
     renderTable(bySystem)

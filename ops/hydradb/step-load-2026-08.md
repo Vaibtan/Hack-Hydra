@@ -73,9 +73,21 @@ touches the `User` fan-out and the cost is in the convergence walk.
 HydraDB RSS is the **peak** the capacity gate sampled during that step's ingest,
 not the figure after it settles; the container limit has to cover the peak.
 
-| step | users | sessions | vertices / edges | HydraDB RSS peak | MinIO RSS | object store | warm `graphMs` p50 | cold `graphMs` p50 | wall clock |
-|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | 20 | 978 | ~192 700 / ~142 900 | 1.52 GiB | 1.90 GiB | 2.7 GB | **68 ms** | 11 397 ms | 24.4 min (12 users; 8 were already in) |
+| step | users | sessions | vertices | claims | HydraDB RSS peak | MinIO RSS | object store | warm `graphMs` p50 | cold `graphMs` p50 | wall clock |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 20 | 978 | ≥ 192 700 | 41 083 | 1.52 GiB | 1.90 GiB | 2.7 GB | **68 ms** | 11 397 ms | 24.4 min (12 users; 8 were already in) |
+
+**Correction.** An earlier version of this table carried an edge count of
+`~142 900`, and it was wrong by roughly an order of magnitude: the formula in
+`step-load.ts` charged two edges per claim, when `ClaimGraph.writeSession`
+writes one `EVIDENCE`, one `FILLS`, one `MENTIONS` per distinct mentioned
+entity, **one `HITS` per token** — up to `MAX_TOKENS_PER_CLAIM` = 24 — and one
+`NAMES` per entity-name token, on top of `Transcript`'s `HAS_TURN` and
+`HAS_CHUNK`. Counting edges properly needs either a store-wide scan (which the
+engine refuses past 250 000 candidates of a label) or a counter at write time
+(which `UserStats` does not keep), so no edge count is reported. The vertex
+figure is a floor: `TurnChunk` vertices, written only for turns over the
+32 743-byte string cap, are not counted anywhere.
 
 ### The read cache belongs to the read phase, and only to it
 
