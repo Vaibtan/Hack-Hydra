@@ -234,3 +234,5 @@ export {
   resolveTimeInterval
 } from "./TimeScope.js"
 export type { DayInterval, TimePrecision, TimeScopable, TimeScopeReport } from "./TimeScope.js"
+export { ARM_PRIORITY, UNION_CAP, unionArms } from "./Arms.js"
+export type { ArmKind, ArmResult, Candidate, UnionReport } from "./Arms.js"
