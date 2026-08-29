@@ -29,6 +29,8 @@ export const oracleSessionSpans = (question: DatasetQuestion): ReadonlyArray<Hyd
           sid: session.sid,
           sessionKey: session.key,
           turnIdx: turn.turnIdx,
+          cs: 0,
+          ce: turn.text.length,
           sessionOrd: session.sessionOrd,
           sessionDate: session.date.dateInt,
           tEvent: 0,

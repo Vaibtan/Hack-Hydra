@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { cutExcerpt, renderReaderPrompt, type HydratedSpan } from "../../src/index.js"
+import {
+  TURN_ROUTES,
+  cutExcerpt,
+  granularityFor,
+  renderReaderPrompt,
+  type HydratedSpan,
+  type PackLabel
+} from "../../src/index.js"
 
 /**
  * The span window. The reader is only ever shown verbatim turn text, so this
@@ -84,6 +91,8 @@ const span = (
   sid: `s${sessionOrd}`,
   sessionKey: `s${sessionOrd}`,
   turnIdx: 0,
+  cs: 0,
+  ce: 7,
   sessionOrd,
   sessionDate: 20230100 + sessionOrd,
   tEvent: 0,
@@ -114,5 +123,69 @@ describe("renderReaderPrompt", () => {
   it("shows verbatim excerpts and never a claim's text", () => {
     expect(prompt).toContain("excerpt aaa")
     expect(prompt).toContain("excerpt bbb")
+  })
+})
+
+describe("granularity", () => {
+  it("reads a whole turn for the routes whose answer IS the turn", () => {
+    // An assistant_output question asks what the assistant said. The Span is
+    // the one line the extractor found quotable; the answer is the list of five
+    // suggestions around it, and 300 characters either side cuts it in half.
+    expect(granularityFor("assistant_output")).toBe("turn")
+    expect(granularityFor("preference")).toBe("turn")
+  })
+
+  it("reads a span for the routes that need many claims in one budget", () => {
+    for (const route of ["fact", "count", "update", "temporal", "multi_fact"] as const) {
+      expect(granularityFor(route)).toBe("span")
+    }
+  })
+
+  it("is span when there is no route at all, which is v1 and every baseline", () => {
+    expect(granularityFor(null)).toBe("span")
+  })
+
+  it("lets the ablation flag override the route, in both directions", () => {
+    expect(granularityFor("assistant_output", "span")).toBe("span")
+    expect(granularityFor("fact", "turn")).toBe("turn")
+  })
+
+  it("names the turn routes explicitly, so adding a route does not silently opt in", () => {
+    expect([...TURN_ROUTES]).toEqual(["assistant_output", "preference"])
+  })
+})
+
+describe("the pack label in the prompt", () => {
+  const labelled = (label: PackLabel | undefined, status: "CURRENT" | "SUPERSEDED") => {
+    const base = span("aaaaaaaa", 1, status)
+    return renderReaderPrompt("q", "2023/04/10 (Mon) 17:50", [
+      label === undefined ? base : { ...base, label }
+    ])
+  }
+
+  it("says CURRENT when nothing else in the slot was said later", () => {
+    expect(labelled("CURRENT", "CURRENT")).toContain(", user, CURRENT")
+  })
+
+  it("distinguishes EARLIER STATEMENT from SUPERSEDED", () => {
+    // The two are different claims and the prompt has to read like it. The
+    // memory *inferred* a supersession edge; it only *observed* that something
+    // else about the same slot was said afterwards. Telling the reader the
+    // second is the first is how a still-true fact gets discarded.
+    expect(labelled("EARLIER STATEMENT", "CURRENT")).toContain(
+      "EARLIER STATEMENT about the same thing"
+    )
+    expect(labelled(undefined, "SUPERSEDED")).toContain("SUPERSEDED by a later statement")
+  })
+
+  it("lets SUPERSEDED win over any pack label, because it is graph structure", () => {
+    expect(labelled("CURRENT", "SUPERSEDED")).toContain("SUPERSEDED by a later statement")
+    expect(labelled("CURRENT", "SUPERSEDED")).not.toContain("EARLIER STATEMENT")
+  })
+
+  it("reads as v1 does when the pack stage did not run", () => {
+    // No label at all is v1 and every baseline, and their prompts must not move
+    // by a byte or the paired comparison is between two prompts.
+    expect(labelled(undefined, "CURRENT")).toContain(", user, CURRENT")
   })
 })

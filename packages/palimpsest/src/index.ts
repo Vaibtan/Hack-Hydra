@@ -230,8 +230,22 @@ export {
   readTimeoutMs
 } from "./Retrieve.js"
 export type { Ablations, AskOptions, AskProfile, AskResult, AskTimings, Pipeline, Receipt, RetrievalPlan } from "./Retrieve.js"
-export { NOT_IN_MEMORY, Reader, SPAN_CONTEXT, cutExcerpt, renderReaderPrompt } from "./Reader.js"
-export type { HydratedSpan, ReadAnswer, ReadOptions } from "./Reader.js"
+export {
+  NOT_IN_MEMORY,
+  Reader,
+  SPAN_CONTEXT,
+  TURN_ROUTES,
+  cutExcerpt,
+  granularityFor,
+  renderReaderPrompt
+} from "./Reader.js"
+export type {
+  Granularity,
+  HydratedSpan,
+  PackOptions,
+  ReadAnswer,
+  ReadOptions
+} from "./Reader.js"
 export {
   MIN_IN_SCOPE_TO_DROP_REST,
   UNDATED_SESSION_SLACK_DAYS,

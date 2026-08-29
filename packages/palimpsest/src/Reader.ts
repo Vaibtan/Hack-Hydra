@@ -2,7 +2,10 @@ import type { LanguageModel } from "@effect/ai"
 import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Schema } from "effect"
+import { turnKey } from "./Keys.js"
+import { adjudicate, applyBudget, dedupeByTurn, spanHash, type PackLabel } from "./Pack.js"
 import type { AsOfLabelled } from "./Scoring.js"
+import type { Route } from "./Understand.js"
 
 /**
  * Reading an answer out of evidence.
@@ -40,6 +43,37 @@ export const cutExcerpt = (
   }
 }
 
+/**
+ * How much of the turn the reader is shown.
+ *
+ * `span` is v1: the Span plus 300 characters either side. `turn` is the whole
+ * turn, prefixed by the one before it.
+ *
+ * The distinction is not a knob, it is two different questions. "What is my
+ * dog's name" is answered by a sentence, and the surrounding paragraph is
+ * noise. "What did you suggest when I asked about the chess opening" is
+ * answered by a whole assistant message — the Span points at the one line the
+ * extractor found quotable, and the answer is the list of five things around
+ * it. v1 showed a span for both and lost the second kind by construction.
+ */
+export type Granularity = "span" | "turn"
+
+/**
+ * The routes read at whole-turn granularity.
+ *
+ * `assistant_output` because the answer *is* the message. `preference` because
+ * a stated preference is usually qualified in the same breath — "I like it, but
+ * only for short trips" — and a 300-character window cuts the qualification off
+ * as often as it keeps it.
+ *
+ * Not `fact`, `count`, `update`, `temporal` or `multi_fact`: those need many
+ * claims in one budget, and whole turns would spend it on three of them.
+ */
+export const TURN_ROUTES: ReadonlyArray<Route> = ["assistant_output", "preference"]
+
+export const granularityFor = (route: Route | null, override?: Granularity): Granularity =>
+  override ?? (route !== null && TURN_ROUTES.includes(route) ? "turn" : "span")
+
 export interface HydratedSpan {
   readonly ckey: string
   /** Short, stable id the reader cites — the claim key's tail. */
@@ -48,6 +82,9 @@ export interface HydratedSpan {
   /** The Session key (`sid` plus `#n` where a haystack repeats one), for Turn keys. */
   readonly sessionKey: string
   readonly turnIdx: number
+  /** The Span's own character offsets into the turn. What the span hash covers. */
+  readonly cs: number
+  readonly ce: number
   readonly sessionOrd: number
   readonly sessionDate: number
   readonly tEvent: number
@@ -58,6 +95,13 @@ export interface HydratedSpan {
   readonly excerpt: string
   /** Where the span sits inside `excerpt`, so a UI can highlight it. */
   readonly highlight: { readonly start: number; readonly end: number }
+  /**
+   * The pack label, when the pack stage ran. `CURRENT` on its own means "not
+   * superseded"; `EARLIER STATEMENT` means another CURRENT claim in the same
+   * Slot was stated later. Absent on v1 and on every baseline, which is why
+   * `renderReaderPrompt` falls back to the status.
+   */
+  readonly label?: PackLabel
 }
 
 const Answer = Schema.Struct({
@@ -132,9 +176,14 @@ export const renderReaderPrompt = (
 ): string => {
   const body = spans.map((span) => {
     const status =
-      span.status === "CURRENT"
-        ? "CURRENT"
-        : `SUPERSEDED by a later statement (at session ${span.atSession})`
+      span.status === "SUPERSEDED"
+        ? `SUPERSEDED by a later statement (at session ${span.atSession})`
+        : // `EARLIER STATEMENT` is a weaker claim than SUPERSEDED and has to
+          // read like one: the memory did not infer a replacement, it only
+          // knows something else about the same slot was said afterwards.
+          span.label === "EARLIER STATEMENT"
+          ? "EARLIER STATEMENT about the same thing"
+          : "CURRENT"
     const dated = span.tEvent > 0 ? `, about ${span.tEvent}` : ""
     return [
       `[${span.id}] session ${span.sessionOrd} on ${span.sessionDate}${dated}, ${span.speaker}, ${status}`,
@@ -162,6 +211,24 @@ export interface ReadOptions {
    * numbers for both variants are in `results/table-*.md`.
    */
   readonly premiseCheck?: boolean
+  /**
+   * The v2 pack stage. Absent means v1's behaviour exactly — span granularity,
+   * no labels, no budget — which is what keeps v1's evidence byte-identical
+   * while both pipelines run against one graph.
+   */
+  readonly pack?: PackOptions
+}
+
+export interface PackOptions {
+  /** Decides granularity and whether a Slot's latest claim is singled out. */
+  readonly route: Route
+  /** Overrides the route's granularity, for the `--granularity` ablation. */
+  readonly granularity?: Granularity
+  /** Which Slot each claim fills, from `plan.slots`. */
+  readonly slotOf?: ReadonlyMap<string, string>
+  /** Never dropped by the budget — the probe hits the question named outright. */
+  readonly protectedKeys?: ReadonlySet<string>
+  readonly budgetTokens?: number
 }
 
 export interface ReadAnswer {
@@ -185,6 +252,19 @@ export interface ReadAnswer {
   readonly hydrateMs: number
   /** Wall time of the reader's own LLM call. */
   readonly readMs: number
+  /**
+   * sha256 over the hydrated span tuples — session key, turn, char range.
+   *
+   * The claim-key hash answers "did retrieval choose the same claims", which is
+   * a question about the index. A judge replaying an answer is asking "did the
+   * reader see the same bytes", and two different claims can point at one span
+   * while one claim can be hydrated at two granularities.
+   */
+  readonly spanHash: string
+  readonly granularity: Granularity
+  /** The chars/4 estimate of what was packed, and what the budget dropped. */
+  readonly estimatedTokens: number
+  readonly budgetDropped: number
 }
 
 const make = Effect.gen(function* () {
@@ -269,6 +349,8 @@ const make = Effect.gen(function* () {
             sid: claim.sid,
             sessionKey: claim.sessionKey,
             turnIdx: claim.turnIdx,
+            cs: claim.cs,
+            ce: claim.ce,
             sessionOrd: claim.sessionOrd,
             sessionDate: claim.sessionDate,
             tEvent: claim.tEvent,
@@ -277,6 +359,141 @@ const make = Effect.gen(function* () {
             atSession: claim.atSession,
             excerpt: cut.excerpt,
             highlight: cut.highlight
+          }
+        ]
+      })
+    })
+
+
+  /**
+   * The user prefix on every claim key, so a Turn key can be rebuilt from it.
+   *
+   * `claimKey` is the only thing that ever produces these and its shape is
+   * fixed (`uid|c|<sha1>`), so this is a parse of a format this repository
+   * owns — not a guess about a foreign string.
+   */
+  const uidOf = (ckey: string): string => {
+    const at = ckey.indexOf("|c|")
+    return at === -1 ? "" : ckey.slice(0, at)
+  }
+
+  /**
+   * Whole turns, each prefixed by the one before it.
+   *
+   * The preceding turn and not the following one: an assistant output is an
+   * *answer*, and the thing that identifies which answer it is is the question
+   * that produced it. What the person said next is a reaction, and paying for
+   * it would double the budget for evidence that is rarely the evidence.
+   *
+   * Turn keys are built from `sessionKey`, never from the bare `sid` —
+   * thirteen haystacks list one session id twice at different dates, and the
+   * bare id would hydrate the wrong conversation without erroring.
+   *
+   * A neighbour that is not there simply produces no path, so the excerpt is
+   * the turn alone. That is the whole of the missing-neighbour handling: the
+   * walk asks for keys, and keys that do not exist contribute nothing.
+   */
+  const hydrateTurns = (
+    evidence: ReadonlyArray<AsOfLabelled>
+  ): Effect.Effect<ReadonlyArray<HydratedSpan>, HydraError> =>
+    Effect.gen(function* () {
+      if (evidence.length === 0) return []
+      const uid = uidOf(evidence[0]!.ckey)
+
+      const wanted = new Set<string>()
+      for (const claim of evidence) {
+        wanted.add(turnKey(uid, claim.sessionKey, claim.turnIdx))
+        if (claim.turnIdx > 0) wanted.add(turnKey(uid, claim.sessionKey, claim.turnIdx - 1))
+      }
+
+      // Turn <- Session over HAS_TURN. A source-only walk, so the client raises
+      // `pathCount` and each turn comes back on its own path; every Turn has
+      // exactly one Session parent, so it is one path per key and no more.
+      const paths = yield* hydra.msPaths({
+        sourceLabel: "Turn",
+        sourceProperty: "turn",
+        sourceValues: [...wanted].sort(),
+        relTypes: ["HAS_TURN"],
+        relDirection: "incoming",
+        maxLen: 1
+      })
+
+      const turns = new Map<string, { text: string; chunks: number; role: string }>()
+      for (const path of paths) {
+        const node = path.nodes[0]
+        const key = String(node?.properties["turn"] ?? "")
+        if (node === undefined || key === "") continue
+        turns.set(key, {
+          text: String(node.properties["text"] ?? ""),
+          chunks: Number(node.properties["chunks"] ?? 1),
+          role: String(node.properties["role"] ?? "")
+        })
+      }
+
+      // A turn over the 32 743-byte string cap spilled into HAS_CHUNK vertices.
+      // At whole-turn granularity the reader is shown all of it, so unlike the
+      // span path this reassembles every spilled turn, not only the ones a span
+      // reaches past.
+      const spilled = [...turns].filter(([, turn]) => turn.chunks > 1).map(([key]) => key)
+      if (spilled.length > 0) {
+        const chunkPaths = yield* hydra.msPaths({
+          sourceLabel: "Turn",
+          sourceProperty: "turn",
+          sourceValues: spilled.sort(),
+          relTypes: ["HAS_CHUNK"],
+          relDirection: "outgoing",
+          maxLen: 1
+        })
+        const extra = new Map<string, Array<{ idx: number; text: string }>>()
+        for (const path of chunkPaths) {
+          if (path.relationships.length !== 1) continue
+          const key = String(path.nodes[0]?.properties["turn"] ?? "")
+          const chunk = path.nodes[1]
+          if (key === "" || chunk === undefined) continue
+          const bucket = extra.get(key) ?? []
+          bucket.push({
+            idx: Number(chunk.properties["chunk_idx"] ?? 0),
+            text: String(chunk.properties["text"] ?? "")
+          })
+          extra.set(key, bucket)
+        }
+        for (const [key, chunks] of extra) {
+          const base = turns.get(key)
+          if (base === undefined) continue
+          const tail = chunks.sort((a, b) => a.idx - b.idx).map((chunk) => chunk.text).join("")
+          turns.set(key, { ...base, text: base.text + tail })
+        }
+      }
+
+      return evidence.flatMap((claim): ReadonlyArray<HydratedSpan> => {
+        const turn = turns.get(turnKey(uid, claim.sessionKey, claim.turnIdx))
+        if (turn === undefined) return []
+        const before =
+          claim.turnIdx > 0 ? turns.get(turnKey(uid, claim.sessionKey, claim.turnIdx - 1)) : undefined
+        const prefix = before === undefined ? "" : `(${before.role} said) ${before.text}\n\n`
+        const excerpt = prefix + turn.text
+        return [
+          {
+            ckey: claim.ckey,
+            id: claim.ckey.slice(-8),
+            sid: claim.sid,
+            sessionKey: claim.sessionKey,
+            turnIdx: claim.turnIdx,
+            cs: claim.cs,
+            ce: claim.ce,
+            sessionOrd: claim.sessionOrd,
+            sessionDate: claim.sessionDate,
+            tEvent: claim.tEvent,
+            speaker: claim.speaker,
+            status: claim.status,
+            atSession: claim.atSession,
+            excerpt,
+            // The span still points at the claim inside the whole turn, so a UI
+            // highlights the same characters it would at span granularity.
+            highlight: {
+              start: Math.min(prefix.length + claim.cs, excerpt.length),
+              end: Math.min(prefix.length + claim.ce, excerpt.length)
+            }
           }
         ]
       })
@@ -312,7 +529,11 @@ const make = Effect.gen(function* () {
           inputTokens: 0,
           outputTokens: 0,
           hydrateMs: 0,
-          readMs: 0
+          readMs: 0,
+          spanHash: spanHash([]),
+          granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
+          estimatedTokens: 0,
+          budgetDropped: 0
         }
       }
 
@@ -347,7 +568,11 @@ const make = Effect.gen(function* () {
           inputTokens: generated.inputTokens,
           outputTokens: generated.outputTokens,
           hydrateMs: 0,
-          readMs: Date.now() - readStarted
+          readMs: Date.now() - readStarted,
+          spanHash: spanHash(spans),
+          granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
+          estimatedTokens: 0,
+          budgetDropped: 0
         }
       }
 
@@ -374,10 +599,28 @@ const make = Effect.gen(function* () {
         inputTokens: generated.inputTokens,
         outputTokens: generated.outputTokens,
         hydrateMs: 0,
-        readMs: Date.now() - readStarted
+        readMs: Date.now() - readStarted,
+        spanHash: spanHash(spans),
+        granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
+        estimatedTokens: 0,
+        budgetDropped: 0
       }
     })
 
+  /**
+   * Hydrate, then pack, then read.
+   *
+   * With no `pack` option this is v1 exactly — hydrate at span granularity and
+   * read — which is what lets both pipelines run against one graph and still
+   * produce byte-identical v1 evidence.
+   *
+   * With one, the order is dedupe, then label, then budget, and it is the only
+   * order that works. Deduping first means a turn selected through three claims
+   * is one excerpt before anything counts its tokens. Labelling before the
+   * budget means the cut cannot orphan an `EARLIER STATEMENT` whose `CURRENT`
+   * partner it dropped. Budgeting last means the number in the receipt is the
+   * number the reader was actually charged for.
+   */
   const read = (
     question: string,
     questionDate: string,
@@ -385,14 +628,35 @@ const make = Effect.gen(function* () {
     options: ReadOptions = {}
   ): Effect.Effect<ReadAnswer, HydraError, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
+      const pack = options.pack
+      const granularity = granularityFor(pack?.route ?? null, pack?.granularity)
+
       const hydrateStarted = Date.now()
-      const spans = yield* hydrate(evidence)
+      const hydrated = yield* granularity === "turn" ? hydrateTurns(evidence) : hydrate(evidence)
       const hydrateMs = Date.now() - hydrateStarted
-      const answer = yield* readSpans(question, questionDate, spans, options)
-      return { ...answer, hydrateMs }
+
+      if (pack === undefined) {
+        const answer = yield* readSpans(question, questionDate, hydrated, options)
+        return { ...answer, hydrateMs }
+      }
+
+      const deduped = dedupeByTurn(hydrated)
+      const labelled = adjudicate(deduped, pack.slotOf ?? new Map(), pack.route)
+      const budgeted = applyBudget(labelled, {
+        ...(pack.budgetTokens === undefined ? {} : { budget: pack.budgetTokens }),
+        ...(pack.protectedKeys === undefined ? {} : { protectedKeys: pack.protectedKeys })
+      })
+
+      const answer = yield* readSpans(question, questionDate, budgeted.kept, options)
+      return {
+        ...answer,
+        hydrateMs,
+        estimatedTokens: budgeted.estimatedTokens,
+        budgetDropped: budgeted.dropped.length
+      }
     })
 
-  return { hydrate, read, readSpans } as const
+  return { hydrate, hydrateTurns, read, readSpans } as const
 })
 
 export class Reader extends Effect.Service<Reader>()("palimpsest/Reader", { effect: make }) {}

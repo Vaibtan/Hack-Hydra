@@ -118,6 +118,8 @@ const asSpan = (doc: Doc): HydratedSpan => ({
   sid: doc.session.sid,
   sessionKey: doc.session.key,
   turnIdx: doc.turnIdx,
+  cs: 0,
+  ce: doc.text.length,
   sessionOrd: doc.session.sessionOrd,
   sessionDate: doc.session.date.dateInt,
   tEvent: 0,
