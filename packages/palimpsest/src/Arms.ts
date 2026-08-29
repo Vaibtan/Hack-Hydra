@@ -1,4 +1,15 @@
-import type { ReachedClaim } from "./Scoring.js"
+import {
+  HydraClient,
+  renderMsPathsQuery,
+  type HydraError,
+  type HydraPath,
+  type MsPathsConfig
+} from "@palimpsest/hydra"
+import { Effect } from "effect"
+import { claimKind, slotKey, tokenKey } from "./Keys.js"
+import { scoreReached, type ReachedClaim } from "./Scoring.js"
+import { stems } from "./Tokenize.js"
+import type { Probe, SubQuestion } from "./Understand.js"
 
 /**
  * Several deterministic ways to reach a claim, unioned into one candidate set.
@@ -125,3 +136,215 @@ export const unionArms = (
     counts
   }
 }
+
+// ------------------------------------------------------------ the live arms
+
+/**
+ * Query 1's shape, shared by every arm that walks from anchors.
+ *
+ * A constant-valued target selector (`Claim.kind`) is what makes an `MSpaths`
+ * walk return *every* source→target pair rather than one path per source, and
+ * it is also an order of magnitude faster than raising `pathCount` — see the
+ * engine table in CONTEXT.md. Every arm below reuses it, so a sub-question walk
+ * costs exactly what the primary walk costs.
+ */
+export const convergenceConfig = (
+  uid: string,
+  terms: ReadonlyArray<string>,
+  maxLen: number
+): MsPathsConfig => ({
+  sourceLabel: "Token",
+  sourceProperty: "tkey",
+  sourceValues: terms.map((stem) => tokenKey(uid, stem)),
+  targetLabel: "Claim",
+  targetProperty: "kind",
+  targetValues: [claimKind(uid)],
+  relTypes: ["HITS", "NAMES", "MENTIONS"],
+  relDirection: "outgoing",
+  maxLen
+})
+
+/** One arm's reads, with the query it ran, for the receipt. */
+export interface LiveArm extends ArmResult {
+  readonly query: string | null
+  readonly paths: number
+}
+
+const emptyArm = (kind: ArmKind, label: string): LiveArm => ({
+  kind,
+  label,
+  claims: [],
+  query: null,
+  paths: 0
+})
+
+/** The convergence walk: today's Query 1, widened for the selector. */
+export const convergenceArm = (
+  hydra: HydraClient,
+  uid: string,
+  terms: ReadonlyArray<string>,
+  total: number,
+  maxLen: number
+): Effect.Effect<LiveArm, HydraError> =>
+  Effect.gen(function* () {
+    if (terms.length === 0) return emptyArm("convergence", "convergence")
+    const config = convergenceConfig(uid, terms, maxLen)
+    const paths = yield* hydra.msPaths(config)
+    return {
+      kind: "convergence",
+      label: "convergence",
+      claims: scoreReached(paths, total),
+      query: renderMsPathsQuery(config).query,
+      paths: paths.length
+    }
+  })
+
+/**
+ * A sub-question's own convergence walk.
+ *
+ * The terms come from the Understand call, which returns them *with* each
+ * sub-question — so decomposing a question costs no extra LLM round trip, only
+ * an extra graph read that runs beside the others.
+ */
+export const subQuestionArm = (
+  hydra: HydraClient,
+  uid: string,
+  sub: SubQuestion,
+  index: number,
+  total: number,
+  maxLen: number
+): Effect.Effect<LiveArm, HydraError> =>
+  Effect.gen(function* () {
+    const label = `sub:${index}`
+    if (sub.terms.length === 0) return emptyArm("subQuestion", label)
+    const config = convergenceConfig(uid, sub.terms, maxLen)
+    const paths = yield* hydra.msPaths(config)
+    return {
+      kind: "subQuestion",
+      label,
+      claims: scoreReached(paths, total),
+      query: renderMsPathsQuery(config).query,
+      paths: paths.length
+    }
+  })
+
+/**
+ * A Slot read for an `(entity, attribute)` the question named outright.
+ *
+ * This is the arm that answers "how many years older is my grandma than me":
+ * nothing lexical reaches the `(me, age)` claim, and it is one indexed read
+ * away. A Slot that does not exist is an empty arm, not an error — the model
+ * proposes the pair, the graph decides whether it is there.
+ *
+ * The claims come back scored with **zero** anchors, exactly as v1's slot-mates
+ * do: they did not converge, they were named. The union's arm priority is what
+ * keeps them, not a score they did not earn.
+ */
+export const probeArm = (
+  hydra: HydraClient,
+  uid: string,
+  probe: Probe,
+  total: number
+): Effect.Effect<LiveArm, HydraError> =>
+  Effect.gen(function* () {
+    const label = `probe:${probe.entityCanon}|${probe.attr}`
+    const config: MsPathsConfig = {
+      sourceLabel: "Slot",
+      sourceProperty: "skey",
+      sourceValues: [slotKey(uid, probe.entityCanon, probe.attr)],
+      targetLabel: "Claim",
+      targetProperty: "kind",
+      targetValues: [claimKind(uid)],
+      relTypes: ["FILLS"],
+      relDirection: "incoming",
+      maxLen: 1
+    }
+    const paths = yield* hydra.msPaths(config)
+    return {
+      kind: "probe",
+      label,
+      claims: scoreReached(paths, total).map((claim) => ({
+        ...claim,
+        anchors: [],
+        convergence: 0,
+        score: 0
+      })),
+      query: renderMsPathsQuery(config).query,
+      paths: paths.length
+    }
+  })
+
+/** How many terms the discovery walk may seed itself with. */
+export const MAX_DISCOVERY_SEEDS = 20
+
+/**
+ * Terms to try that the question did not supply, from what the first walk found.
+ *
+ * Two sources, both deterministic and both free of another LLM call: the
+ * **entities** a two-hop path passed through — `Token→Entity→Claim` means that
+ * Entity is a name the question's own words reached — and terms from the top
+ * candidates' index text.
+ *
+ * Ranked by *rarity within the candidate set*: a term in one of the top ten
+ * candidates discriminates between them, a term in nine does not. That is an
+ * idf-shaped signal computable from what is already in hand. The spec asks for
+ * idf from the Token `df`, which `Scoring` reads only for terms that were
+ * already anchors — and a term that was already an anchor discovers nothing.
+ * The deviation is here rather than hidden.
+ */
+export const discoverySeeds = (
+  paths: ReadonlyArray<HydraPath>,
+  top: ReadonlyArray<ReachedClaim>,
+  alreadyAnchors: ReadonlySet<string>
+): ReadonlyArray<string> => {
+  const seeds = new Map<string, number>()
+
+  for (const path of paths) {
+    if (path.nodes.length !== 3) continue
+    const middle = path.nodes[1]
+    const name = String(middle?.properties["name"] ?? "")
+    if (name === "") continue
+    for (const s of stems(name)) {
+      if (!alreadyAnchors.has(s)) seeds.set(s, 0)
+    }
+  }
+
+  const frequency = new Map<string, number>()
+  for (const claim of top) {
+    for (const s of new Set(stems(claim.text))) {
+      if (alreadyAnchors.has(s)) continue
+      frequency.set(s, (frequency.get(s) ?? 0) + 1)
+    }
+  }
+  for (const [term, n] of frequency) {
+    if (!seeds.has(term)) seeds.set(term, n)
+  }
+
+  return [...seeds.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .slice(0, MAX_DISCOVERY_SEEDS)
+    .map(([term]) => term)
+}
+
+/** One more convergence walk, from terms the question never said. */
+export const discoveryArm = (
+  hydra: HydraClient,
+  uid: string,
+  seeds: ReadonlyArray<string>,
+  total: number,
+  maxLen: number
+): Effect.Effect<LiveArm, HydraError> =>
+  Effect.gen(function* () {
+    if (seeds.length === 0) return emptyArm("discovery", "discovery")
+    const config = convergenceConfig(uid, seeds, maxLen)
+    const paths = yield* hydra.msPaths(config)
+    return {
+      kind: "discovery",
+      label: "discovery",
+      // Scored, but never allowed to outrank a claim the question's own words
+      // reached: the union's arm priority puts discovery below convergence.
+      claims: scoreReached(paths, total),
+      query: renderMsPathsQuery(config).query,
+      paths: paths.length
+    }
+  })

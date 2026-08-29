@@ -234,8 +234,19 @@ export {
   resolveTimeInterval
 } from "./TimeScope.js"
 export type { DayInterval, TimePrecision, TimeScopable, TimeScopeReport } from "./TimeScope.js"
-export { ARM_PRIORITY, UNION_CAP, unionArms } from "./Arms.js"
-export type { ArmKind, ArmResult, Candidate, UnionReport } from "./Arms.js"
+export {
+  ARM_PRIORITY,
+  MAX_DISCOVERY_SEEDS,
+  UNION_CAP,
+  convergenceArm,
+  convergenceConfig,
+  discoveryArm,
+  discoverySeeds,
+  probeArm,
+  subQuestionArm,
+  unionArms
+} from "./Arms.js"
+export type { ArmKind, ArmResult, Candidate, LiveArm, UnionReport } from "./Arms.js"
 export {
   MAX_PROBES,
   MAX_SUB_QUESTIONS,

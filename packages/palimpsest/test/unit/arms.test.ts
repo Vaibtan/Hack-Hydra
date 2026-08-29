@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { ARM_PRIORITY, UNION_CAP, unionArms, type ArmResult } from "../../src/Arms.js"
+import {
+  ARM_PRIORITY,
+  MAX_DISCOVERY_SEEDS,
+  UNION_CAP,
+  convergenceConfig,
+  discoverySeeds,
+  unionArms,
+  type ArmResult
+} from "../../src/Arms.js"
 import type { ReachedClaim } from "../../src/Scoring.js"
 
 const claim = (over: Partial<ReachedClaim> & { ckey: string }): ReachedClaim => ({
@@ -161,5 +169,70 @@ describe("arm priority", () => {
       "discovery",
       "slotMate"
     ])
+  })
+})
+
+describe("the convergence config every anchor arm shares", () => {
+  it("keeps the constant target selector that makes MSpaths return every pair", () => {
+    const config = convergenceConfig("g3-abc", ["hamster", "pet"], 2)
+    expect(config.targetProperty).toBe("kind")
+    expect(config.targetValues).toEqual(["g3-abc|claim"])
+    expect(config.sourceValues).toEqual(["g3-abc|t|hamster", "g3-abc|t|pet"])
+    expect(config.pathCount).toBeUndefined()
+  })
+})
+
+const path = (names: ReadonlyArray<string>) => ({
+  nodes: names.map((name, i) => ({ id: i, labels: [], properties: { name } })),
+  relationships: names.slice(1).map((_, i) => ({
+    id: i,
+    type: "MENTIONS",
+    src: i,
+    dst: i + 1,
+    properties: {}
+  }))
+})
+
+describe("discovery seeds", () => {
+  it("takes the entity a two-hop path passed through", () => {
+    // Token -> Entity -> Claim: that Entity is a name the question's own words
+    // reached, and its stems are worth walking from.
+    const seeds = discoverySeeds([path(["tok", "wells fargo", "claim"])], [], new Set(["tok"]))
+    expect(seeds).toContain("fargo")
+    expect(seeds).toContain("well")
+  })
+
+  it("ignores a one-hop path, which passed through no entity", () => {
+    expect(discoverySeeds([path(["tok", "claim"])], [], new Set())).toEqual([])
+  })
+
+  it("never seeds a term that was already an anchor — it would discover nothing", () => {
+    const seeds = discoverySeeds(
+      [path(["tok", "hamster", "claim"])],
+      [claim({ ckey: "c1", text: "hamster named Nibbles" })],
+      new Set(["hamster"])
+    )
+    expect(seeds).not.toContain("hamster")
+    expect(seeds).toContain("nibbl")
+  })
+
+  it("prefers a term that discriminates between candidates over one they all share", () => {
+    // "mortgage" is in every candidate and says nothing; "brooklyn" is in one.
+    const top = [
+      claim({ ckey: "c1", text: "mortgage from Wells Fargo" }),
+      claim({ ckey: "c2", text: "mortgage rate rose" }),
+      claim({ ckey: "c3", text: "mortgage on the Brooklyn flat" })
+    ]
+    const seeds = discoverySeeds([], top, new Set())
+    expect(seeds.indexOf("brooklyn")).toBeLessThan(seeds.indexOf("mortgag"))
+  })
+
+  it("is capped and deterministic", () => {
+    const top = Array.from({ length: 40 }, (_, i) =>
+      claim({ ckey: `c${i}`, text: `alpha${i} beta${i} gamma${i}` })
+    )
+    const seeds = discoverySeeds([], top, new Set())
+    expect(seeds.length).toBe(MAX_DISCOVERY_SEEDS)
+    expect(seeds).toEqual(discoverySeeds([], top, new Set()))
   })
 })
