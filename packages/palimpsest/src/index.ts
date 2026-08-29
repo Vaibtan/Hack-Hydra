@@ -258,3 +258,12 @@ export {
   spanTuple
 } from "./Pack.js"
 export type { Adjudicable, BudgetReport, PackLabel, Packable } from "./Pack.js"
+export {
+  ALWAYS_KEEP_TOP_CONVERGENCE,
+  MAX_KEPT_TURNS,
+  enforceSelection,
+  orderCandidates,
+  shortId,
+  speakerShare
+} from "./Select.js"
+export type { DropReason, SelectionReport } from "./Select.js"
