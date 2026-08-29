@@ -593,8 +593,10 @@ const make = Effect.gen(function* () {
    * The shape is one LLM call to decide *what to look for*, several graph reads
    * that look for it in different ways, a union that remembers which read found
    * what, and one LLM call to decide *what the reader sees*. Everything between
-   * the two calls is deterministic given a fixed graph, and everything either
-   * call decided is written into the plan on the receipt.
+   * the two calls is deterministic given a fixed graph; the two calls themselves
+   * are cached by content hash, so a replay is byte-identical and a first run is
+   * model-dependent. Everything either call decided is written into the plan on
+   * the receipt.
    *
    * The order of the reads is not incidental. `understand` is the only stage in
    * front of the graph, so the idf denominator is fetched *beside* it rather

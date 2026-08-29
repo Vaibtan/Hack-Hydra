@@ -10,8 +10,10 @@ import { languageModelLayer } from "./Provider.js"
  * schema constrains the provider's structured output and then validates what
  * came back. Every call is cached on disk by model + system + prompt + schema,
  * so a second run of any experiment makes zero API calls and produces exactly
- * the same graph — which is what lets the pitch say "deterministic given a
- * fixed graph" honestly.
+ * the same graph — which is what lets the pitch say **replay-deterministic**
+ * honestly. Not "deterministic": a first run's selection and reading are
+ * model-dependent, and extraction always was. What the cache buys is that a
+ * replay is byte-identical and free, which is the claim a judge can check.
  */
 
 /** Token prices in USD per million tokens. */

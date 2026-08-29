@@ -62,4 +62,9 @@ TypeScript + Effect only · HydraDB-only retrieval, no vector or BM25 in *our* r
 data-level · users partitioned by key prefix in the single `default` graph · LLM is OpenAI
 `gpt-5.6-luna` · every LLM call cached on disk by `sha256(model + prompt + schema)`.
 
-Retrieval is deterministic **given a fixed graph**. Extraction is not. Say exactly that.
+Retrieval is **replay-deterministic**: given a fixed graph and a fixed LLM cache it is
+byte-identical. Every LLM decision on the read path — understand, select, sufficiency, read — is
+cached by content hash, with the rendered prompt stored beside the value and the model id in the
+receipt. **First-run selection is model-dependent.** Extraction is not deterministic either. Say
+exactly that; do not say "deterministic given a fixed graph", which was true of v1 and stopped
+being true the moment a model chose what the reader sees.
