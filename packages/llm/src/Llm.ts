@@ -190,7 +190,9 @@ const make = Effect.gen(function* () {
           model: using,
           value: encoded,
           inputTokens,
-          outputTokens
+          outputTokens,
+          system: options.system ?? "",
+          prompt: options.prompt
         })
       )
 
@@ -253,7 +255,9 @@ const make = Effect.gen(function* () {
           model: using,
           value: response.text,
           inputTokens,
-          outputTokens
+          outputTokens,
+          system: options.system ?? "",
+          prompt: options.prompt
         })
       )
 

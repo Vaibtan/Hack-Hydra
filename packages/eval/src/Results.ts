@@ -92,6 +92,8 @@ export interface EvalRow {
   readonly estimatedTokens?: number
   /** The v2 stages this row ran with switched off, for an ablation table. */
   readonly ablations?: ReadonlyArray<string>
+  /** The reader's first answer cited nothing that exists and it was asked again. */
+  readonly recited?: boolean
   /** Derived; `pnpm table` recomputes it rather than trusting the file. */
   readonly errorClass?: string | null
 }

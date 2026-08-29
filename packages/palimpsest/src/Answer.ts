@@ -50,6 +50,13 @@ export interface AnswerOptions extends AskOptions {
   readonly granularity?: Granularity
   /** Skips the sufficiency stage entirely, for the `--no-sufficiency` ablation. */
   readonly noSufficiency?: boolean
+  /**
+   * Drops the route-specific rules block from the reader prompt, for the
+   * `--reader-route=off` ablation. The reader then sees v1's single prompt,
+   * byte for byte, on v2's evidence — which is the comparison that isolates
+   * the rules from everything else v2 changed.
+   */
+  readonly noReaderRoute?: boolean
 }
 
 /**
@@ -96,6 +103,7 @@ export const answerV2 = (
 
     const readOptions = {
       ...(options.premiseCheck === true ? { premiseCheck: true } : {}),
+      ...(options.noReaderRoute === true ? {} : { route: first.plan?.route ?? null }),
       ...(() => {
         const pack = packOptions(first, options.granularity)
         return pack === undefined ? {} : { pack }

@@ -51,6 +51,21 @@ export interface CachedCall {
   readonly value: unknown
   readonly inputTokens: number
   readonly outputTokens: number
+  /**
+   * What the model was actually shown, stored beside what it answered.
+   *
+   * The cache key is a hash of these, which proves two runs sent the same
+   * prompt and shows nobody what it was. A replay has to be able to open one
+   * file and read the question that produced an answer -- otherwise "here is
+   * the receipt" stops at the boundary of the LLM call, which is exactly where
+   * a reader of a benchmark result wants to look hardest.
+   *
+   * Optional so that every entry written before this field existed still loads:
+   * an old entry replays its value and says nothing about its prompt, rather
+   * than being a cache miss and a fresh charge.
+   */
+  readonly system?: string
+  readonly prompt?: string
 }
 
 const pathFor = (dir: string, kind: string, key: string): string =>

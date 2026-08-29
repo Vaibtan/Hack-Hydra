@@ -103,7 +103,12 @@ const ablations = {
   ...(process.argv.includes("--no-select") ? { noSelect: true } : {})
 } as const
 const noSufficiency = process.argv.includes("--no-sufficiency")
-const ablationNames = [...Object.keys(ablations), ...(noSufficiency ? ["noSufficiency"] : [])].sort()
+const noReaderRoute = arg("reader-route", "on") === "off"
+const ablationNames = [
+  ...Object.keys(ablations),
+  ...(noSufficiency ? ["noSufficiency"] : []),
+  ...(noReaderRoute ? ["noReaderRoute"] : [])
+].sort()
 /** Forces one granularity for every route, for the `span|turn` ablation. */
 const granularityFlag = arg("granularity", "")
 const granularityOverride =
@@ -373,6 +378,7 @@ const program = Effect.gen(function* () {
       let estimatedTokens: number | undefined
       let sufficiencyTier: string | undefined
       let secondPass: boolean | undefined
+      let recited: boolean | undefined
       let askMs: number | undefined
       let graphMs: number | undefined
       let stageTimingsMs: Record<string, number> | undefined
@@ -385,6 +391,7 @@ const program = Effect.gen(function* () {
           profile,
           ablations,
           ...(noSufficiency ? { noSufficiency: true } : {}),
+          ...(noReaderRoute ? { noReaderRoute: true } : {}),
           ...(granularityOverride === undefined ? {} : { granularity: granularityOverride })
         })
         const ask = answered.ask
@@ -433,6 +440,7 @@ const program = Effect.gen(function* () {
           granularity = read.granularity
           estimatedTokens = read.estimatedTokens
           budgetDroppedSessions = read.budgetDroppedSessions
+          recited = read.recited
         }
       } else if (system.startsWith("palimpsest")) {
         const ask = yield* retrieve.ask(uid, question.question, {
@@ -535,6 +543,7 @@ const program = Effect.gen(function* () {
         ...(estimatedTokens === undefined ? {} : { estimatedTokens }),
         ...(sufficiencyTier === undefined ? {} : { sufficiencyTier }),
         ...(secondPass === undefined ? {} : { secondPass }),
+        ...(recited === undefined ? {} : { recited }),
         ...(system === 'palimpsest-v2' ? { keptSessions: evidenceSessions, ablations: ablationNames } : {})
       } satisfies EvalRow
       // Derived, and recomputed by `pnpm table` from the same function, so the

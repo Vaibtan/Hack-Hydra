@@ -204,6 +204,56 @@ export const renderReaderPrompt = (
   ].join("\n")
 }
 
+
+/**
+ * The route-specific block appended to the system prompt.
+ *
+ * v1 had one prompt for every question, and its instructions were tuned for the
+ * common case: "answer in as few words as the question allows". That rule is
+ * right for `fact` and actively wrong everywhere else — it tells a count
+ * question to say "five" without saying five of what, and a preference question
+ * to name a preference without the facts that justify it, which is the shape
+ * the judge marks wrong.
+ *
+ * So the terse rule survives only on `fact`, and each other route gets the
+ * instruction its own failure mode needs. There is one system prompt with a
+ * block appended, not seven prompts: a divergence between them would be
+ * invisible and would show up as an unexplained per-route accuracy difference.
+ */
+export const ROUTE_RULES: Readonly<Record<Route, string>> = {
+  fact: `- Answer in as few words as the question allows - a name, a number, a date, a short phrase.`,
+  preference: `- Open by naming the personal facts from the excerpts that the preference rests on, then give
+  the preference. A preference with no stated basis is indistinguishable from a guess.
+- Keep any qualification the person gave alongside it ("but only for short trips").`,
+  assistant_output: `- The excerpts include what the assistant said. Quote the relevant part verbatim rather than
+  paraphrasing it: the question is about what was said, so a paraphrase is a different answer.
+- If several suggestions were given, list them all, in the order they appear.`,
+  update: `- Give the value that is CURRENT. You may add what it replaced, as "previously X".
+- An excerpt marked EARLIER STATEMENT is not necessarily wrong - it is what was said before
+  something else about the same thing. Prefer the later one and say so.`,
+  count: `- Enumerate the items in plain words, then give the number. Do not give a bare number: a count
+  the reader cannot check is a count nobody can trust.
+- Count distinct things. Two excerpts describing one item are one item.`,
+  temporal: `- Do the date arithmetic explicitly: name the two dates, then give the interval, then the answer.
+- The question's date is given above. Excerpt dates are the dates of the conversations, and an
+  "about" date is when the thing itself happened - prefer that one when both are present.`,
+  multi_fact: `- The answer needs more than one excerpt. Name each fact you are combining and which excerpt it
+  came from, then give the combined answer.
+- If one of the facts you need is missing, say which, and answer ${"NOT_IN_MEMORY"}.`
+}
+
+/**
+ * The system prompt for one route.
+ *
+ * `null` is v1 and every baseline: one prompt, unchanged, byte for byte. That
+ * is what `--reader-route=off` selects too, so the ablation measures the rules
+ * block and nothing else.
+ */
+export const systemFor = (route: Route | null, premiseCheck: boolean): string => {
+  const base = premiseCheck ? PREMISE_SYSTEM : SYSTEM
+  return route === null ? base : `${base}\n\nFor this question in particular:\n${ROUTE_RULES[route]}`
+}
+
 export interface ReadOptions {
   /**
    * Make the reader test the question's presuppositions before answering.
@@ -217,6 +267,11 @@ export interface ReadOptions {
    * while both pipelines run against one graph.
    */
   readonly pack?: PackOptions
+  /**
+   * Appends the route's rules block to the system prompt. Absent is v1's single
+   * prompt, unchanged — which is what `--reader-route=off` selects.
+   */
+  readonly route?: Route | null
 }
 
 export interface PackOptions {
@@ -271,6 +326,8 @@ export interface ReadAnswer {
    * say so.
    */
   readonly budgetDroppedSessions: ReadonlyArray<string>
+  /** The first answer cited nothing that exists and the reader was asked again. */
+  readonly recited: boolean
 }
 
 const make = Effect.gen(function* () {
@@ -540,7 +597,8 @@ const make = Effect.gen(function* () {
           granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
           estimatedTokens: 0,
           budgetDropped: 0,
-          budgetDroppedSessions: []
+          budgetDroppedSessions: [],
+          recited: false
         }
       }
 
@@ -550,7 +608,7 @@ const make = Effect.gen(function* () {
         const generated = yield* llm
           .generateObject({
             kind: "read",
-            system: PREMISE_SYSTEM,
+            system: systemFor(options.route ?? null, true),
             prompt,
             schema: PremiseAnswer,
             objectName: "answer"
@@ -580,25 +638,58 @@ const make = Effect.gen(function* () {
           granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
           estimatedTokens: 0,
           budgetDropped: 0,
-          budgetDroppedSessions: []
+          budgetDroppedSessions: [],
+          recited: false
         }
       }
 
-      const generated = yield* llm
+      const first = yield* llm
         .generateObject({
           kind: "read",
-          system: SYSTEM,
+          system: systemFor(options.route ?? null, false),
           prompt,
           schema: Answer,
           objectName: "answer"
         })
         .pipe(Effect.orDie)
 
+      // ---- citation validation, with exactly one re-ask --------------------
+      // A cited id that is not in the pack is a fabricated citation, and an
+      // answer with no valid citation at all is one the receipt cannot support.
+      // The re-ask shows the model the ids it may use; if it still cannot cite
+      // one, the honest verdict is that this evidence did not produce an
+      // answer, not that it produced an uncheckable one.
+      const known = new Set(spans.map((span) => span.id))
+      const validOf = (ids: ReadonlyArray<string>): ReadonlyArray<string> =>
+        ids.filter((id) => known.has(id))
+
+      let generated = first
+      let cited = validOf(first.value.cited_ids)
+      let recited = false
+      const said = first.value.answer.trim()
+      if (cited.length === 0 && said !== NOT_IN_MEMORY && !said.startsWith(NOT_IN_MEMORY)) {
+        recited = true
+        generated = yield* llm
+          .generateObject({
+            kind: "read",
+            system: systemFor(options.route ?? null, false),
+            prompt: `${prompt}\n\nYour previous answer cited no excerpt that exists. Answer again, and
+cite at least one id from this list exactly as written: ${[...known].join(", ")}.
+If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
+            schema: Answer,
+            objectName: "answer"
+          })
+          .pipe(Effect.orDie)
+        cited = validOf(generated.value.cited_ids)
+      }
+
       const answer = generated.value.answer.trim()
+      const uncited = recited && cited.length === 0
       return {
-        answer,
-        notInMemory: answer === NOT_IN_MEMORY || answer.startsWith(NOT_IN_MEMORY),
-        citedIds: generated.value.cited_ids,
+        answer: uncited ? NOT_IN_MEMORY : answer,
+        notInMemory:
+          uncited || answer === NOT_IN_MEMORY || answer.startsWith(NOT_IN_MEMORY),
+        citedIds: cited,
         reasoning: generated.value.reasoning,
         spans,
         cached: generated.cached,
@@ -612,7 +703,8 @@ const make = Effect.gen(function* () {
         granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
         estimatedTokens: 0,
         budgetDropped: 0,
-        budgetDroppedSessions: []
+        budgetDroppedSessions: [],
+        recited
       }
     })
 

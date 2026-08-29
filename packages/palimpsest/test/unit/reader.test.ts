@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest"
 import {
+  ROUTE_RULES,
   TURN_ROUTES,
   cutExcerpt,
   granularityFor,
   renderReaderPrompt,
+  systemFor,
   type HydratedSpan,
   type PackLabel
 } from "../../src/index.js"
@@ -187,5 +189,54 @@ describe("the pack label in the prompt", () => {
     // No label at all is v1 and every baseline, and their prompts must not move
     // by a byte or the paired comparison is between two prompts.
     expect(labelled(undefined, "CURRENT")).toContain(", user, CURRENT")
+  })
+})
+
+describe("the route rules block", () => {
+  it("keeps the terse rule on fact and nowhere else", () => {
+    // v1's "answer in as few words as the question allows" is right for a fact
+    // and actively wrong everywhere else: it tells a count question to say
+    // "five" without saying five of what, which is the shape the judge marks
+    // wrong.
+    expect(ROUTE_RULES.fact).toContain("as few words")
+    for (const route of ["count", "temporal", "update", "preference", "multi_fact"] as const) {
+      expect(ROUTE_RULES[route]).not.toContain("as few words")
+    }
+  })
+
+  it("tells a count question to enumerate before it numbers", () => {
+    expect(ROUTE_RULES.count).toContain("Enumerate")
+    expect(ROUTE_RULES.count).toContain("distinct")
+  })
+
+  it("tells an assistant-output question to quote rather than paraphrase", () => {
+    expect(ROUTE_RULES.assistant_output).toContain("verbatim")
+  })
+
+  it("tells an update question that EARLIER STATEMENT is not wrong", () => {
+    expect(ROUTE_RULES.update).toContain("EARLIER STATEMENT")
+  })
+
+  it("appends to one system prompt rather than forking seven", () => {
+    // Seven prompts would diverge invisibly and show up as an unexplained
+    // per-route accuracy difference that nothing in the receipt could explain.
+    const base = systemFor(null, false)
+    for (const route of Object.keys(ROUTE_RULES) as Array<keyof typeof ROUTE_RULES>) {
+      expect(systemFor(route, false).startsWith(base)).toBe(true)
+      expect(systemFor(route, false)).toContain(ROUTE_RULES[route])
+    }
+  })
+
+  it("is v1's prompt byte for byte when there is no route", () => {
+    // What `--reader-route=off`, v1 and every baseline get. If this ever
+    // stopped being true, every v1 number in the tables would have to be
+    // re-measured.
+    expect(systemFor(null, false)).not.toContain("For this question in particular")
+  })
+
+  it("keeps the premise variant separate from the route rules", () => {
+    expect(systemFor(null, true)).toContain("premise_supported")
+    expect(systemFor("count", true)).toContain("premise_supported")
+    expect(systemFor("count", true)).toContain(ROUTE_RULES.count)
   })
 })
