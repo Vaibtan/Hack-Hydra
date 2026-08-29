@@ -23,8 +23,8 @@ services:
     # engine's disk read cache is on (see the hydradb service), so a *warm* read
     # does not land here — a cold one does, and that is why a cold ask is
     # 11 s against a warm 68 ms.
-    mem_limit: 4g
-    memswap_limit: 4g
+    mem_limit: 6g
+    memswap_limit: 6g
     cpus: 6
     restart: on-failure:3
     healthcheck:
@@ -163,8 +163,13 @@ services:
       - "127.0.0.1:29090:9090"
     secrets:
       - hydradb_auth_token
-    mem_limit: 6g
-    memswap_limit: 6g
+    # Interim, from the step-load curve so far: HydraDB peaked at 1.94 GiB
+    # ingesting 40 users, so 6 GiB was reserving room it never used while the
+    # object store — whose RSS tracks the object *count*, and which held 3.5 GB
+    # of objects by then — ran out at 4 GiB. The final value comes from the
+    # completed curve; this is the rebalance that let the ingest continue.
+    mem_limit: 4g
+    memswap_limit: 4g
     cpus: 4
     restart: on-failure:3
     # The reviewed runtime contains no HTTP client. This is a liveness check;

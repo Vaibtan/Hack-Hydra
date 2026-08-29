@@ -4,16 +4,16 @@
   "source_runtime_manifest": "ops/hydradb/runtime-manifest.v1.json",
   "containers": {
     "hydradb": {
-      "memory_bytes": 6442450944,
-      "memory_swap_bytes": 6442450944,
+      "memory_bytes": 4294967296,
+      "memory_swap_bytes": 4294967296,
       "cpu_limit": 4,
       "restart_policy": "on-failure:3",
       "cache_bytes": 536870912,
       "minimum_host_headroom_bytes": 805306368
     },
     "object_store": {
-      "memory_bytes": 4294967296,
-      "memory_swap_bytes": 4294967296,
+      "memory_bytes": 6442450944,
+      "memory_swap_bytes": 6442450944,
       "cpu_limit": 6,
       "restart_policy": "on-failure:3"
     }
