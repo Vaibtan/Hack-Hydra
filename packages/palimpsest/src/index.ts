@@ -246,3 +246,15 @@ export {
   understand
 } from "./Understand.js"
 export type { Probe, Route, SubQuestion, Understood } from "./Understand.js"
+export {
+  ADJUDICATED_ROUTES,
+  CHARS_PER_TOKEN,
+  READER_TOKEN_BUDGET,
+  adjudicate,
+  applyBudget,
+  dedupeByTurn,
+  estimateTokens,
+  spanHash,
+  spanTuple
+} from "./Pack.js"
+export type { Adjudicable, BudgetReport, PackLabel, Packable } from "./Pack.js"
