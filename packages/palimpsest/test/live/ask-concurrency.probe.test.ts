@@ -2,12 +2,13 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath, loadDataset, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient, type MsPathsConfig } from "@palimpsest/hydra"
 import { LlmLive } from "@palimpsest/llm"
-import { Effect, Layer } from "effect"
+import { Effect, Exit, Layer, Option } from "effect"
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 import { questionAnchors } from "../../src/Anchors.js"
 import { claimKind, tokenKey } from "../../src/Keys.js"
+import { readUserStats } from "../../src/User.js"
 import {
   DEFAULT_TOP_K,
   MAX_SLOT_EXPANSION,
@@ -143,8 +144,27 @@ describe.skipIf(!hasDataset || split === null)("v1 evidence survives the concurr
       loadDataset("s").pipe(Effect.orDie) as Effect.Effect<ReadonlyArray<DatasetQuestion>, never, never>
     )
     const dev = new Set(split!.dev)
-    const subjects = questions.filter((question) => dev.has(question.questionId))
-    expect(subjects.length).toBe(split!.dev.length)
+    const inSplit = questions.filter((question) => dev.has(question.questionId))
+    expect(inSplit.length).toBe(split!.dev.length)
+
+    // Only the dev users this graph actually holds. A capacity-capped
+    // population is recorded in the split file, not discovered here — and a
+    // missing `User` vertex is a *defect* in `totalClaims`, not a failure, so
+    // it would not be caught below.
+    const present = await run(
+      Effect.gen(function* () {
+        const hydra = yield* HydraClient
+        return yield* Effect.forEach(
+          inSplit,
+          (question) =>
+            readUserStats(hydra, `${split!.prefix}-${question.questionId}`).pipe(
+              Effect.map((stats) => (Option.isSome(stats) ? question : null))
+            ),
+          { concurrency: 8 }
+        )
+      })
+    )
+    const subjects = present.filter((question) => question !== null)
 
     const mismatches: Array<string> = []
     let compared = 0
@@ -154,21 +174,23 @@ describe.skipIf(!hasDataset || split === null)("v1 evidence survives the concurr
       const questionDate = question.questionDate.raw
 
       const outcome = await run(
-        Effect.gen(function* () {
-          const retrieve = yield* Retrieve
-          const concurrent = yield* retrieve.ask(uid, question.question, { questionDate })
-          const sequential = yield* sequentialAsk(uid, question.question, questionDate)
-          return { concurrent, sequential }
-        }).pipe(Effect.either)
+        Effect.exit(
+          Effect.gen(function* () {
+            const retrieve = yield* Retrieve
+            const concurrent = yield* retrieve.ask(uid, question.question, { questionDate })
+            const sequential = yield* sequentialAsk(uid, question.question, questionDate)
+            return { concurrent, sequential }
+          })
+        )
       )
 
-      // A user that is not in this graph is skipped rather than failed: the
-      // population may have been capacity-capped, and that is recorded in the
-      // split file, not here.
-      if (outcome._tag === "Left") continue
+      if (Exit.isFailure(outcome)) {
+        mismatches.push(`${question.questionId}: ask failed — ${String(outcome.cause)}`.slice(0, 200))
+        continue
+      }
       compared++
 
-      const { concurrent, sequential } = outcome.right
+      const { concurrent, sequential } = outcome.value
       if (concurrent.hash !== sequential.hash) {
         mismatches.push(
           `${question.questionId}: hash ${concurrent.hash.slice(0, 12)} vs ` +
