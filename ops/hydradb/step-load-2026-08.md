@@ -115,6 +115,22 @@ does not treat. It is not applied.
 A cold ask is reported and is **not** a target (spec, *Latency*). Nothing in the
 20-question smoke eval hit the 25 s read ceiling.
 
+### Two settings are chosen per phase, not once
+
+`runtime_config_sha256` therefore differs between the ingest and the eval, and
+that is deliberate rather than hidden. Both settings change how a read is
+*served*, never what is stored, and the eval — the only phase that makes a
+latency or accuracy claim — runs on the shipped values.
+
+| setting | ingest | eval | why |
+|---|---|---|---|
+| `GRAPH_OBJECT_STORE_CACHE_ENABLED` | `false` | `true` | On, RSS climbs ~2 GiB/min during writes and the gate stops the node in three minutes; off, a cold convergence walk does not finish in 25 s. |
+| `GRAPH_MAX_QUERY_RUNTIME_MS` | `120000` | `30000` | The 30 s cap stops a runaway *plan*. An ingest has no runaway plan — the same handful of statement shapes every time, and the slowness is I/O. Failing at 30 s costs the whole **user**: minutes of correct writes, and on a cache miss real money, to save ten seconds. |
+
+Set them with `PALIMPSEST_HYDRADB_READ_CACHE=false
+PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS=120000 docker compose up -d hydradb` before an
+ingest, and unset both before an eval.
+
 ### One stray vertex
 
 A single `WriteCheck` vertex (`writecheck|after-gate-stop`) was written by hand
