@@ -2,7 +2,7 @@ import type { LanguageModel } from "@effect/ai"
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
-import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
+import { Llm, LlmLive, loadDotEnv, readPathModels, verifyModels } from "@palimpsest/llm"
 import {
   ClaimGraph,
   Reader,
@@ -239,6 +239,15 @@ const program = Effect.gen(function* () {
   const reader = yield* Reader
   const claimGraph = yield* ClaimGraph
   const llm = yield* Llm
+
+  // Before anything is paid for. A typo in a model id is otherwise a five-hour
+  // run that produces a table of provider errors -- or, on a provider that
+  // silently substitutes, a table of real numbers from a model nobody chose.
+  const models = readPathModels(llm.model)
+  yield* verifyModels(models, { extra: [judgeModel] }).pipe(
+    Effect.tapError((error) => Effect.sync(() => console.error(error.message))),
+    Effect.orDie
+  )
 
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   let slice: ReadonlyArray<DatasetQuestion>
@@ -605,12 +614,10 @@ const program = Effect.gen(function* () {
             slice: slice.length,
             requestedSlice: split === "" ? sliceSize : requestedCount,
             partial: slice.length !== (split === "" ? sliceSize : requestedCount),
-            readerModel: llm.model,
-            // Distinct env vars from #31; until they exist the selector and the
-            // sufficiency check are the reader model, and the envelope says so
-            // rather than leaving a reader to assume it.
-            selectModel: process.env["PALIMPSEST_SELECT_MODEL"] ?? llm.model,
-            sufficiencyModel: process.env["PALIMPSEST_SUFFICIENCY_MODEL"] ?? llm.model,
+            // All three verified against the provider before the run started.
+            readerModel: models.reader,
+            selectModel: models.select,
+            sufficiencyModel: models.sufficiency,
             judgeModel,
             extractionGeneration: liveExtractionGeneration().id,
             // Named in the envelope as well as on every row: an ablation file

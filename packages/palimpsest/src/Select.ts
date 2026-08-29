@@ -19,6 +19,16 @@ import type { Route } from "./Understand.js"
  * else: it is an index entry, and it never reaches the reader.
  */
 
+/**
+ * The selector's model, when one is set. Read per call, not at module load:
+ * `loadDotEnv()` runs inside a CLI's body, and ESM has already evaluated this
+ * module by then.
+ */
+const selectModel = (): string | undefined => {
+  const configured = process.env["PALIMPSEST_SELECT_MODEL"]
+  return configured === undefined || configured === "" ? undefined : configured
+}
+
 /** The short id the selector cites. The claim key's tail, as the reader's is. */
 export const shortId = (ckey: string): string => ckey.slice(-8)
 
@@ -271,7 +281,12 @@ export const select = (
         system: SYSTEM,
         prompt,
         schema: Selection,
-        objectName: "selection"
+        objectName: "selection",
+        // Its own env var, defaulting to the reader's model. The selector reads
+        // a table of index entries, which is a different job from answering
+        // from verbatim text, so it has to be movable without moving the reader
+        // -- and the reader is frozen for the whole v1-vs-v2 comparison.
+        ...(selectModel() === undefined ? {} : { model: selectModel()! })
       })
     )
 

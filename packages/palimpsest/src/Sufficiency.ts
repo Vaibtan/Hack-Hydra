@@ -63,6 +63,15 @@ export const MAX_REFINEMENT_PASSES = 1
  */
 export const ABSTAIN_TIERS: ReadonlyArray<Tier> = ["PARTIAL"]
 
+/**
+ * The check's model, when one is set. Read per call for the same reason the
+ * selector's is: `loadDotEnv()` runs after this module is evaluated.
+ */
+const sufficiencyModel = (): string | undefined => {
+  const configured = process.env["PALIMPSEST_SUFFICIENCY_MODEL"]
+  return configured === undefined || configured === "" ? undefined : configured
+}
+
 /** How many missing-information terms the second pass may search with. */
 export const MAX_MISSING_TERMS = 8
 
@@ -200,7 +209,8 @@ export const judgeSufficiency = (
         system: SYSTEM,
         prompt,
         schema: Judgement,
-        objectName: "sufficiency"
+        objectName: "sufficiency",
+        ...(sufficiencyModel() === undefined ? {} : { model: sufficiencyModel()! })
       })
     )
     if (generated._tag === "Left") return skipped()
