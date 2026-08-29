@@ -168,6 +168,15 @@ export const convergenceConfig = (
 export interface LiveArm extends ArmResult {
   readonly query: string | null
   readonly paths: number
+  /**
+   * The walk's paths, unscored. In memory only — never in a receipt.
+   *
+   * The discovery arm seeds itself from the *entities* a two-hop path passed
+   * through, which `scoreReached` throws away when it folds a path set down to
+   * one row per claim. Re-reading them would be a second identical round trip,
+   * so the walk that already has them hands them on.
+   */
+  readonly rawPaths: ReadonlyArray<HydraPath>
 }
 
 const emptyArm = (kind: ArmKind, label: string): LiveArm => ({
@@ -175,7 +184,8 @@ const emptyArm = (kind: ArmKind, label: string): LiveArm => ({
   label,
   claims: [],
   query: null,
-  paths: 0
+  paths: 0,
+  rawPaths: []
 })
 
 /** The convergence walk: today's Query 1, widened for the selector. */
@@ -195,7 +205,8 @@ export const convergenceArm = (
       label: "convergence",
       claims: scoreReached(paths, total),
       query: renderMsPathsQuery(config).query,
-      paths: paths.length
+      paths: paths.length,
+      rawPaths: paths
     }
   })
 
@@ -224,7 +235,8 @@ export const subQuestionArm = (
       label,
       claims: scoreReached(paths, total),
       query: renderMsPathsQuery(config).query,
-      paths: paths.length
+      paths: paths.length,
+      rawPaths: paths
     }
   })
 
@@ -270,7 +282,8 @@ export const probeArm = (
         score: 0
       })),
       query: renderMsPathsQuery(config).query,
-      paths: paths.length
+      paths: paths.length,
+      rawPaths: paths
     }
   })
 
@@ -345,6 +358,7 @@ export const discoveryArm = (
       // reached: the union's arm priority puts discovery below convergence.
       claims: scoreReached(paths, total),
       query: renderMsPathsQuery(config).query,
-      paths: paths.length
+      paths: paths.length,
+      rawPaths: paths
     }
   })

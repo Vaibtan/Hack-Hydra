@@ -7,15 +7,30 @@ import {
   type MsPathsConfig
 } from "@palimpsest/hydra"
 import type { Llm } from "@palimpsest/llm"
-import { Duration, Effect } from "effect"
+import { Duration, Effect, Fiber } from "effect"
 import { createHash } from "node:crypto"
 import { questionAnchors, type QuestionAnchors } from "./Anchors.js"
+import {
+  convergenceArm,
+  convergenceConfig,
+  discoveryArm,
+  discoverySeeds,
+  probeArm,
+  subQuestionArm,
+  unionArms,
+  type ArmKind,
+  type LiveArm
+} from "./Arms.js"
+import { MAX_KEPT_TURNS, orderCandidates, select, shortId } from "./Select.js"
+import { applyTimeScope, intervalSentence } from "./TimeScope.js"
+import { understand, type Route, type Understood } from "./Understand.js"
 import { claimKind, tokenKey } from "./Keys.js"
 import { readUserStats } from "./User.js"
 import {
   DEFAULT_TOP_K,
   applyAsOf,
   beforeAsOf,
+  convergenceThreshold,
   decide,
   orderEvidence,
   rank,
@@ -35,6 +50,49 @@ import { Supersede } from "./Supersede.js"
  * a knowledge-update question sees the values it replaced as well as the
  * current one. Nothing is queried per claim.
  */
+
+/**
+ * The v2 plan, as the receipt records it.
+ *
+ * Every stage that made a decision says what it decided and on what. A judge
+ * replaying an answer should be able to re-derive the evidence set from this
+ * alone: which route and why, which arms ran and what each returned, the window
+ * that was applied, which rows the selector kept and which it dropped and for
+ * what reason.
+ */
+export interface RetrievalPlan {
+  readonly route: Route
+  /** `model`, or `cue:<name>` when a deterministic cue overrode the model. */
+  readonly routeReason: string
+  readonly flags: Understood["flags"]
+  readonly subQuestions: ReadonlyArray<string>
+  readonly probes: ReadonlyArray<string>
+  readonly arms: ReadonlyArray<{
+    readonly label: string
+    readonly kind: string
+    readonly claims: number
+    readonly paths: number
+    readonly query: string | null
+    /** The arm exceeded its ceiling and was reported rather than thrown. */
+    readonly timedOut: boolean
+  }>
+  readonly union: { readonly candidates: number; readonly dropped: number }
+  readonly timeScope: {
+    readonly phrase: string | null
+    readonly interval: readonly [number, number] | null
+    readonly inScope: number
+    readonly outOfScope: number
+    readonly applied: boolean
+  }
+  readonly selection: {
+    readonly kept: ReadonlyArray<string>
+    readonly dropped: ReadonlyArray<{ readonly id: string; readonly reason: string }>
+    readonly reasons: Readonly<Record<string, string>>
+    readonly fallback: boolean
+  }
+  /** What the reader is told the window was, when there is one. */
+  readonly intervalSentence: string | null
+}
 
 /** Everything a judge needs to re-run the read by hand and get the same paths. */
 export interface Receipt {
@@ -94,6 +152,8 @@ export interface AskResult {
   readonly hash: string
   readonly anchors: QuestionAnchors
   readonly timings: AskTimings
+  /** Null on the v1 pipeline, which has no plan to record. */
+  readonly plan: RetrievalPlan | null
 }
 
 /**
@@ -158,6 +218,21 @@ export interface AskOptions {
  * broad slot should not decide the reader's token budget.
  */
 export const MAX_SLOT_EXPANSION = 40
+
+/**
+ * `2023/04/10 (Mon) 17:50` to `20230410`, the form every date in the graph has.
+ *
+ * The ask contract takes the dataset's string verbatim because it is part of an
+ * LLM cache key; the time scope needs an integer to do arithmetic on. Zero when
+ * there is no date, and every stage that would resolve a phrase against it is
+ * skipped rather than run against year zero.
+ */
+export const questionDateInt = (raw?: string): number => {
+  if (raw === undefined) return 0
+  const match = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/.exec(raw.trim())
+  if (match === null) return 0
+  return Number(match[1]) * 10_000 + Number(match[2]) * 100 + Number(match[3])
+}
 
 export const determinismHash = (ckeys: ReadonlyArray<string>): string =>
   createHash("sha256").update([...ckeys].sort().join("\n"), "utf8").digest("hex")
@@ -258,10 +333,17 @@ const make = Effect.gen(function* () {
       claimTotals.delete(uid)
     })
 
-  const ask = (
+  /**
+   * The shipped pipeline, unchanged.
+   *
+   * It stays runnable for the whole comparison and is never refactored "while
+   * we are in here": every v1 number in the results tables has to be the same
+   * number after v2 lands, or the paired test measures two changes at once.
+   */
+  const askV1 = (
     uid: string,
     question: string,
-    options: AskOptions = {}
+    options: AskOptions
   ): Effect.Effect<AskResult, HydraError, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
       const askStarted = Date.now()
@@ -366,7 +448,8 @@ const make = Effect.gen(function* () {
             askMs: Date.now() - askStarted,
             graphMs: Date.now() - graphStarted,
             stages: { ...stages }
-          }
+          },
+          plan: null
         }
       }
 
@@ -438,9 +521,349 @@ const make = Effect.gen(function* () {
           askMs: Date.now() - askStarted,
           graphMs: Date.now() - graphStarted,
           stages: { ...stages }
+        },
+        plan: null
+      }
+    })
+
+
+  /**
+   * The retrieval plan of #22: understand, arms, scope, select, read.
+   *
+   * The shape is one LLM call to decide *what to look for*, several graph reads
+   * that look for it in different ways, a union that remembers which read found
+   * what, and one LLM call to decide *what the reader sees*. Everything between
+   * the two calls is deterministic given a fixed graph, and everything either
+   * call decided is written into the plan on the receipt.
+   *
+   * The order of the reads is not incidental. `understand` is the only stage in
+   * front of the graph, so the idf denominator is fetched *beside* it rather
+   * than after it — a read that would otherwise be the first 100 ms of every
+   * ask. `graphMs` therefore starts when the understand call returns, and the
+   * `userStats` stage it overlaps is reported separately rather than folded in.
+   */
+  const askV2 = (
+    uid: string,
+    question: string,
+    options: AskOptions
+  ): Effect.Effect<AskResult, HydraError, LanguageModel.LanguageModel | Llm> =>
+    Effect.gen(function* () {
+      const askStarted = Date.now()
+      const stages: Record<string, number> = {}
+      const timed = <A, E, R>(stage: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+        Effect.suspend(() => {
+          const started = Date.now()
+          return Effect.onExit(effect, () =>
+            Effect.sync(() => {
+              stages[stage] = Date.now() - started
+            })
+          )
+        })
+
+      const profile = options.profile ?? "full"
+      const maxLen = options.maxLen ?? 2
+      const topK = options.topK ?? DEFAULT_TOP_K
+      const questionDate = questionDateInt(options.questionDate)
+
+      // The denominator does not depend on the question, so it runs beside the
+      // understand call and is off the graph critical path entirely.
+      const statsFiber = yield* Effect.fork(timed("userStats", totalClaims(uid)))
+      const understood = yield* timed(
+        "understand",
+        understand(question, questionDate, options.questionDate)
+      )
+      const graphStarted = Date.now()
+      const total = yield* Fiber.join(statsFiber)
+
+      const historical = options.historical ?? understood.historical
+      // `exactOptionalPropertyTypes` distinguishes an absent key from an
+      // `undefined` one, and the union reads it as "no as-of cut" only when it
+      // is absent — so an unscoped ask must not pass the key at all.
+      const unionOptions = options.asOf === undefined ? {} : { asOf: options.asOf }
+
+      /**
+       * An arm that hit the read ceiling is a lost widening, not a failed ask.
+       *
+       * Only the *optional* arms are caught. The convergence walk is v1's one
+       * read: if it cannot complete, the ask has no floor to stand on and fails
+       * exactly as v1 fails, rather than quietly returning whatever a probe
+       * happened to find. Non-limit errors are never caught here — a 500 from
+       * the node is a failure to stop for, not a number to publish.
+       */
+      const timedOut = new Set<string>()
+      const runArm = (
+        label: string,
+        kind: ArmKind,
+        effect: Effect.Effect<LiveArm, HydraError>,
+        optional: boolean
+      ): Effect.Effect<LiveArm, HydraError> => {
+        const measured = timed(label, withReadTimeout(label, effect))
+        return optional
+          ? Effect.catchTag(measured, "HydraLimitError", () =>
+              Effect.sync((): LiveArm => {
+                timedOut.add(label)
+                return { kind, label, claims: [], query: null, paths: 0, rawPaths: [] }
+              })
+            )
+          : measured
+      }
+
+      // ---- the arms ------------------------------------------------------
+      // Four at a time. The engine degrades under read concurrency the same way
+      // it degraded under write concurrency during the ingest — measured, not
+      // assumed — and eleven simultaneous walks from one question would be
+      // slower in wall-clock than four, as well as unkind to a concurrent eval.
+      const reaching = yield* Effect.all(
+        [
+          runArm(
+            "convergence",
+            "convergence",
+            convergenceArm(hydra, uid, understood.terms, total, maxLen),
+            false
+          ),
+          ...understood.subQuestions.map((sub, index) =>
+            runArm(
+              `sub:${index}`,
+              "subQuestion",
+              subQuestionArm(hydra, uid, sub, index, total, maxLen),
+              true
+            )
+          ),
+          ...understood.probes.map((probe) =>
+            runArm(
+              `probe:${probe.entityCanon}|${probe.attr}`,
+              "probe",
+              probeArm(hydra, uid, probe, total),
+              true
+            )
+          )
+        ],
+        { concurrency: 4 }
+      )
+
+      // Discovery is serial by construction: its seeds come from what the first
+      // walk found, so it costs one more round trip on the critical path. It
+      // earns it on exactly the questions v1 loses — the ones whose second fact
+      // the question's own words never name.
+      const convergence = reaching[0]!
+      const firstPass = unionArms(reaching, unionOptions)
+      const seeds = discoverySeeds(
+        convergence.rawPaths,
+        firstPass.candidates.slice(0, 10),
+        new Set(understood.terms)
+      )
+      const discovery = yield* runArm(
+        "discovery",
+        "discovery",
+        discoveryArm(hydra, uid, seeds, total, maxLen),
+        true
+      )
+
+      // ---- slot expansion, as v1 does it ---------------------------------
+      // Bounded to the top-K candidates rather than the whole union: a
+      // slot-mate is not evidence the question was understood, and expanding
+      // 120 slots would let one broad slot decide the selector's whole table.
+      const reachedArms = [...reaching, discovery]
+      const secondPass = unionArms(reachedArms, unionOptions)
+      const skeys = yield* timed(
+        "slotKeys",
+        withReadTimeout("slotKeys", candidateSlotKeys(secondPass.candidates.slice(0, topK)))
+      )
+      const slotClaims = yield* timed(
+        "slotClaims",
+        withReadTimeout("slotClaims", readCandidateSlots(uid, skeys, total))
+      )
+      const alreadyReached = new Set(secondPass.candidates.map((candidate) => candidate.ckey))
+      const slotMates = slotClaims.claims
+        .filter((claim) => !alreadyReached.has(claim.ckey))
+        .sort((a, b) => b.sessionOrd - a.sessionOrd || a.ckey.localeCompare(b.ckey))
+        .slice(0, MAX_SLOT_EXPANSION)
+      const arms: ReadonlyArray<LiveArm> = [
+        ...reachedArms,
+        {
+          kind: "slotMate",
+          label: "slotMate",
+          claims: slotMates,
+          query: slotClaims.query,
+          paths: slotClaims.paths,
+          rawPaths: []
+        }
+      ]
+
+      const union = unionArms(arms, unionOptions)
+
+      // Supersession for the whole union, before the selector rather than after
+      // it. Reading 120 keys and reading 30 is the same round trip, and doing it
+      // here keeps every graph read in one contiguous window — which is the only
+      // way `graphMs` can be a claim about HydraDB rather than about OpenAI.
+      const edges = yield* timed(
+        "edges",
+        withReadTimeout(
+          "edges",
+          supersede.readEdges(
+            uid,
+            union.candidates.map((candidate) => candidate.ckey),
+            options.asOf
+          )
+        )
+      )
+      const graphMs = Date.now() - graphStarted
+
+      // ---- scope ---------------------------------------------------------
+      // Only when the question carried a date. `understand` resolves the phrase
+      // against the question's own date, so with no date there is nothing to
+      // resolve it against and any interval it returned would be arithmetic on
+      // year zero.
+      const interval = questionDate > 0 ? understood.timeInterval : null
+      const scoped = applyTimeScope(union.candidates, interval)
+
+      // ---- the verdict ---------------------------------------------------
+      // v1 abstains when nothing converges. v2 keeps that floor for the walks
+      // and lets the two arms that did not guess stand on their own: a probe hit
+      // is an `(entity, attribute)` the question named outright, and a
+      // sub-question hit converged on words the question actually contains.
+      // Discovery guessed and a slot-mate came along for the ride, so neither
+      // can carry a verdict by itself.
+      const resolved = new Set(
+        reaching.flatMap((arm) => arm.claims).flatMap((claim) => claim.anchors)
+      )
+      const threshold = convergenceThreshold(resolved.size)
+      const grounded = scoped.claims.filter(
+        (candidate) =>
+          candidate.kind === "probe" ||
+          candidate.kind === "subQuestion" ||
+          candidate.convergence >= threshold
+      )
+
+      const armRows = arms.map((arm) => ({
+        label: arm.label,
+        kind: arm.kind as string,
+        claims: arm.claims.length,
+        paths: arm.paths,
+        query: arm.query,
+        timedOut: timedOut.has(arm.label)
+      }))
+      const timeScopeRow = {
+        phrase: understood.timeRef,
+        interval: interval === null ? null : ([interval.start, interval.end] as const),
+        inScope: scoped.inScope,
+        outOfScope: scoped.outOfScope,
+        applied: scoped.applied
+      }
+
+      const rendered = renderMsPathsQuery(convergenceConfig(uid, understood.terms, maxLen))
+      const receiptBase = {
+        question,
+        uid,
+        pipeline: "v2" as const,
+        profile,
+        asOf: options.asOf ?? null,
+        anchorTerms: understood.terms,
+        anchorsReachingClaims: [...resolved].sort(),
+        anchorsReachingNothing: understood.terms.filter((stem) => !resolved.has(stem)),
+        historical,
+        wantsCount: understood.flags.wantsCount,
+        timeRef: understood.timeRef,
+        // Recorded, not applied: v2 does not filter by convergence, it selects.
+        // The number is here so a v1 and a v2 receipt for the same question can
+        // be read side by side.
+        convergenceThreshold: threshold,
+        totalClaims: total,
+        query1: convergence.query ?? rendered.query,
+        query1Params: rendered.parameters,
+        query1Paths: convergence.paths,
+        query2: slotClaims.query,
+        query2Paths: slotClaims.paths,
+        convergence: rank(union.candidates)
+          .slice(0, topK)
+          .map((claim) => ({
+            ckey: claim.ckey,
+            convergence: claim.convergence,
+            score: Number(claim.score.toFixed(4)),
+            anchors: claim.anchors
+          }))
+      }
+      const planBase = {
+        route: understood.route,
+        routeReason: understood.routeReason,
+        flags: understood.flags,
+        subQuestions: understood.subQuestions.map((sub) => sub.question),
+        probes: understood.probes.map((probe) => `${probe.entityCanon}|${probe.attr}`),
+        arms: armRows,
+        union: { candidates: union.candidates.length, dropped: union.dropped.length },
+        timeScope: timeScopeRow,
+        intervalSentence: interval === null ? null : intervalSentence(interval)
+      }
+      const anchors: QuestionAnchors = {
+        terms: understood.terms,
+        historical: understood.historical,
+        wantsCount: understood.flags.wantsCount,
+        timeRef: understood.timeRef,
+        expanded: understood.expanded,
+        cached: understood.cached
+      }
+
+      if (grounded.length === 0) {
+        return {
+          verdict: "ABSENT" as const,
+          reason: resolved.size === 0 ? ("A1_no_anchors" as const) : ("A2_no_convergence" as const),
+          evidence: [],
+          receipt: receiptBase,
+          hash: determinismHash([]),
+          anchors,
+          timings: { askMs: Date.now() - askStarted, graphMs, stages: { ...stages } },
+          plan: {
+            ...planBase,
+            selection: { kept: [], dropped: [], reasons: {}, fallback: false }
+          }
+        }
+      }
+
+      // ---- selection -----------------------------------------------------
+      const selection = yield* timed(
+        "select",
+        select(question, options.questionDate ?? String(questionDate), understood.route, scoped.claims)
+      )
+      // A selector that kept nothing has not made a decision, it has failed
+      // quietly — and an empty evidence set reads downstream as "the memory does
+      // not contain it", which is a different claim entirely.
+      const emptied = selection.kept.length === 0
+      const kept = emptied
+        ? orderCandidates(scoped.claims).slice(0, MAX_KEPT_TURNS)
+        : selection.kept
+
+      const labelled = applyAsOf(kept, edges, options.asOf)
+      const evidence = orderEvidence(labelled, historical)
+
+      return {
+        verdict: "ANSWER" as const,
+        reason: null,
+        evidence,
+        receipt: receiptBase,
+        hash: determinismHash(evidence.map((claim) => claim.ckey)),
+        anchors,
+        timings: { askMs: Date.now() - askStarted, graphMs, stages: { ...stages } },
+        plan: {
+          ...planBase,
+          selection: {
+            kept: kept.map((candidate) => shortId(candidate.ckey)),
+            dropped: selection.dropped.map((drop) => ({
+              id: shortId(drop.candidate.ckey),
+              reason: drop.reason as string
+            })),
+            reasons: selection.reasons,
+            fallback: selection.fallback || emptied
+          }
         }
       }
     })
+
+  const ask = (
+    uid: string,
+    question: string,
+    options: AskOptions = {}
+  ): Effect.Effect<AskResult, HydraError, LanguageModel.LanguageModel | Llm> =>
+    (options.pipeline ?? "v1") === "v2" ? askV2(uid, question, options) : askV1(uid, question, options)
 
   /**
    * Pulls every claim of the given slots. One round trip for any number of

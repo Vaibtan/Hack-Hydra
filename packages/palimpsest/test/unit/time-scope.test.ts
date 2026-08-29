@@ -7,6 +7,7 @@ import {
   resolveTimeInterval,
   type DayInterval
 } from "../../src/TimeScope.js"
+import { questionDateInt } from "../../src/Retrieve.js"
 
 /**
  * The resolver's contract is this table.
@@ -272,5 +273,24 @@ describe("applying the scope", () => {
       "20230305/day",
       "20230515/day"
     ])
+  })
+})
+
+describe("the question's own date", () => {
+  it("reads the dataset's only timestamp format", () => {
+    expect(questionDateInt("2023/04/10 (Mon) 17:50")).toBe(20230410)
+  })
+
+  it("reads an ISO date too, since nothing guarantees the dataset's shape forever", () => {
+    expect(questionDateInt("2023-04-10")).toBe(20230410)
+  })
+
+  it("is zero when there is no date, so no phrase is resolved against year zero", () => {
+    // The ask contract makes `questionDate` optional, and a `time_ref` of "last
+    // month" with nothing to anchor it would otherwise produce an interval in
+    // the year 0 that every claim falls outside of - silently emptying the
+    // candidate set for exactly the questions the scope exists to help.
+    expect(questionDateInt(undefined)).toBe(0)
+    expect(questionDateInt("some Tuesday")).toBe(0)
   })
 })
