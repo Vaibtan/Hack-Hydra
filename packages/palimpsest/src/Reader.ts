@@ -265,6 +265,12 @@ export interface ReadAnswer {
   /** The chars/4 estimate of what was packed, and what the budget dropped. */
   readonly estimatedTokens: number
   readonly budgetDropped: number
+  /**
+   * The sessions the budget cut. A recall miss that happened *here* is neither
+   * retrieval's nor selection's, and the error-class table has to be able to
+   * say so.
+   */
+  readonly budgetDroppedSessions: ReadonlyArray<string>
 }
 
 const make = Effect.gen(function* () {
@@ -533,7 +539,8 @@ const make = Effect.gen(function* () {
           spanHash: spanHash([]),
           granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
           estimatedTokens: 0,
-          budgetDropped: 0
+          budgetDropped: 0,
+          budgetDroppedSessions: []
         }
       }
 
@@ -572,7 +579,8 @@ const make = Effect.gen(function* () {
           spanHash: spanHash(spans),
           granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
           estimatedTokens: 0,
-          budgetDropped: 0
+          budgetDropped: 0,
+          budgetDroppedSessions: []
         }
       }
 
@@ -603,7 +611,8 @@ const make = Effect.gen(function* () {
         spanHash: spanHash(spans),
         granularity: granularityFor(options.pack?.route ?? null, options.pack?.granularity),
         estimatedTokens: 0,
-        budgetDropped: 0
+        budgetDropped: 0,
+        budgetDroppedSessions: []
       }
     })
 
@@ -652,7 +661,8 @@ const make = Effect.gen(function* () {
         ...answer,
         hydrateMs,
         estimatedTokens: budgeted.estimatedTokens,
-        budgetDropped: budgeted.dropped.length
+        budgetDropped: budgeted.dropped.length,
+        budgetDroppedSessions: [...new Set(budgeted.dropped.map((span) => span.sid))].sort()
       }
     })
 

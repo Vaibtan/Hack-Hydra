@@ -98,6 +98,18 @@ export interface RetrievalPlan {
    * two excerpts were about the same thing.
    */
   readonly slots: Readonly<Record<string, string>>
+  /**
+   * The kept claims the budget may not drop: the probe hits, which are
+   * `(entity, attribute)` pairs the question named outright. Losing one to a
+   * token budget is losing the thing the question was about.
+   */
+  readonly protectedKeys: ReadonlyArray<string>
+  /**
+   * Every session any arm reached, before selection. The error-class table
+   * needs it to tell a retrieval miss from a selection miss: if the answer
+   * session is here and not in the evidence, the selector dropped it.
+   */
+  readonly unionSessions: ReadonlyArray<string>
   readonly ablations: Ablations
 }
 
@@ -861,6 +873,7 @@ const make = Effect.gen(function* () {
             return slot === undefined ? [] : [[candidate.ckey, slot] as const]
           })
         ),
+        unionSessions: [...new Set(union.candidates.map((candidate) => candidate.sid))].sort(),
         ablations
       }
       const anchors: QuestionAnchors = {
@@ -883,6 +896,7 @@ const make = Effect.gen(function* () {
           timings: { askMs: Date.now() - askStarted, graphMs, stages: { ...stages } },
           plan: {
             ...planBase,
+            protectedKeys: [],
             selection: { kept: [], dropped: [], reasons: {}, fallback: false }
           }
         }
@@ -928,6 +942,9 @@ const make = Effect.gen(function* () {
         timings: { askMs: Date.now() - askStarted, graphMs, stages: { ...stages } },
         plan: {
           ...planBase,
+          protectedKeys: kept
+            .filter((candidate) => candidate.kind === "probe")
+            .map((candidate) => candidate.ckey),
           selection: {
             kept: kept.map((candidate) => shortId(candidate.ckey)),
             dropped: selection.dropped.map((drop) => ({

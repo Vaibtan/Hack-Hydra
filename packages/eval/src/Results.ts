@@ -86,6 +86,12 @@ export interface EvalRow {
   readonly keptSessions?: ReadonlyArray<string>
   /** Sessions the selector kept and the token budget then dropped. */
   readonly budgetDroppedSessions?: ReadonlyArray<string>
+  /** `span` or `turn` — how much of each turn the reader was shown. */
+  readonly granularity?: string
+  /** The chars/4 estimate of the packed excerpts, beside the provider's count. */
+  readonly estimatedTokens?: number
+  /** The v2 stages this row ran with switched off, for an ablation table. */
+  readonly ablations?: ReadonlyArray<string>
   /** Derived; `pnpm table` recomputes it rather than trusting the file. */
   readonly errorClass?: string | null
 }

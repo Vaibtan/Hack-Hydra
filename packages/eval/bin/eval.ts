@@ -91,6 +91,22 @@ const judgeModel = arg("judge", JUDGE_MODEL)
  */
 const skipMissing = process.argv.includes("--skip-missing")
 /**
+ * v2 ablations. Each switches off exactly one stage, and the set is written
+ * into every row and into the envelope — a results file must never be
+ * ambiguous about which pipeline produced it.
+ */
+const ablations = {
+  ...(process.argv.includes("--no-decompose") ? { noDecompose: true } : {}),
+  ...(process.argv.includes("--no-discovery") ? { noDiscovery: true } : {}),
+  ...(process.argv.includes("--no-time-scope") ? { noTimeScope: true } : {}),
+  ...(process.argv.includes("--no-select") ? { noSelect: true } : {})
+} as const
+const ablationNames = Object.keys(ablations).sort()
+/** Forces one granularity for every route, for the `span|turn` ablation. */
+const granularityFlag = arg("granularity", "")
+const granularityOverride =
+  granularityFlag === "span" || granularityFlag === "turn" ? granularityFlag : undefined
+/**
  * B2's context budget in characters (~4 chars per token).
  *
  * The largest LongMemEval_S haystack is 513 954 characters — about 128 k tokens
@@ -335,6 +351,12 @@ const program = Effect.gen(function* () {
       let hash = ""
       let claimHash: string | undefined
       let route: string | null = null
+      let flags: ReadonlyArray<string> | undefined
+      let selectorFallback: boolean | undefined
+      let unionSessions: ReadonlyArray<string> | undefined
+      let budgetDroppedSessions: ReadonlyArray<string> | undefined
+      let granularity: string | undefined
+      let estimatedTokens: number | undefined
       let askMs: number | undefined
       let graphMs: number | undefined
       let stageTimingsMs: Record<string, number> | undefined
@@ -343,7 +365,7 @@ const program = Effect.gen(function* () {
         const ask = yield* retrieve.ask(uid, question.question, {
           questionDate,
           ...(system === "palimpsest-v2"
-            ? ({ pipeline: "v2", profile } as const)
+            ? ({ pipeline: "v2", profile, ablations } as const)
             : ({ pipeline: "v1" } as const))
         })
         askMs = ask.timings.askMs
@@ -355,14 +377,39 @@ const program = Effect.gen(function* () {
         anchorsReaching = ask.receipt.anchorsReachingClaims.length
         hash = ask.hash
         claimHash = ask.hash
+        if (ask.plan !== null) {
+          route = ask.plan.route
+          flags = Object.entries(ask.plan.flags)
+            .filter(([, on]) => on === true)
+            .map(([name]) => name)
+            .sort()
+          selectorFallback = ask.plan.selection.fallback
+          unionSessions = ask.plan.unionSessions
+        }
 
         if (ask.verdict === "ABSENT") {
           response = absentResponse(ask.reason)
           notInMemory = true
           spans = []
         } else {
+          const plan = ask.plan
           const read = yield* reader.read(question.question, questionDate, ask.evidence, {
-            premiseCheck: system === "palimpsest-premise"
+            premiseCheck: system === "palimpsest-premise",
+            // The pack stage is v2's. Passing it for v1 would change v1's
+            // evidence, and the whole comparison rests on v1's evidence not
+            // moving while both pipelines run against one graph.
+            ...(plan === null
+              ? {}
+              : {
+                  pack: {
+                    route: plan.route,
+                    ...(granularityOverride === undefined
+                      ? {}
+                      : { granularity: granularityOverride }),
+                    slotOf: new Map(Object.entries(plan.slots)),
+                    protectedKeys: new Set(plan.protectedKeys)
+                  }
+                })
           })
           spans = read.spans
           response = read.answer
@@ -375,6 +422,16 @@ const program = Effect.gen(function* () {
           // graph number is only whole once it is added back.
           graphMs = (graphMs ?? 0) + read.hydrateMs
           stageTimingsMs = { ...stageTimingsMs, hydrate: read.hydrateMs, read: read.readMs }
+          if (plan !== null) {
+            // The span hash is v2's `hash`: two claims can point at one span,
+            // and one claim can be hydrated at two granularities, so "the
+            // reader saw the same bytes" is the question a replay is asking.
+            // v1's claim-key hash stays beside it, unchanged.
+            hash = read.spanHash
+            granularity = read.granularity
+            estimatedTokens = read.estimatedTokens
+            budgetDroppedSessions = read.budgetDroppedSessions
+          }
         }
       } else {
         const selected =
@@ -431,7 +488,14 @@ const program = Effect.gen(function* () {
         ...(askMs === undefined ? {} : { askMs }),
         ...(graphMs === undefined ? {} : { graphMs }),
         ...(stageTimingsMs === undefined ? {} : { stageTimingsMs }),
-        ...(claimHash === undefined ? {} : { claimHash })
+        ...(claimHash === undefined ? {} : { claimHash }),
+        ...(flags === undefined ? {} : { flags }),
+        ...(selectorFallback === undefined ? {} : { selectorFallback }),
+        ...(unionSessions === undefined ? {} : { unionSessions }),
+        ...(budgetDroppedSessions === undefined ? {} : { budgetDroppedSessions }),
+        ...(granularity === undefined ? {} : { granularity }),
+        ...(estimatedTokens === undefined ? {} : { estimatedTokens }),
+        ...(system === 'palimpsest-v2' ? { keptSessions: evidenceSessions, ablations: ablationNames } : {})
       } satisfies EvalRow
       // Derived, and recomputed by `pnpm table` from the same function, so the
       // column in the file and the column in the table can never disagree.
@@ -468,7 +532,17 @@ const program = Effect.gen(function* () {
     // run is named by its split rather than its size, so a `dev` file can never
     // be mistaken for the 60-question slice of a different graph that happens
     // to have the same row count.
-    const path = resolve(outDir, `${system}-${split === "" ? slice.length : split}.json`)
+    // An ablation writes its own file. Without the suffix `--no-select` would
+    // silently overwrite the full-pipeline results with numbers that look the
+    // same shape, and nothing in the file name would say which run it was.
+    const variant = [
+      ...(system === 'palimpsest-v2' ? ablationNames.map((name) => name.replace('no', 'no-').toLowerCase()) : []),
+      ...(granularityOverride === undefined ? [] : [`granularity-${granularityOverride}`])
+    ].join('-')
+    const path = resolve(
+      outDir,
+      `${system}-${split === "" ? slice.length : split}${variant === '' ? '' : `-${variant}`}.json`
+    )
     yield* Effect.promise(() =>
       writeFile(
         path,
@@ -490,6 +564,11 @@ const program = Effect.gen(function* () {
             sufficiencyModel: process.env["PALIMPSEST_SUFFICIENCY_MODEL"] ?? llm.model,
             judgeModel,
             extractionGeneration: liveExtractionGeneration().id,
+            // Named in the envelope as well as on every row: an ablation file
+            // and a full-pipeline file are otherwise the same shape with
+            // quietly different numbers, and the filename does not say which.
+            ablations: system === 'palimpsest-v2' ? ablationNames : [],
+            granularity: granularityOverride ?? null,
             fullCtxChars: system === "fullctx" ? fullCtxChars : null,
             rows
           },
