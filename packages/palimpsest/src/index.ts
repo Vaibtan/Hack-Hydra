@@ -236,3 +236,13 @@ export {
 export type { DayInterval, TimePrecision, TimeScopable, TimeScopeReport } from "./TimeScope.js"
 export { ARM_PRIORITY, UNION_CAP, unionArms } from "./Arms.js"
 export type { ArmKind, ArmResult, Candidate, UnionReport } from "./Arms.js"
+export {
+  MAX_PROBES,
+  MAX_SUB_QUESTIONS,
+  ROUTES,
+  anchorStems,
+  applyRouteCues,
+  shapeUnderstanding,
+  understand
+} from "./Understand.js"
+export type { Probe, Route, SubQuestion, Understood } from "./Understand.js"
