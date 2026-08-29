@@ -70,10 +70,19 @@ export const ConvergenceRow = Schema.Struct({
   anchors: Schema.Array(Schema.String)
 })
 
-/** Everything a judge needs to re-run the read by hand and get the same paths. */
+/** Serializable scalar parameters for the Hydra-specific diagnostic rendering. */
+export const QueryParameters = Schema.Record({
+  key: Schema.String,
+  value: Schema.Union(Schema.String, Schema.Number)
+})
+
+/** A replayable decision trace; it is not a completeness or integrity proof. */
 export const Receipt = Schema.Struct({
   question: Schema.String,
   uid: Schema.String,
+  /** Which read path answered: the shipped `v1`, or the `v2` retrieval plan. */
+  pipeline: Schema.Literal("v1", "v2"),
+  profile: Schema.Literal("full", "fast"),
   asOf: Schema.NullOr(Schema.Number),
   anchorTerms: Schema.Array(Schema.String),
   anchorsReachingClaims: Schema.Array(Schema.String),
@@ -84,6 +93,7 @@ export const Receipt = Schema.Struct({
   convergenceThreshold: Schema.Number,
   totalClaims: Schema.Number,
   query1: Schema.String,
+  query1Params: QueryParameters,
   query1Paths: Schema.Number,
   query2: Schema.NullOr(Schema.String),
   query2Paths: Schema.Number,
@@ -92,6 +102,8 @@ export const Receipt = Schema.Struct({
 
 export const AskRequest = Schema.Struct({
   question: Schema.String,
+  /** Opaque causal floor returned by a prior ingest; absent means no read-your-writes guarantee. */
+  bookmark: Schema.optional(Schema.String),
   /** The question's own date, as the dataset writes it. Used for date arithmetic. */
   questionDate: Schema.optional(Schema.String),
   /** Read the memory as it stood at session `k`. */
@@ -145,8 +157,7 @@ export const IngestSessionResponse = Schema.Struct({
   supersessions: Schema.Number,
   /** True when this exact session was already in the graph and nothing was added. */
   alreadyPresent: Schema.Boolean,
-  /** HydraDB's causal token. Read-your-writes is threaded inside the server, but
-   *  the caller gets it so it can prove the ask that follows saw this write. */
+  /** HydraDB's opaque causal token. Send it on a later ask to require this write. */
   bookmark: Schema.NullOr(Schema.String),
   stats: Schema.Struct({
     claims: Schema.Number,
@@ -160,6 +171,23 @@ export const IngestSessionResponse = Schema.Struct({
   })
 })
 
+/**
+ * Result of the new bounded source/index path. `queryVisible` remains false:
+ * indexing alone never selects a retrieval generation or claims terminal
+ * ingest success.
+ */
+export const SourceIndexSessionResponse = Schema.Struct({
+  uid: Schema.String,
+  sid: Schema.String,
+  commitId: Schema.String,
+  sourceDigest: Schema.String,
+  extractionGeneration: Schema.String,
+  indexGeneration: Schema.String,
+  state: Schema.Literal("INDEXED", "ENRICHED", "CONSOLIDATED", "COMMITTED"),
+  alreadyAtTarget: Schema.Boolean,
+  queryVisible: Schema.Literal(false)
+})
+
 // ---- reads ------------------------------------------------------------------
 
 export const SessionRow = Schema.Struct({
@@ -170,12 +198,30 @@ export const SessionRow = Schema.Struct({
   turns: Schema.Number
 })
 
-export const ChainClaimRow = Schema.Struct({
-  ckey: Schema.String,
-  text: Schema.String,
+/** The exact verbatim transcript slice that a derived assertion points to. */
+export const DerivedAssertionSourceSpan = Schema.Struct({
+  sourceDigest: Schema.String,
+  logicalSessionId: Schema.String,
+  sid: Schema.String,
+  turnIdx: Schema.Number,
+  offsetStart: Schema.Number,
+  offsetEnd: Schema.Number,
+  speaker: Schema.String,
+  excerpt: Schema.String,
+  highlight: Highlight
+})
+
+/**
+ * A model-generated index assertion, deliberately distinct from evidence.
+ * Its `source` is the verbatim transcript span the assertion was derived from.
+ */
+export const DerivedIndexAssertion = Schema.Struct({
+  assertionKey: Schema.String,
+  derivedText: Schema.String,
   sessionOrd: Schema.Number,
   tEvent: Schema.Number,
   sid: Schema.String,
+  source: DerivedAssertionSourceSpan,
   /** Null when this claim is CURRENT as of the requested session. */
   supersededBy: Schema.NullOr(Schema.String),
   atSession: Schema.NullOr(Schema.Number)
@@ -184,7 +230,7 @@ export const ChainClaimRow = Schema.Struct({
 export const SlotChainResponse = Schema.Struct({
   skey: Schema.String,
   asOf: Schema.NullOr(Schema.Number),
-  claims: Schema.Array(ChainClaimRow)
+  assertions: Schema.Array(DerivedIndexAssertion)
 })
 
 export const StatsResponse = Schema.Struct({
@@ -225,6 +271,14 @@ export const users = HttpApiGroup.make("users")
       .setPath(UidPath)
       .setPayload(IngestSessionRequest)
       .addSuccess(IngestSessionResponse)
+      .addError(GraphError)
+      .addError(BadRequest)
+  )
+  .add(
+    HttpApiEndpoint.post("sourceIndexSession", "/users/:uid/source-index")
+      .setPath(UidPath)
+      .setPayload(IngestSessionRequest)
+      .addSuccess(SourceIndexSessionResponse)
       .addError(GraphError)
       .addError(BadRequest)
   )

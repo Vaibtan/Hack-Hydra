@@ -7,29 +7,40 @@ import {
   Retrieve,
   Supersede,
   Transcript,
-  readUserStats
+  SourceIndex,
+  ingestGenerationConfig,
+  prepareDerivedIndexAssertions,
+  readUserStats,
+  sourceLinkedChainEvidence
 } from "@palimpsest/palimpsest"
 import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { createHash } from "node:crypto"
 import { BadRequest, GraphError, NotFound, PalimpsestApi } from "./Api.js"
+import { projectRetrievalReceipt } from "./ReceiptProjection.js"
 
 /**
  * The five endpoints.
  *
  * Two things are worth saying about what is *not* here. There is no auth and no
  * tenancy beyond the `uid` path segment — the spec lists both as non-goals, and
- * pretending otherwise in a demo server would be theatre. And there is no
- * bookmark plumbing in the request/response cycle: a single `HydraClient`
- * instance threads HydraDB's causal token through its own reads automatically,
- * so an ask that follows an ingest inside this process is read-your-writes
- * without the caller doing anything. The bookmark is returned anyway, because a
- * caller that wants to *prove* that is entitled to.
+ * pretending otherwise in a demo server would be theatre. Causal bookmarks are
+ * caller-held: an ask that supplies the opaque token returned by ingest runs at
+ * that token's floor; an ask without one makes no read-your-writes claim.
  */
 
 /** HydraDB's own reason text is precise; propagate it rather than flattening it. */
 const graphError = (error: HydraError): GraphError =>
   new GraphError({ reason: error.reason ?? String(error) })
+
+const sourceIndexState = (
+  state: "RECEIVED" | "SOURCE_DURABLE" | "INDEXED" | "ENRICHED" | "CONSOLIDATED" | "COMMITTED"
+): "INDEXED" | "ENRICHED" | "CONSOLIDATED" | "COMMITTED" => {
+  if (state === "INDEXED" || state === "ENRICHED" || state === "CONSOLIDATED" || state === "COMMITTED") {
+    return state
+  }
+  throw new Error(`Source index operation returned before INDEXED: ${state}`)
+}
 
 /**
  * A session id for content the caller did not name. Content-addressed, so
@@ -50,7 +61,13 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
     const reader = yield* Reader
     const supersede = yield* Supersede
     const transcript = yield* Transcript
+    const sourceIndex = yield* SourceIndex
     const hydra = yield* HydraClient
+    const generation = yield* ingestGenerationConfig.pipe(
+      Effect.mapError(
+        () => new GraphError({ reason: "immutable source-index configuration is unavailable" })
+      )
+    )
 
     /** Refuses to answer for a user that was never indexed, rather than abstaining. */
     const requireUser = (uid: string) =>
@@ -92,6 +109,10 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
           const report = yield* ingest.ingestSession(path.uid, session).pipe(
             Effect.mapError(graphError)
           )
+          // The idf denominator this process memoised for that user is now one
+          // session out of date, and the live demo's whole point is that the
+          // next ask sees what was just written.
+          yield* retrieve.forgetUser(path.uid)
 
           return {
             uid: report.uid,
@@ -107,8 +128,55 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
           }
         })
       )
-      .handle("ask", ({ path, payload }) =>
+      .handle("sourceIndexSession", ({ path, payload }) =>
         Effect.gen(function* () {
+          if (payload.turns.length === 0) {
+            return yield* new BadRequest({ reason: "a session needs at least one turn" })
+          }
+          const date = yield* Effect.try({
+            try: () => parseHaystackDate(payload.date),
+            catch: () =>
+              new BadRequest({
+                reason: `date must look like "2023/04/10 (Mon) 17:50", got ${JSON.stringify(payload.date)}`
+              })
+          })
+          const sid = payload.sid ?? sidFor(payload.date, payload.turns)
+          const session: DatasetSession = {
+            sid,
+            key: sid,
+            // The manifest atomically assigns the real per-user ordinal. This
+            // placeholder is excluded from source identity and never persisted.
+            sessionOrd: 0,
+            date,
+            turns: payload.turns.map((turn, turnIdx) => ({
+              turnIdx,
+              role: turn.role,
+              text: turn.content,
+              hasAnswer: false
+            }))
+          }
+          const result = yield* sourceIndex.indexSession({
+            tenant: "default",
+            uid: path.uid,
+            session,
+            generation
+          }).pipe(Effect.mapError((error) => new GraphError({ reason: error.message })))
+
+          return {
+            uid: result.revision.uid,
+            sid: session.sid,
+            commitId: result.revision.commitId,
+            sourceDigest: result.revision.sourceDigest,
+            extractionGeneration: result.revision.extractionGeneration,
+            indexGeneration: generation.indexGeneration.id,
+            state: sourceIndexState(result.revision.state),
+            alreadyAtTarget: result.alreadyAtTarget,
+            queryVisible: false as const
+          }
+        })
+      )
+      .handle("ask", ({ path, payload }) => {
+        const operation = Effect.gen(function* () {
           yield* requireUser(path.uid)
           const started = Date.now()
           const questionDate = payload.questionDate ?? "unknown"
@@ -121,24 +189,7 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
             })
             .pipe(Effect.mapError(graphError))
 
-          const receipt = {
-            question: result.receipt.question,
-            uid: result.receipt.uid,
-            asOf: result.receipt.asOf,
-            anchorTerms: result.receipt.anchorTerms,
-            anchorsReachingClaims: result.receipt.anchorsReachingClaims,
-            anchorsReachingNothing: result.receipt.anchorsReachingNothing,
-            historical: result.receipt.historical,
-            wantsCount: result.receipt.wantsCount,
-            timeRef: result.receipt.timeRef,
-            convergenceThreshold: result.receipt.convergenceThreshold,
-            totalClaims: result.receipt.totalClaims,
-            query1: result.receipt.query1,
-            query1Paths: result.receipt.query1Paths,
-            query2: result.receipt.query2,
-            query2Paths: result.receipt.query2Paths,
-            convergence: result.receipt.convergence
-          }
+          const receipt = projectRetrievalReceipt(result.receipt)
 
           // A structural ABSENT has no evidence by construction — that is the
           // claim it makes — so there is nothing for the reader to read.
@@ -184,7 +235,10 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
             latencyMs: Date.now() - started
           }
         })
-      )
+        return payload.bookmark === undefined
+          ? operation
+          : hydra.withCausalBookmark(payload.bookmark, operation)
+      })
       .handle("sessions", ({ path }) =>
         transcript.readSessions(path.uid).pipe(Effect.mapError(graphError))
       )
@@ -197,18 +251,19 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
           if (claims.length === 0) {
             return yield* new NotFound({ what: "slot", key: path.skey })
           }
+          const sourceSpans = yield* reader
+            .hydrate(sourceLinkedChainEvidence(claims))
+            .pipe(Effect.mapError(graphError))
+          const assertions = prepareDerivedIndexAssertions(claims, sourceSpans)
+          if (assertions._tag === "Left") {
+            return yield* new GraphError({
+              reason: "derived index assertions are unavailable without linked verbatim source revisions"
+            })
+          }
           return {
             skey: path.skey,
             asOf: urlParams.asOf ?? null,
-            claims: claims.map((claim) => ({
-              ckey: claim.ckey,
-              text: claim.text,
-              sessionOrd: claim.sessionOrd,
-              tEvent: claim.tEvent,
-              sid: claim.sid,
-              supersededBy: claim.supersededBy,
-              atSession: claim.atSession
-            }))
+            assertions: assertions.right
           }
         })
       )

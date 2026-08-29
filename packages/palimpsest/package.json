@@ -18,11 +18,13 @@
   },
   "scripts": {
     "ingest-transcript": "tsx bin/ingest-transcript.ts",
+    "index-source": "tsx bin/index-source.ts",
     "turn": "tsx bin/turn.ts",
     "ingest": "tsx bin/ingest.ts",
     "stats": "tsx bin/stats.ts",
     "slots": "tsx bin/slots.ts",
     "ask": "tsx bin/ask.ts",
-    "trajectory": "tsx bin/trajectory.ts"
+    "trajectory": "tsx bin/trajectory.ts",
+    "warm": "tsx bin/warm.ts"
   }
 }

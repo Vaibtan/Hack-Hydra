@@ -20,6 +20,7 @@
     "extract": "pnpm --filter @palimpsest/eval run extract",
     "ingest": "pnpm --filter @palimpsest/palimpsest run ingest",
     "stats": "pnpm --filter @palimpsest/palimpsest run stats",
+    "warm": "pnpm --filter @palimpsest/palimpsest run warm",
     "slots": "pnpm --filter @palimpsest/palimpsest run slots",
     "ask": "pnpm --filter @palimpsest/palimpsest run ask",
     "ingest-slice": "pnpm --filter @palimpsest/eval run ingest-slice",

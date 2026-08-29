@@ -6,6 +6,8 @@ import { Receipt, projectRetrievalReceipt } from "../../src/index.js"
 const receipt = (): RetrievalReceipt => ({
   question: "Where did I move?",
   uid: "user-a",
+  pipeline: "v1",
+  profile: "full",
   asOf: null,
   anchorTerms: ["move"],
   anchorsReachingClaims: ["move"],

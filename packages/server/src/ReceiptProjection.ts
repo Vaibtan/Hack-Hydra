@@ -7,6 +7,8 @@ import type { Receipt as RetrievalReceipt } from "@palimpsest/palimpsest"
 export const projectRetrievalReceipt = (receipt: RetrievalReceipt) => ({
   question: receipt.question,
   uid: receipt.uid,
+  pipeline: receipt.pipeline,
+  profile: receipt.profile,
   asOf: receipt.asOf,
   anchorTerms: receipt.anchorTerms,
   anchorsReachingClaims: receipt.anchorsReachingClaims,

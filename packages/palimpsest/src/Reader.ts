@@ -174,6 +174,14 @@ export interface ReadAnswer {
   /** What this read cost the provider — the "reader tokens" column of the eval. */
   readonly inputTokens: number
   readonly outputTokens: number
+  /**
+   * Wall time of the HydraDB hydration, so the eval can add it to the ask's
+   * `graphMs` and report the whole graph cost. Zero when the spans were already
+   * in hand (`readSpans`, and every baseline).
+   */
+  readonly hydrateMs: number
+  /** Wall time of the reader's own LLM call. */
+  readonly readMs: number
 }
 
 const make = Effect.gen(function* () {
@@ -285,6 +293,7 @@ const make = Effect.gen(function* () {
     options: ReadOptions = {}
   ): Effect.Effect<ReadAnswer, never, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
+      const readStarted = Date.now()
       if (spans.length === 0) {
         return {
           answer: NOT_IN_MEMORY,
@@ -296,7 +305,9 @@ const make = Effect.gen(function* () {
           premiseSupported: null,
           premiseNote: "",
           inputTokens: 0,
-          outputTokens: 0
+          outputTokens: 0,
+          hydrateMs: 0,
+          readMs: 0
         }
       }
 
@@ -329,7 +340,9 @@ const make = Effect.gen(function* () {
           premiseSupported: generated.value.premise_supported,
           premiseNote: generated.value.premise_note,
           inputTokens: generated.inputTokens,
-          outputTokens: generated.outputTokens
+          outputTokens: generated.outputTokens,
+          hydrateMs: 0,
+          readMs: Date.now() - readStarted
         }
       }
 
@@ -354,7 +367,9 @@ const make = Effect.gen(function* () {
         premiseSupported: null,
         premiseNote: "",
         inputTokens: generated.inputTokens,
-        outputTokens: generated.outputTokens
+        outputTokens: generated.outputTokens,
+        hydrateMs: 0,
+        readMs: Date.now() - readStarted
       }
     })
 
@@ -365,8 +380,11 @@ const make = Effect.gen(function* () {
     options: ReadOptions = {}
   ): Effect.Effect<ReadAnswer, HydraError, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
+      const hydrateStarted = Date.now()
       const spans = yield* hydrate(evidence)
-      return yield* readSpans(question, questionDate, spans, options)
+      const hydrateMs = Date.now() - hydrateStarted
+      const answer = yield* readSpans(question, questionDate, spans, options)
+      return { ...answer, hydrateMs }
     })
 
   return { hydrate, read, readSpans } as const
