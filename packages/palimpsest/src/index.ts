@@ -274,7 +274,9 @@ export {
   MAX_KEPT_TURNS,
   enforceSelection,
   orderCandidates,
+  renderCandidateTable,
+  select,
   shortId,
   speakerShare
 } from "./Select.js"
-export type { DropReason, SelectionReport } from "./Select.js"
+export type { DropReason, SelectionReport, SelectorCall } from "./Select.js"

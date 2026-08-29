@@ -6,6 +6,7 @@ import {
   enforceSelection,
   orderCandidates,
   shortId,
+  renderCandidateTable,
   speakerShare
 } from "../../src/Select.js"
 
@@ -198,5 +199,44 @@ describe("the speaker prior", () => {
 
   it("is zero on an empty set rather than NaN", () => {
     expect(speakerShare([], [])).toEqual({ candidateShare: 0, keptShare: 0 })
+  })
+})
+
+describe("the candidate table", () => {
+  it("gives one line per row, in the deterministic order, with the arms that reached it", () => {
+    const rows = [
+      spread("aaaaaaaaaaaa01", { convergence: 1, text: "lives in Brooklyn" }, 1),
+      spread("bbbbbbbbbbbb02", {
+        convergence: 4,
+        text: "moved to San Francisco",
+        speaker: "assistant",
+        sessionDate: 20230404,
+        tEvent: 20230401,
+        arms: ["convergence", "probe:me|residence"]
+      })
+    ]
+    const table = renderCandidateTable(rows)
+    const lines = table.split(String.fromCharCode(10))
+    expect(lines).toHaveLength(2)
+    // Highest convergence first, whatever order they arrived in.
+    expect(lines[0]).toContain("bbbbbb02")
+    expect(lines[0]).toContain("convergence,probe:me|residence")
+    expect(lines[0]).toContain("about 20230401")
+    expect(lines[1]).toContain("lives in Brooklyn")
+    // No event date means no "about" clause rather than "about 0".
+    expect(lines[1]).not.toContain("about")
+  })
+
+  it("does not depend on the incoming order, because the prompt is the cache key", () => {
+    const rows = [
+      spread("aaaaaaaaaaaa01", { convergence: 1 }, 1),
+      spread("bbbbbbbbbbbb02", { convergence: 4 }, 2),
+      spread("cccccccccccc03", { convergence: 2 }, 3)
+    ]
+    expect(renderCandidateTable(rows)).toBe(renderCandidateTable([...rows].reverse()))
+  })
+
+  it("is empty for no candidates rather than a stray newline", () => {
+    expect(renderCandidateTable([])).toBe("")
   })
 })

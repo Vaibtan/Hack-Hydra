@@ -1,4 +1,8 @@
+import type { LanguageModel } from "@effect/ai"
+import { Llm } from "@palimpsest/llm"
+import { Effect, Schema } from "effect"
 import type { Candidate } from "./Arms.js"
+import type { Route } from "./Understand.js"
 
 /**
  * Choosing, from the candidate union, what the reader is actually shown.
@@ -172,3 +176,118 @@ export const speakerShare = (
     rows.length === 0 ? 0 : rows.filter((row) => row.speaker === "assistant").length / rows.length
   return { candidateShare: share(candidates), keptShare: share(kept) }
 }
+
+// ------------------------------------------------------------- the LLM call
+
+const Selection = Schema.Struct({
+  keep: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      /** One word: why this row helps. Shown in the receipt, not acted on. */
+      reason: Schema.String
+    })
+  )
+})
+
+const SYSTEM = `You choose which memory excerpts a reader will be shown, from a table of candidates.
+
+Each row is one recorded claim about the person asking: a short id, the claim as the memory indexed
+it, who said it, the date of the conversation, the date the claim is about, and whether the memory
+still considers it current.
+
+Keep the rows that help answer the question. Specifically:
+- Keep every row the answer needs. A count or a comparison needs ALL of its contributing rows, not
+  the best one — if the question asks how many things, keep every distinct thing.
+- Keep BOTH values when the question is about something that changed, so the reader can see which
+  is current and which was replaced.
+- Prefer distinct facts over near-duplicates. When several rows say the same thing, keep the one
+  with the most specific wording and drop the rest.
+- Drop rows that are merely about the same topic. Overlapping words are not evidence.
+- Do not try to answer the question. Choosing is the whole job.
+
+Return the ids you keep, each with a one-word reason. Keeping nothing is never correct: if no row
+is clearly relevant, keep the handful that are closest.`
+
+/** The candidate table, one row per line, in a stable order. */
+export const renderCandidateTable = (candidates: ReadonlyArray<Candidate>): string =>
+  orderCandidates(candidates)
+    .map((candidate) => {
+      const dated = candidate.tEvent > 0 ? ` about ${candidate.tEvent}` : ""
+      return (
+        `[${shortId(candidate.ckey)}] ${candidate.speaker} on ${candidate.sessionDate}${dated} · ` +
+        `${candidate.arms.join(",")} · ${candidate.text}`
+      )
+    })
+    .join("\n")
+
+export interface SelectorCall extends SelectionReport {
+  /** The one-word reason the model gave for each kept id. */
+  readonly reasons: Readonly<Record<string, string>>
+  readonly cached: boolean
+}
+
+/**
+ * One listwise call over the whole candidate table.
+ *
+ * Listwise, not one call per row: the decisions are not independent — "keep
+ * every distinct item" and "prefer distinct facts over near-duplicates" are
+ * both statements about the *set*, and a per-row call cannot see the set.
+ *
+ * The model sees the derived Claim `text`. That is allowed here and nowhere
+ * else: it is an index entry written by an earlier model, and answering from it
+ * would make the system a summary of a summary. It never reaches the reader.
+ *
+ * A failed call is not a decision: `enforceSelection` falls back to the
+ * deterministic v1 ordering rather than letting an error empty the evidence.
+ */
+export const select = (
+  question: string,
+  questionDate: string,
+  route: Route,
+  candidates: ReadonlyArray<Candidate>,
+  options: { readonly maxTurns?: number } = {}
+): Effect.Effect<SelectorCall, never, LanguageModel.LanguageModel | Llm> =>
+  Effect.gen(function* () {
+    if (candidates.length === 0) {
+      return {
+        ...enforceSelection([], new Set(), options),
+        reasons: {},
+        cached: true
+      }
+    }
+
+    const prompt = [
+      `QUESTION DATE: ${questionDate}`,
+      `QUESTION: ${question}`,
+      `QUESTION KIND: ${route}`,
+      "",
+      `CANDIDATES (${candidates.length}):`,
+      renderCandidateTable(candidates)
+    ].join("\n")
+
+    const generated = yield* Effect.either(
+      (yield* Llm).generateObject({
+        kind: "select",
+        system: SYSTEM,
+        prompt,
+        schema: Selection,
+        objectName: "selection"
+      })
+    )
+
+    if (generated._tag === "Left") {
+      return {
+        ...enforceSelection(candidates, new Set(), { ...options, fallback: true }),
+        reasons: {},
+        cached: false
+      }
+    }
+
+    const reasons: Record<string, string> = {}
+    for (const row of generated.right.value.keep) reasons[row.id] = row.reason
+    return {
+      ...enforceSelection(candidates, new Set(Object.keys(reasons)), options),
+      reasons,
+      cached: generated.right.cached
+    }
+  })
