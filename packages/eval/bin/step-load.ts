@@ -1,0 +1,190 @@
+import { NodeHttpClient } from "@effect/platform-node"
+import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
+import { HydraClient } from "@palimpsest/hydra"
+import { LlmLive, loadDotEnv } from "@palimpsest/llm"
+import {
+  ClaimGraph,
+  Retrieve,
+  Supersede,
+  readUserStats,
+  readUserVertices,
+  type UserStats
+} from "@palimpsest/palimpsest"
+import { Effect, Layer, Option } from "effect"
+import { existsSync, readFileSync } from "node:fs"
+import { dirname, resolve } from "node:path"
+import { benchmarkSlice, SPLIT_FILE, type SplitFile } from "../src/index.js"
+
+/**
+ * `step-load --slice 60 [--prefix g3] [--asks 5]`
+ *
+ * One row of the step-load curve: how big the graph is after this step, and
+ * how long a warm ask's HydraDB stages take on it.
+ *
+ * Both numbers are read **without a store-wide scan**, which is not a detail:
+ * `MATCH (n:Token) RETURN count(*)` took 15.8 s of engine time at 27 000
+ * Tokens, and the four users being ingested at that moment all died on the
+ * engine's 30 s query cap. The size comes from summing each user's own `User`
+ * vertex — every count on it was written by the ingest that produced it — and
+ * every read here is by id or an `MSpaths` hop from one.
+ *
+ * `docker stats` is the operator's half; this is the graph's half.
+ */
+loadDotEnv()
+
+const arg = (name: string, fallback: string): string => {
+  const index = process.argv.indexOf(`--${name}`)
+  return index === -1 ? fallback : (process.argv[index + 1] ?? fallback)
+}
+
+const sliceSize = Number(arg("slice", "20"))
+const dataset = arg("dataset", "s") as DatasetName
+const prefix = arg("prefix", "g3")
+const askCount = Number(arg("asks", "5"))
+
+const workspaceRoot = (): string => {
+  let dir = process.cwd()
+  for (let depth = 0; depth < 8; depth++) {
+    if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return process.cwd()
+}
+
+const uidFor = (questionId: string): string =>
+  prefix === "" ? questionId : `${prefix}-${questionId}`
+
+const AppLive = Retrieve.Default.pipe(
+  Layer.provideMerge(Supersede.Default),
+  Layer.provideMerge(ClaimGraph.Default),
+  Layer.provideMerge(HydraClient.Default),
+  Layer.provideMerge(LlmLive()),
+  Layer.provide(NodeHttpClient.layerUndici)
+)
+
+const EMPTY: UserStats = {
+  claims: 0,
+  entities: 0,
+  slots: 0,
+  tokens: 0,
+  sessions: 0,
+  turns: 0,
+  supersessions: 0,
+  contestedSlots: 0
+}
+
+const median = (values: ReadonlyArray<number>): number => {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!
+}
+
+const program = Effect.gen(function* () {
+  const hydra = yield* HydraClient
+  const retrieve = yield* Retrieve
+  const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
+  const population = benchmarkSlice(questions, sliceSize)
+
+  // ---- size ------------------------------------------------------------
+  const perUser = yield* Effect.forEach(
+    population,
+    (question: DatasetQuestion) =>
+      readUserStats(hydra, uidFor(question.questionId)).pipe(
+        Effect.map((stats) => ({ question, stats: Option.getOrNull(stats) }))
+      ),
+    { concurrency: 8 }
+  )
+  const present = perUser.filter((row) => row.stats !== null)
+  const complete = present.filter((row) => row.stats!.sessions === row.question.sessions.length)
+  const total = present.reduce<UserStats>(
+    (sum, row) => ({
+      claims: sum.claims + row.stats!.claims,
+      entities: sum.entities + row.stats!.entities,
+      slots: sum.slots + row.stats!.slots,
+      tokens: sum.tokens + row.stats!.tokens,
+      sessions: sum.sessions + row.stats!.sessions,
+      turns: sum.turns + row.stats!.turns,
+      supersessions: sum.supersessions + row.stats!.supersessions,
+      contestedSlots: sum.contestedSlots + row.stats!.contestedSlots
+    }),
+    EMPTY
+  )
+
+  // Vertices and edges as the writer creates them, so the number is derivable
+  // from the counts rather than from a scan the engine refuses past 250 000.
+  const vertices =
+    total.sessions + total.turns + total.claims + total.entities + total.slots + total.tokens +
+    present.length
+  const edges =
+    total.turns + // Session -[HAS_TURN]-> Turn
+    total.claims * 2 + // Claim -[EVIDENCE]-> Turn, and its Slot FILLS or a mention
+    total.supersessions +
+    total.entities +
+    total.slots +
+    total.sessions
+
+  // ---- warm ask latency -------------------------------------------------
+  const splitPath = resolve(workspaceRoot(), SPLIT_FILE)
+  const dev: ReadonlyArray<string> = existsSync(splitPath)
+    ? (JSON.parse(readFileSync(splitPath, "utf8")) as SplitFile).dev
+    : []
+  const devSet = new Set(dev)
+  const subjects = complete
+    .filter((row) => devSet.size === 0 || devSet.has(row.question.questionId))
+    .slice(0, askCount)
+
+  const graphMs: Array<number> = []
+  const askMs: Array<number> = []
+  for (const { question } of subjects) {
+    const uid = uidFor(question.questionId)
+    // Warm exactly as `pnpm warm` does, then discard the first ask: a cold
+    // vertex here is an object-store round trip, not a page fault, because the
+    // benchmark profile disables the disk read cache.
+    yield* Effect.all(
+      [
+        readUserVertices(hydra, uid, "HAS_ENTITY"),
+        readUserVertices(hydra, uid, "HAS_SLOT"),
+        readUserVertices(hydra, uid, "HAS_SESSION")
+      ],
+      { concurrency: 3 }
+    )
+    yield* retrieve.ask(uid, question.question, { questionDate: question.questionDate.raw })
+    const warm = yield* retrieve.ask(uid, question.question, {
+      questionDate: question.questionDate.raw
+    })
+    graphMs.push(warm.timings.graphMs)
+    askMs.push(warm.timings.askMs)
+  }
+
+  console.log(`prefix        ${prefix}`)
+  console.log(`population    ${population.length} questions`)
+  console.log(`ingested      ${complete.length} complete, ${present.length - complete.length} partial`)
+  console.log(`sessions      ${total.sessions}`)
+  console.log(`turns         ${total.turns}`)
+  console.log(`claims        ${total.claims}`)
+  console.log(`entities      ${total.entities}`)
+  console.log(`slots         ${total.slots}   (${total.contestedSlots} contested)`)
+  console.log(`tokens        ${total.tokens}`)
+  console.log(`supersessions ${total.supersessions}`)
+  console.log(`vertices      ~${vertices}`)
+  console.log(`edges         ~${edges}`)
+  console.log(
+    `warm ask      graphMs p50 ${median(graphMs)} ms, askMs p50 ${median(askMs)} ms ` +
+      `over ${graphMs.length} dev questions`
+  )
+  console.log("")
+  console.log(
+    `| ${complete.length} | ${total.sessions} | ~${vertices} / ~${edges} | ` +
+      `${median(graphMs)} ms | ${median(askMs)} ms |`
+  )
+})
+
+Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+  (error) => {
+    console.error(String(error))
+    process.exit(1)
+  }
+)

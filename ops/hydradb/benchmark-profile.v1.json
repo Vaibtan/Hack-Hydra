@@ -12,8 +12,8 @@
       "minimum_host_headroom_bytes": 805306368
     },
     "object_store": {
-      "memory_bytes": 2147483648,
-      "memory_swap_bytes": 2147483648,
+      "memory_bytes": 3221225472,
+      "memory_swap_bytes": 3221225472,
       "cpu_limit": 6,
       "restart_policy": "on-failure:3"
     }

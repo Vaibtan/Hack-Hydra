@@ -24,6 +24,7 @@
     "slots": "pnpm --filter @palimpsest/palimpsest run slots",
     "ask": "pnpm --filter @palimpsest/palimpsest run ask",
     "ingest-slice": "pnpm --filter @palimpsest/eval run ingest-slice",
+    "step-load": "pnpm --filter @palimpsest/eval run step-load",
     "backfill-user": "pnpm --filter @palimpsest/eval run backfill-user",
     "eval": "pnpm --filter @palimpsest/eval run eval",
     "splits": "pnpm --filter @palimpsest/eval run splits",

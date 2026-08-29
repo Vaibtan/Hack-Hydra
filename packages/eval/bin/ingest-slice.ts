@@ -36,6 +36,19 @@ const dataset = arg("dataset", "s") as DatasetName
 const userConcurrency = Number(arg("users", "3"))
 const prefix = arg("prefix", "")
 const skipExisting = process.argv.includes("--skip-existing")
+/**
+ * How many times a user may be re-attempted after a *capacity* failure.
+ *
+ * A 30 s runtime refusal or a lost writer lease is a statement about the node
+ * at that moment, not about the user, and the whole user is lost to it — tens
+ * of correct writes and, on a cache miss, real money. `ingestUser` is
+ * idempotent, so a retry re-`MERGE`s what landed and continues; the pause is
+ * there so the retry does not join the same pile-up that caused the refusal.
+ * Parse, schema and identity failures are not retried: those are the same
+ * answer every time.
+ */
+const retries = Number(arg("retries", "1"))
+const RETRY_PAUSE_MS = 30_000
 
 export const uidFor = (questionId: string, tag: string): string =>
   tag === "" ? questionId : `${tag}-${questionId}`
@@ -88,10 +101,29 @@ const program = Effect.gen(function* () {
         // One user's failure must not discard the rest of the run: a slice is
         // an hour of API calls and the cache only helps if the process lives
         // long enough to write it.
-        const outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
+        let outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
+        for (let attempt = 0; attempt < retries && outcome._tag === "Left"; attempt++) {
+          const tag = outcome.left._tag
+          if (tag !== "HydraLimitError" && tag !== "HydraUnavailable" && tag !== "HydraEngineError") {
+            break
+          }
+          console.log(
+            `     ${uid.padEnd(22)} retrying after ${outcome.left.message.slice(0, 80)}`
+          )
+          yield* Effect.sleep(RETRY_PAUSE_MS)
+          outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
+        }
         done++
         if (outcome._tag === "Left") {
-          console.log(`[${String(done).padStart(3)}/${slice.length}] ${uid.padEnd(22)} FAILED  ${outcome.left.message}`)
+          // The statement, not just the message: a 30 s runtime refusal is
+          // useless without knowing which read or write hit it, and the error
+          // has carried the query all along.
+          const failure = outcome.left as { message: string; query?: string }
+          console.log(
+            `[${String(done).padStart(3)}/${slice.length}] ${uid.padEnd(22)} FAILED  ${failure.message}` +
+              (failure.query === undefined ? "" : `
+${" ".repeat(10)}query: ${failure.query.slice(0, 300)}`)
+          )
           return null
         }
         const report = outcome.right

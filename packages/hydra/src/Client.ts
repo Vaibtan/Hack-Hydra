@@ -588,6 +588,48 @@ const make = Effect.gen(function* () {
       return Option.some(row)
     })
 
+  /**
+   * Sends one `UNWIND` write, halving the batch when the engine refuses it.
+   *
+   * The 1 000-row chunk is sized by admission control (1 024) and by how fast a
+   * write *used to be* — 500 vertex upserts in ~55 ms. On the durable benchmark
+   * runtime it is not: every write waits on a 1 ms WAL flush to an object store,
+   * and under a four-user ingest a full chunk started crossing the engine's 30 s
+   * runtime cap around the ninth user, losing the whole user each time.
+   *
+   * So the batch halves and *keeps* the smaller size for the rest of the write,
+   * exactly as `deleteByKeys` does: one slow failure for the whole write rather
+   * than one per chunk. It costs nothing when the node is fast, because nothing
+   * fails.
+   */
+  const sendChunked = (
+    statement: string,
+    payload: ReadonlyArray<Readonly<Record<string, unknown>>>,
+    maxRows: number
+  ): Effect.Effect<number, HydraError> =>
+    Effect.gen(function* () {
+      let size = maxRows
+      let chunks = chunkRows(payload, size)
+      let index = 0
+      let written = 0
+      while (index < chunks.length) {
+        const chunk = chunks[index]!
+        const outcome = yield* send(statement, { rows: chunk }, {}).pipe(Effect.either)
+        if (outcome._tag === "Right") {
+          written += chunk.length
+          index++
+          continue
+        }
+        if (outcome.left._tag !== "HydraLimitError" || size === 1) {
+          return yield* Effect.fail(outcome.left)
+        }
+        size = Math.max(1, Math.floor(size / 2))
+        chunks = chunkRows(chunks.slice(index).flat(), size)
+        index = 0
+      }
+      return written
+    })
+
   const batchMerge = (
     label: string,
     rows: ReadonlyArray<VertexRow>
@@ -641,10 +683,7 @@ const make = Effect.gen(function* () {
             })
           }
         }
-        for (const chunk of chunkRows(payload, MERGE_ROWS_PER_CHUNK)) {
-          yield* send(statement, { rows: chunk }, {})
-          written += chunk.length
-        }
+        written += yield* sendChunked(statement, payload, MERGE_ROWS_PER_CHUNK)
       }
       return written
     })
@@ -694,10 +733,7 @@ const make = Effect.gen(function* () {
           [FULL_KEY_PROPERTY]: `${row.srcKey}|${relType}|${row.dstKey}`,
           ...(row.properties ?? {})
         }))
-        for (const chunk of chunkRows(payload, MERGE_ROWS_PER_CHUNK)) {
-          yield* send(statement, { rows: chunk }, {})
-          written += chunk.length
-        }
+        written += yield* sendChunked(statement, payload, MERGE_ROWS_PER_CHUNK)
       }
       return written
     })
