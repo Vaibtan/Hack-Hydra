@@ -71,10 +71,24 @@ services:
       GRAPH_BOLT_NODE_ADDRESSES: node-p0=hydradb:7687
       GRAPH_ADVERTISED_BOLT_ADDR: hydradb:7687
       GRAPH_DATA_CACHE_DIR: /var/cache/slatedb/data
-      GRAPH_DATA_CACHE_BYTES: "536870912"
-      # Disable SlateDB's optional disk-cache evictor until it exposes bounded
-      # depth/drop telemetry. The durable S3 store remains the source of truth.
-      GRAPH_OBJECT_STORE_CACHE_ENABLED: "false"
+      GRAPH_DATA_CACHE_BYTES: "2147483648"
+      # Re-enabled on 2026-08-30 (#23), reversing the P0 profile's decision to
+      # disable it "until it exposes bounded depth/drop telemetry".
+      #
+      # Two things changed. First, this build *does* expose that telemetry:
+      # `graph_object_store_cache_event_queue_depth` and
+      # `graph_object_store_cache_events_dropped_total` are both on /metrics, so
+      # a dropped cache event is now a number a benchmark can report rather than
+      # an unbounded unknown. Second, the P0 note called this "only an
+      # optimization", and measurement says otherwise: with the cache off, the
+      # first convergence walk on a 20-user graph did not finish inside a 25 s
+      # ceiling, because every block it reads is an HTTP GET to MinIO. Warm it
+      # is 125 ms. A read path whose cold case is three orders of magnitude past
+      # its own target is not an optimization question.
+      #
+      # The durable S3-compatible store remains the source of truth; this is a
+      # read cache on local disk, and both counters are recorded with the result.
+      GRAPH_OBJECT_STORE_CACHE_ENABLED: "true"
       GRAPH_AUTH_TOKEN_FILE: /run/secrets/hydradb_auth_token
       GRAPH_ALLOW_PLAINTEXT: "true"
       # The engine's own default, restored from the 3000 ms floor (#23). 3000 is

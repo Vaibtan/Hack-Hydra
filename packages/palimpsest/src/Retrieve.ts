@@ -170,8 +170,13 @@ export const determinismHash = (ckeys: ReadonlyArray<string>): string =>
  * 30 s of an 8 s budget. This one protects the ask. A read that trips it fails
  * the ask in v1 — v1 has no arm to lose, only its one convergence walk — and in
  * v2 a timed-out arm is reported in the receipt instead.
+ *
+ * `PALIMPSEST_READ_TIMEOUT_MS` raises it, which is only ever for *measuring* a
+ * read that the ceiling would otherwise hide — a cold convergence walk on a
+ * node with its read cache disabled takes far longer than any product budget,
+ * and "more than 25 s" is not a number.
  */
-export const READ_TIMEOUT_MS = 25_000
+export const READ_TIMEOUT_MS = Number(process.env["PALIMPSEST_READ_TIMEOUT_MS"] ?? 25_000)
 
 const make = Effect.gen(function* () {
   const hydra = yield* HydraClient

@@ -138,11 +138,13 @@ const program = Effect.gen(function* () {
 
   const graphMs: Array<number> = []
   const askMs: Array<number> = []
+  const coldGraphMs: Array<number> = []
   for (const { question } of subjects) {
     const uid = uidFor(question.questionId)
-    // Warm exactly as `pnpm warm` does, then discard the first ask: a cold
-    // vertex here is an object-store round trip, not a page fault, because the
-    // benchmark profile disables the disk read cache.
+    // `pnpm warm` touches the root and its fan-out; it does **not** warm the
+    // convergence walk, and on this profile that is the whole cost — a cold
+    // block is an object-store round trip, not a page fault. So the first ask
+    // is measured and reported as the cold number rather than discarded.
     yield* Effect.all(
       [
         readUserVertices(hydra, uid, "HAS_ENTITY"),
@@ -151,7 +153,10 @@ const program = Effect.gen(function* () {
       ],
       { concurrency: 3 }
     )
-    yield* retrieve.ask(uid, question.question, { questionDate: question.questionDate.raw })
+    const cold = yield* retrieve.ask(uid, question.question, {
+      questionDate: question.questionDate.raw
+    })
+    coldGraphMs.push(cold.timings.graphMs)
     const warm = yield* retrieve.ask(uid, question.question, {
       questionDate: question.questionDate.raw
     })
@@ -175,10 +180,11 @@ const program = Effect.gen(function* () {
     `warm ask      graphMs p50 ${median(graphMs)} ms, askMs p50 ${median(askMs)} ms ` +
       `over ${graphMs.length} dev questions`
   )
+  console.log(`cold ask      graphMs p50 ${median(coldGraphMs)} ms (first ask on an unread user)`)
   console.log("")
   console.log(
     `| ${complete.length} | ${total.sessions} | ~${vertices} / ~${edges} | ` +
-      `${median(graphMs)} ms | ${median(askMs)} ms |`
+      `${median(graphMs)} ms | ${median(askMs)} ms | ${median(coldGraphMs)} ms |`
   )
 })
 

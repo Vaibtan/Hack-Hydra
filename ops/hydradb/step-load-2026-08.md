@@ -64,10 +64,37 @@ is content-addressed and every user's canon decisions are made from that user's
 own extractions — so the criterion that matters is the one the ticket states:
 0 failed users.
 
-<!-- filled in per step -->
+`graphMs` is the HydraDB stages of an ask and nothing else — it starts after the
+anchors call returns — measured over the first five dev users of the step, each
+asked twice: the first ask is the **cold** number and the second the **warm**
+one. `pnpm warm` runs first and does not change the cold number, because it
+touches the `User` fan-out and the cost is in the convergence walk.
 
-| step | users | sessions | HydraDB RSS | MinIO RSS | vertices/edges | warm ask p50 | wall clock |
-|---:|---:|---:|---:|---:|---|---:|---:|
+HydraDB RSS is the **peak** the capacity gate sampled during that step's ingest,
+not the figure after it settles; the container limit has to cover the peak.
+
+| step | users | sessions | vertices / edges | HydraDB RSS peak | MinIO RSS | object store | warm `graphMs` p50 | cold `graphMs` p50 | wall clock |
+|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | 20 | 978 | ~192 700 / ~142 900 | 1.52 GiB | 1.90 GiB | 2.7 GB | **68 ms** | 11 397 ms | 24.4 min (12 users; 8 were already in) |
+
+### The read cache is not an optimization
+
+Measured at step 20, and it reversed a P0 decision. With
+`GRAPH_OBJECT_STORE_CACHE_ENABLED=false` — the P0 profile's setting, taken
+because the evictor "does not expose the bounded drop/depth telemetry required
+for a benchmark claim" and "affects only an optimization" — the **first**
+convergence walk on this graph did not finish inside a 25 s ceiling. Warm, the
+same walk was 125 ms. With the cache enabled and `GRAPH_DATA_CACHE_BYTES` raised
+to 2 GiB, warm fell to **68 ms** and cold to **11.4 s**.
+
+The telemetry objection no longer holds either: this build exposes
+`graph_object_store_cache_event_queue_depth` and
+`graph_object_store_cache_events_dropped_total` on `/metrics`, and both are
+recorded with every benchmark result. The durable S3-compatible store is still
+the source of truth; this is a read cache on local disk.
+
+A cold ask is reported and is **not** a target (spec, *Latency*). Nothing in the
+20-question smoke eval hit the 25 s read ceiling.
 
 ## Final profile
 
