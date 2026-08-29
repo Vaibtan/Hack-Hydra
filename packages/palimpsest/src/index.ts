@@ -224,3 +224,13 @@ export { MAX_SLOT_EXPANSION, READ_TIMEOUT_MS, Retrieve, determinismHash } from "
 export type { AskOptions, AskProfile, AskResult, AskTimings, Pipeline, Receipt } from "./Retrieve.js"
 export { NOT_IN_MEMORY, Reader, SPAN_CONTEXT, cutExcerpt, renderReaderPrompt } from "./Reader.js"
 export type { HydratedSpan, ReadAnswer, ReadOptions } from "./Reader.js"
+export {
+  MIN_IN_SCOPE_TO_DROP_REST,
+  UNDATED_SESSION_SLACK_DAYS,
+  applyTimeScope,
+  claimSpan,
+  inScope,
+  intervalSentence,
+  resolveTimeInterval
+} from "./TimeScope.js"
+export type { DayInterval, TimePrecision, TimeScopable, TimeScopeReport } from "./TimeScope.js"

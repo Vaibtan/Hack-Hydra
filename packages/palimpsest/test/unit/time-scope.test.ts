@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { intervalSentence, resolveTimeInterval, type DayInterval } from "../../src/TimeScope.js"
+import {
+  applyTimeScope,
+  claimSpan,
+  inScope,
+  intervalSentence,
+  resolveTimeInterval,
+  type DayInterval
+} from "../../src/TimeScope.js"
 
 /**
  * The resolver's contract is this table.
@@ -163,5 +170,87 @@ describe("the reader's sentence", () => {
     expect(sentence).toContain("2023-03-01")
     expect(sentence).toContain("2023-04-01")
     expect(sentence).toContain("not including")
+  })
+})
+
+// ------------------------------------------------------------------ scoping
+
+const claim = (
+  tEvent: number,
+  tPrec: string,
+  sessionDate = 20230101
+): { tEvent: number; tPrec: string; sessionDate: number; id: string } => ({
+  tEvent,
+  tPrec,
+  sessionDate,
+  id: `${tEvent}/${tPrec}`
+})
+
+const MARCH = at("in march")!
+
+describe("a claim's own window", () => {
+  it("is the day, the month or the year its precision names", () => {
+    expect(claimSpan(claim(20230314, "day"))).toEqual({ start: 20230314, end: 20230315 })
+    expect(claimSpan(claim(20230300, "month"))).toEqual({ start: 20230301, end: 20230401 })
+    expect(claimSpan(claim(20230000, "year"))).toEqual({ start: 20230101, end: 20240101 })
+    expect(claimSpan(claim(0, "none"))).toBeNull()
+  })
+
+  it("reaches a question about the month it names", () => {
+    // "in March" must reach a claim dated only "March 2023".
+    expect(inScope(claim(20230300, "month"), MARCH)).toBe(true)
+    expect(inScope(claim(20230314, "day"), MARCH)).toBe(true)
+    expect(inScope(claim(20230414, "day"), MARCH)).toBe(false)
+    // A year-precision claim overlaps every month of that year.
+    expect(inScope(claim(20230000, "year"), MARCH)).toBe(true)
+  })
+
+  it("falls back to when an undated claim was said, widened by a week", () => {
+    expect(inScope(claim(0, "none", 20230405), MARCH)).toBe(true)
+    expect(inScope(claim(0, "none", 20230222), MARCH)).toBe(true)
+    expect(inScope(claim(0, "none", 20230415), MARCH)).toBe(false)
+    expect(inScope(claim(0, "none", 20230201), MARCH)).toBe(false)
+  })
+})
+
+describe("applying the scope", () => {
+  it("does nothing without an interval", () => {
+    const claims = [claim(20230414, "day"), claim(20230314, "day")]
+    const report = applyTimeScope(claims, null)
+    expect(report.applied).toBe(false)
+    expect(report.claims).toEqual(claims)
+  })
+
+  it("boosts the in-scope claims and keeps the rest behind them", () => {
+    const claims = [claim(20230414, "day"), claim(20230314, "day"), claim(20230515, "day")]
+    const report = applyTimeScope(claims, MARCH)
+    expect(report).toMatchObject({ applied: true, inScope: 1, outOfScope: 2 })
+    expect(report.claims.map((c) => c.id)).toEqual(["20230314/day", "20230414/day", "20230515/day"])
+  })
+
+  it("drops the out-of-scope claims once ten are in the window", () => {
+    const within = Array.from({ length: 10 }, (_, i) => claim(20230301 + i, "day"))
+    const outside = [claim(20230515, "day"), claim(20230601, "day")]
+    const report = applyTimeScope([...outside, ...within], MARCH)
+    expect(report).toMatchObject({ inScope: 10, outOfScope: 2 })
+    expect(report.claims.length).toBe(10)
+    expect(report.claims.every((c) => c.tEvent < 20230401)).toBe(true)
+  })
+
+  it("keeps every claim when nothing is in the window", () => {
+    const claims = [claim(20230515, "day"), claim(20230601, "day")]
+    const report = applyTimeScope(claims, MARCH)
+    expect(report).toMatchObject({ inScope: 0, outOfScope: 2 })
+    expect(report.claims.length).toBe(2)
+  })
+
+  it("preserves the incoming order inside each group", () => {
+    const claims = [claim(20230320, "day"), claim(20230515, "day"), claim(20230305, "day")]
+    const report = applyTimeScope(claims, MARCH)
+    expect(report.claims.map((c) => c.id)).toEqual([
+      "20230320/day",
+      "20230305/day",
+      "20230515/day"
+    ])
   })
 })

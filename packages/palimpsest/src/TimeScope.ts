@@ -307,3 +307,103 @@ export const intervalSentence = (interval: DayInterval): string => {
     `${readable(interval.start)} up to but not including ${readable(interval.end)}.`
   )
 }
+
+// --------------------------------------------------------------- scoping
+
+/** What the scope filter needs off a candidate claim. */
+export interface TimeScopable {
+  /** `YYYYMMDD`, with `YYYYMM00` for month precision and `YYYY0000` for year. `0` when unknown. */
+  readonly tEvent: number
+  readonly tPrec: string
+  /** The date of the conversation the claim came from. */
+  readonly sessionDate: number
+}
+
+/**
+ * How far a claim with no event date may sit from the window and still count.
+ *
+ * A claim whose date the extractor could not resolve is anchored only by the
+ * conversation it was said in, and people talk about a weekend on the Monday
+ * after it. Seven days each way is the smallest widening that catches that
+ * without turning "last March" into "spring".
+ */
+export const UNDATED_SESSION_SLACK_DAYS = 7
+
+/**
+ * The window a claim's own `t_event` covers, given its precision.
+ *
+ * Month precision is stored as `YYYYMM00` and year precision as `YYYY0000`, so
+ * a claim dated "March 2023" covers all of March — and a question about March
+ * must reach it.
+ */
+export const claimSpan = (claim: TimeScopable): { readonly start: number; readonly end: number } | null => {
+  if (claim.tEvent === 0) return null
+  if (claim.tPrec === "year") {
+    const year = Math.floor(claim.tEvent / 10000)
+    return { start: year * 10000 + 101, end: (year + 1) * 10000 + 101 }
+  }
+  if (claim.tPrec === "month") {
+    const first = claim.tEvent - (claim.tEvent % 100) + 1
+    return { start: first, end: monthStart(first, 1) }
+  }
+  return { start: claim.tEvent, end: addDays(claim.tEvent, 1) }
+}
+
+/** Closed-open overlap, in `YYYYMMDD` integers. */
+const overlaps = (
+  a: { readonly start: number; readonly end: number },
+  b: { readonly start: number; readonly end: number }
+): boolean => a.start < b.end && b.start < a.end
+
+export const inScope = (claim: TimeScopable, interval: DayInterval): boolean => {
+  const span = claimSpan(claim)
+  if (span !== null) return overlaps(span, interval)
+  // Undated: fall back to when it was said, widened.
+  const widened = {
+    start: addDays(interval.start, -UNDATED_SESSION_SLACK_DAYS),
+    end: addDays(interval.end, UNDATED_SESSION_SLACK_DAYS)
+  }
+  return claim.sessionDate >= widened.start && claim.sessionDate < widened.end
+}
+
+/**
+ * Below this many in-scope claims, the out-of-scope ones are kept behind them.
+ *
+ * Scoping is a *boost*, not a filter, precisely because the extractor resolves
+ * a date for well under half of the claims: a hard filter on a question whose
+ * window catches three claims would throw away the evidence that answers it.
+ * Once ten claims are in the window, the ones outside it are not what the
+ * question is about.
+ */
+export const MIN_IN_SCOPE_TO_DROP_REST = 10
+
+export interface TimeScopeReport<A> {
+  readonly claims: ReadonlyArray<A>
+  readonly inScope: number
+  readonly outOfScope: number
+  /** False when the question carried no resolvable time phrase. */
+  readonly applied: boolean
+}
+
+/**
+ * Boosts the claims inside the window ahead of the rest, keeping relative order
+ * within each group so an arm's own ranking survives.
+ */
+export const applyTimeScope = <A extends TimeScopable>(
+  claims: ReadonlyArray<A>,
+  interval: DayInterval | null
+): TimeScopeReport<A> => {
+  if (interval === null) {
+    return { claims, inScope: 0, outOfScope: 0, applied: false }
+  }
+  const within: Array<A> = []
+  const outside: Array<A> = []
+  for (const claim of claims) (inScope(claim, interval) ? within : outside).push(claim)
+  const kept = within.length >= MIN_IN_SCOPE_TO_DROP_REST ? within : [...within, ...outside]
+  return {
+    claims: kept,
+    inScope: within.length,
+    outOfScope: outside.length,
+    applied: true
+  }
+}
