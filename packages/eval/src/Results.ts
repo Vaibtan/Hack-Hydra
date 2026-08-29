@@ -8,7 +8,26 @@ import type { JudgeTemplate } from "./Judge.js"
  * without re-running anything, and two runs diff line for line.
  */
 
-export type SystemName = "palimpsest" | "palimpsest-premise" | "bm25" | "fullctx"
+/**
+ * The systems the harness knows how to run.
+ *
+ * A closed list, checked at startup. `--system palimsest` used to fall through
+ * the `else` in `runOne` and be measured as full context, which produces a
+ * plausible table for a system nobody ran.
+ */
+export const SYSTEM_NAMES = [
+  "palimpsest",
+  "palimpsest-v2",
+  "palimpsest-premise",
+  "oracle-session",
+  "bm25",
+  "fullctx"
+] as const
+
+export type SystemName = (typeof SYSTEM_NAMES)[number]
+
+export const isSystemName = (value: string): value is SystemName =>
+  SYSTEM_NAMES.some((name) => name === value)
 
 export interface EvalRow {
   readonly system: SystemName
@@ -40,6 +59,35 @@ export interface EvalRow {
   readonly sessionsDropped: number
   readonly latencyMs: number
   readonly hash: string
+
+  // ---- v2 --------------------------------------------------------------
+  // Optional, and read defensively everywhere, so a results file written
+  // before Retrieval v2 still renders every table it always did.
+
+  /** The primary route the Understand stage chose, or null for v1. */
+  readonly route?: string | null
+  /** Independent flags that each gated a stage (`wants_count`, `has_time_ref`, …). */
+  readonly flags?: ReadonlyArray<string>
+  /** Wall time in the HydraDB stages alone — arms, edges, hydration. */
+  readonly graphMs?: number
+  /** Wall time of the whole ask, LLM stages included. */
+  readonly askMs?: number
+  readonly stageTimingsMs?: Readonly<Record<string, number>>
+  /** `EXACT` / `INFERRABLE` / `PARTIAL`, or `skipped`. */
+  readonly sufficiencyTier?: string | null
+  readonly secondPass?: boolean
+  /** The listwise selector failed and the deterministic top-25 was used. */
+  readonly selectorFallback?: boolean
+  /** v1's claim-key hash, kept beside the span hash for continuity. */
+  readonly claimHash?: string
+  /** Sessions reached by any candidate arm, before selection. */
+  readonly unionSessions?: ReadonlyArray<string>
+  /** Sessions the selector kept. */
+  readonly keptSessions?: ReadonlyArray<string>
+  /** Sessions the selector kept and the token budget then dropped. */
+  readonly budgetDroppedSessions?: ReadonlyArray<string>
+  /** Derived; `pnpm table` recomputes it rather than trusting the file. */
+  readonly errorClass?: string | null
 }
 
 export interface TypeSummary {

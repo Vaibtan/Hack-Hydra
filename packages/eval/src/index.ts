@@ -7,7 +7,7 @@ export { JUDGE_MODEL, judge, judgeLabel, judgePrompt, judgeTemplate } from "./Ju
 export type { Judgement, JudgeTemplate } from "./Judge.js"
 export { B, BM25_TOP_K, K1, buildIndex, fullContextSpans, score, topSpans } from "./Bm25.js"
 export type { Bm25Index, FullContext } from "./Bm25.js"
-export { refused, renderTable, summariseByType } from "./Results.js"
+export { SYSTEM_NAMES, isSystemName, refused, renderTable, summariseByType } from "./Results.js"
 export type { EvalRow, SystemName, TypeSummary } from "./Results.js"
 export {
   BENCHMARK_EXTRACTION_DEPENDENCIES,
@@ -19,3 +19,16 @@ export {
   splitByCached
 } from "./Splits.js"
 export type { GateRecord, SplitFile, SplitName } from "./Splits.js"
+export {
+  ERROR_CLASSES,
+  errorClass,
+  errorClasses,
+  mcnemarExact,
+  paired,
+  pairedDifferenceCi,
+  pairedTable,
+  renderErrorClasses,
+  renderPaired
+} from "./Tables.js"
+export type { ErrorClass, ErrorClassCounts, PairedResult, PairedTable } from "./Tables.js"
+export { oracleSessionSpans } from "./Oracle.js"

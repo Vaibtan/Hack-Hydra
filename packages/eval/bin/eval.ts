@@ -12,34 +12,47 @@ import {
   type HydratedSpan
 } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import {
   JUDGE_MODEL,
+  SPLIT_FILE,
+  SYSTEM_NAMES,
+  assertGenerationMatches,
   benchmarkSlice,
   buildIndex,
+  errorClass,
   fullContextSpans,
+  isSystemName,
   judge,
+  liveExtractionGeneration,
+  oracleSessionSpans,
   renderTable,
   summariseByType,
   topSpans,
   type EvalRow,
+  type SplitFile,
   type SystemName
 } from "../src/index.js"
 
 /**
- * `eval --slice 100 --system palimpsest|palimpsest-premise|bm25|fullctx|all [--prefix g2]`
+ * `eval --system palimpsest,palimpsest-v2,bm25,fullctx,oracle-session|all`
+ * `     [--split dev|test | --slice 100] [--prefix g3] [--profile full|fast]`
  *
  * Answer accuracy, end to end: ask -> reader -> the official LongMemEval judge,
- * for Palimpsest and the two baselines, on one slice, with one judge.
+ * for Palimpsest and the baselines, on one population, with one judge.
  *
- * The three systems differ in exactly one thing — how the text handed to the
- * reader was chosen. Same reader prompt, same judge model, same questions, so
- * the comparison is about the index and nothing else.
+ * The systems differ in exactly one thing — how the text handed to the reader
+ * was chosen. Same reader prompt, same judge model, same questions, so the
+ * comparison is about the index and nothing else.
  *
  * Every call is on disk, so a second run of any table costs $0.00 and produces
  * the same labels.
+ *
+ * `--split` is the honest form and `--slice` the exploratory one: a split names
+ * a committed id list and refuses to touch `test` before a gate record exists,
+ * while a slice is whatever `benchmarkSlice` computes today.
  */
 loadDotEnv()
 
@@ -50,8 +63,9 @@ const arg = (name: string, fallback: string): string => {
 
 const sliceSize = Number(arg("slice", "100"))
 const dataset = arg("dataset", "s") as DatasetName
-const prefix = arg("prefix", "g2")
 const concurrency = Number(arg("concurrency", "8"))
+const split = arg("split", "")
+const profile = arg("profile", "full")
 /**
  * Results belong to the repository, not to whichever package directory pnpm
  * happened to run this from — `pnpm eval` runs inside `packages/eval`.
@@ -94,15 +108,68 @@ const fullCtxChars = Number(arg("fullctx-chars", process.env["PALIMPSEST_FULLCTX
 
 const ALL_SYSTEMS: ReadonlyArray<SystemName> = [
   "palimpsest",
+  "palimpsest-v2",
   "palimpsest-premise",
+  "oracle-session",
   "bm25",
   "fullctx"
 ]
 const requested = arg("system", "palimpsest")
-const systems: ReadonlyArray<SystemName> =
-  requested === "all"
-    ? ALL_SYSTEMS
-    : (requested.split(",").map((s) => s.trim()) as ReadonlyArray<SystemName>)
+const named = requested === "all" ? [...ALL_SYSTEMS] : requested.split(",").map((s) => s.trim())
+// An unknown name used to fall through `runOne`'s final `else` and be measured
+// as full context, so `--system palimsest` produced a plausible table for a
+// system nobody ran. Fail before anything is spent.
+const unknown = named.filter((name) => !isSystemName(name))
+if (unknown.length > 0) {
+  console.error(`unknown --system value(s): ${unknown.join(", ")}`)
+  console.error(`known systems: ${SYSTEM_NAMES.join(", ")}, or "all"`)
+  process.exit(2)
+}
+const systems: ReadonlyArray<SystemName> = named.filter(isSystemName)
+
+if (split !== "" && split !== "dev" && split !== "test") {
+  console.error(`--split must be dev or test, not ${JSON.stringify(split)}`)
+  process.exit(2)
+}
+if (profile !== "full" && profile !== "fast") {
+  console.error(`--profile must be full or fast, not ${JSON.stringify(profile)}`)
+  process.exit(2)
+}
+
+/**
+ * The committed split, when one was asked for.
+ *
+ * Three refusals live here, all of them cheap and all of them things that
+ * cannot be checked after the fact:
+ *
+ *  - `--split test` without a gate record: the test half is read **once**, and
+ *    only once the dev gate has been written down. Reading it earlier is how a
+ *    test number quietly becomes a tuning signal.
+ *  - an extraction generation that no longer matches the one the graph was
+ *    built with: the two halves of a comparison would have been extracted by
+ *    different prompts, with nothing in the results to say so.
+ *  - a split file naming questions the dataset does not contain.
+ */
+const splitFile: SplitFile | null = (() => {
+  if (split === "") return null
+  const path = resolve(workspaceRoot(), SPLIT_FILE)
+  if (!existsSync(path)) {
+    console.error(`--split ${split} needs ${SPLIT_FILE}; run \`pnpm splits\` and commit it first`)
+    process.exit(2)
+  }
+  const file = JSON.parse(readFileSync(path, "utf8")) as SplitFile
+  if (split === "test" && file.gate === null) {
+    console.error(
+      `refusing --split test: ${SPLIT_FILE} has no gate record. The test half is read once, ` +
+        "after the dev gate is written down."
+    )
+    process.exit(2)
+  }
+  assertGenerationMatches(file)
+  return file
+})()
+
+const prefix = arg("prefix", splitFile?.prefix ?? "g3")
 
 const uidFor = (questionId: string): string =>
   prefix === "" ? questionId : `${prefix}-${questionId}`
@@ -139,19 +206,37 @@ const program = Effect.gen(function* () {
   const llm = yield* Llm
 
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
-  let slice = benchmarkSlice(questions, sliceSize)
+  let slice: ReadonlyArray<DatasetQuestion>
+  if (splitFile === null) {
+    slice = benchmarkSlice(questions, sliceSize)
+  } else {
+    // The ids, not a recomputation of them: the whole guarantee of a split file
+    // is that the lists did not move between the commit and the run.
+    const wanted = new Set(split === "dev" ? splitFile.dev : splitFile.test)
+    slice = questions
+      .filter((question) => wanted.has(question.questionId))
+      .sort((a, b) => a.questionId.localeCompare(b.questionId))
+    if (slice.length !== wanted.size) {
+      console.error(
+        `${SPLIT_FILE} names ${wanted.size} ${split} questions but the dataset holds ` +
+          `${slice.length} of them`
+      )
+      return yield* Effect.sync(() => process.exit(2))
+    }
+  }
 
   const needsGraph = systems.some((system) => system.startsWith("palimpsest"))
 
   console.log(`dataset      ${dataset}`)
   console.log(
-    `slice        ${slice.length} questions ` +
+    `${(split === "" ? "slice" : `split ${split}`).padEnd(12)} ${slice.length} questions ` +
       `(${slice.filter((q) => q.isAbstention).length} abstention, ` +
       `${slice.filter((q) => !q.isAbstention).length} answerable)`
   )
   console.log(`systems      ${systems.join(", ")}`)
-  console.log(`reader       ${llm.model}   judge  ${judgeModel}`)
+  console.log(`reader       ${llm.model}   judge  ${judgeModel}   profile ${profile}`)
   console.log(`prefix       ${prefix || "(none)"}   concurrency ${concurrency}`)
+  console.log(`generation   ${liveExtractionGeneration().id}`)
   console.log("")
 
   if (needsGraph) {
@@ -210,14 +295,28 @@ const program = Effect.gen(function* () {
       let readerInputTokens = 0
       let readerOutputTokens = 0
       let hash = ""
+      let claimHash: string | undefined
+      let route: string | null = null
+      let askMs: number | undefined
+      let graphMs: number | undefined
+      let stageTimingsMs: Record<string, number> | undefined
 
-      if (system === "palimpsest" || system === "palimpsest-premise") {
-        const ask = yield* retrieve.ask(uid, question.question, { questionDate })
+      if (system.startsWith("palimpsest")) {
+        const ask = yield* retrieve.ask(uid, question.question, {
+          questionDate,
+          ...(system === "palimpsest-v2"
+            ? ({ pipeline: "v2", profile } as const)
+            : ({ pipeline: "v1" } as const))
+        })
+        askMs = ask.timings.askMs
+        graphMs = ask.timings.graphMs
+        stageTimingsMs = { ...ask.timings.stages }
         verdict = ask.verdict
         reason = ask.reason
         anchorsAsked = ask.receipt.anchorTerms.length
         anchorsReaching = ask.receipt.anchorsReachingClaims.length
         hash = ask.hash
+        claimHash = ask.hash
 
         if (ask.verdict === "ABSENT") {
           response = absentResponse(ask.reason)
@@ -234,15 +333,21 @@ const program = Effect.gen(function* () {
           premiseNote = read.premiseNote
           readerInputTokens = read.inputTokens
           readerOutputTokens = read.outputTokens
+          // Hydration is a HydraDB stage that happens outside `ask`, so the
+          // graph number is only whole once it is added back.
+          graphMs = (graphMs ?? 0) + read.hydrateMs
+          stageTimingsMs = { ...stageTimingsMs, hydrate: read.hydrateMs, read: read.readMs }
         }
       } else {
         const selected =
           system === "bm25"
             ? { spans: topSpans(question, buildIndex(question)), dropped: 0 }
-            : (() => {
-                const full = fullContextSpans(question, fullCtxChars)
-                return { spans: full.spans, dropped: full.sessionsDropped }
-              })()
+            : system === "oracle-session"
+              ? { spans: oracleSessionSpans(question), dropped: 0 }
+              : (() => {
+                  const full = fullContextSpans(question, fullCtxChars)
+                  return { spans: full.spans, dropped: full.sessionsDropped }
+                })()
         sessionsDropped = selected.dropped
         spans = selected.spans
         hash = determinismHash(selected.spans.map((span) => span.ckey))
@@ -258,7 +363,7 @@ const program = Effect.gen(function* () {
       const judgement = yield* judge(question, response, judgeModel)
       const evidenceSessions = [...new Set(spans.map((span) => span.sid))].sort()
 
-      return {
+      const row = {
         system,
         questionId: question.questionId,
         questionType: question.questionType,
@@ -283,8 +388,16 @@ const program = Effect.gen(function* () {
         readerOutputTokens,
         sessionsDropped,
         latencyMs,
-        hash
+        hash,
+        route,
+        ...(askMs === undefined ? {} : { askMs }),
+        ...(graphMs === undefined ? {} : { graphMs }),
+        ...(stageTimingsMs === undefined ? {} : { stageTimingsMs }),
+        ...(claimHash === undefined ? {} : { claimHash })
       } satisfies EvalRow
+      // Derived, and recomputed by `pnpm table` from the same function, so the
+      // column in the file and the column in the table can never disagree.
+      return { ...row, errorClass: errorClass(row) } satisfies EvalRow
     }).pipe(Effect.orDie)
 
   yield* Effect.promise(() => mkdir(outDir, { recursive: true }))
@@ -313,8 +426,11 @@ const program = Effect.gen(function* () {
       { concurrency }
     )
 
-    // Written per system, so a failure in the next one loses nothing.
-    const path = resolve(outDir, `${system}-${slice.length}.json`)
+    // Written per system, so a failure in the next one loses nothing. A split
+    // run is named by its split rather than its size, so a `dev` file can never
+    // be mistaken for the 60-question slice of a different graph that happens
+    // to have the same row count.
+    const path = resolve(outDir, `${system}-${split === "" ? slice.length : split}.json`)
     yield* Effect.promise(() =>
       writeFile(
         path,
@@ -323,11 +439,19 @@ const program = Effect.gen(function* () {
             system,
             dataset,
             prefix,
+            split: split === "" ? null : split,
+            profile,
             slice: slice.length,
-            requestedSlice: sliceSize,
-            partial: slice.length !== sliceSize,
+            requestedSlice: split === "" ? sliceSize : slice.length,
+            partial: split === "" && slice.length !== sliceSize,
             readerModel: llm.model,
+            // Distinct env vars from #31; until they exist the selector and the
+            // sufficiency check are the reader model, and the envelope says so
+            // rather than leaving a reader to assume it.
+            selectModel: process.env["PALIMPSEST_SELECT_MODEL"] ?? llm.model,
+            sufficiencyModel: process.env["PALIMPSEST_SUFFICIENCY_MODEL"] ?? llm.model,
             judgeModel,
+            extractionGeneration: liveExtractionGeneration().id,
             fullCtxChars: system === "fullctx" ? fullCtxChars : null,
             rows
           },
@@ -342,13 +466,17 @@ const program = Effect.gen(function* () {
     bySystem.push([system, rows])
   }
 
+  // The per-type table only, for immediate feedback. `pnpm table` rebuilds this
+  // *and* the error-class funnel and the paired comparisons, from the JSON
+  // alone — which is the version that belongs in a writeup, because it can be
+  // regenerated without a graph.
   const table = [
-    `# LongMemEval — ${slice.length}-question slice`,
+    `# LongMemEval — ${slice.length}-question ${split === "" ? "slice" : `${split} split`}`,
     "",
-    `Dataset \`longmemeval_${dataset}\`, prefix \`${prefix}\`. Reader \`${llm.model}\`, judge ` +
-      `\`${judgeModel}\` with the official LongMemEval templates. Every number replays from ` +
-      "`.cache/llm` for $0.00.",
-    ...(slice.length === sliceSize
+    `Dataset \`longmemeval_${dataset}\`, prefix \`${prefix}\`, profile \`${profile}\`. Reader ` +
+      `\`${llm.model}\`, judge \`${judgeModel}\` with the official LongMemEval templates. Every ` +
+      "number replays from `.cache/llm` for $0.00.",
+    ...(split !== "" || slice.length === sliceSize
       ? []
       : [
           "",
@@ -361,7 +489,7 @@ const program = Effect.gen(function* () {
     renderTable(bySystem)
   ].join("\n")
 
-  const tablePath = resolve(outDir, `table-${slice.length}.md`)
+  const tablePath = resolve(outDir, `table-${split === "" ? slice.length : split}.md`)
   yield* Effect.promise(() => writeFile(tablePath, table + "\n", "utf8"))
 
   console.log(table)
