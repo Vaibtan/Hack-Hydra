@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "profile": "benchmark",
+  "source_runtime_manifest": "ops/hydradb/runtime-manifest.v1.json",
+  "containers": {
+    "hydradb": {
+      "memory_bytes": 6442450944,
+      "memory_swap_bytes": 6442450944,
+      "cpu_limit": 4,
+      "restart_policy": "on-failure:3",
+      "cache_bytes": 0,
+      "minimum_host_headroom_bytes": 805306368
+    },
+    "object_store": {
+      "memory_bytes": 2147483648,
+      "memory_swap_bytes": 2147483648,
+      "cpu_limit": 6,
+      "restart_policy": "on-failure:3"
+    }
+  },
+  "readiness": {
+    "hydradb_endpoint": "http://127.0.0.1:29090/readyz",
+    "object_store_endpoint": "http://127.0.0.1:29000/minio/health/ready",
+    "timeout_seconds": 60
+  },
+  "capacity_gate": {
+    "maximum_memory_utilization_percent": 90,
+    "sample_interval_seconds": 5,
+    "action_on_threshold_breach": "stop-new-ingestion-before-a-new-source-revision-is-claimed",
+    "requires_committed_source_preservation_check": true
+  }
+}

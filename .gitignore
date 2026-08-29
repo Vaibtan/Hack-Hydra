@@ -2,8 +2,13 @@
 .claude/
 .env
 
-# LongMemEval datasets — longmemeval_s_cleaned.json alone is 265 MB
-data/
+# LongMemEval datasets — longmemeval_s_cleaned.json alone is 265 MB.
+# `data/*` rather than `data/`, because git never descends into an excluded
+# *directory*, so a negation inside one has no effect.
+data/*
+# …except the predeclared dev/test split, which has to be in the history before
+# the first result that reads it, or "we did not tune on test" is unverifiable.
+!data/splits/
 
 # Python
 .venv/
@@ -16,3 +21,11 @@ dist/
 
 # LLM response cache (content-addressed, regenerable)
 .cache/
+
+# Local transactional authority for source-revision ingest state.
+.palimpsest/
+
+# Local durable-benchmark credentials and secret file.
+ops/hydradb/.env.benchmark
+ops/hydradb/secrets/*
+!ops/hydradb/secrets/hydradb-auth-token.example

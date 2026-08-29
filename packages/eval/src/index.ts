@@ -9,3 +9,13 @@ export { B, BM25_TOP_K, K1, buildIndex, fullContextSpans, score, topSpans } from
 export type { Bm25Index, FullContext } from "./Bm25.js"
 export { refused, renderTable, summariseByType } from "./Results.js"
 export type { EvalRow, SystemName, TypeSummary } from "./Results.js"
+export {
+  BENCHMARK_EXTRACTION_DEPENDENCIES,
+  ExtractionGenerationDrift,
+  SPLIT_FILE,
+  assertGenerationMatches,
+  liveExtractionGeneration,
+  outsidePopulation,
+  splitByCached
+} from "./Splits.js"
+export type { GateRecord, SplitFile, SplitName } from "./Splits.js"
