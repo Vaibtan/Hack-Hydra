@@ -115,6 +115,31 @@ does not treat. It is not applied.
 A cold ask is reported and is **not** a target (spec, *Latency*). Nothing in the
 20-question smoke eval hit the 25 s read ceiling.
 
+### Ingest concurrency does not buy throughput here; it costs it
+
+Statements completed per second, measured off `/metrics` over 30 s windows on the
+same graph:
+
+| `--users` | statements/s |
+|---:|---:|
+| 3 | ~6.0 |
+| 4 | ~3.8 |
+| 8 | ~2.9 |
+
+Every write waits on a durable object-store flush behind a single writer lease,
+so extra concurrent users add queueing rather than parallelism, and the
+per-statement latency rises faster than the concurrency helps. Total throughput
+is `statements/s ÷ statements-per-user` and is therefore *worse* at 8 than at 4.
+
+This is the opposite of the intuition `--users 3` was chosen under in the spec —
+there it was picked as the highest concurrency that had completed 60 users
+without failures, on a runtime with a local-file object store. Here it is the
+low end that is fast, and the reason is structural rather than tuning.
+
+`--users 4` is what the population is ingested at: the only setting with a clean
+completed step behind it (12 users, 0 failures, 24.4 min), and within noise of
+the best rate measured.
+
 ### A first-touch eval row is a cold row
 
 The `graphMs <= 1.5 s` target is a **warm** one, and an eval that reads each user
