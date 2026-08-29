@@ -32,3 +32,5 @@ export {
 } from "./Tables.js"
 export type { ErrorClass, ErrorClassCounts, PairedResult, PairedTable } from "./Tables.js"
 export { oracleSessionSpans } from "./Oracle.js"
+export { GATE_BOUNDS, falseAbstentions, readGate, renderGate, worstTypeRegression } from "./Gate.js"
+export type { AdoptionGateReport, Criterion } from "./Gate.js"

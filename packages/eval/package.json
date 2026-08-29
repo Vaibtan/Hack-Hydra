@@ -17,7 +17,8 @@
     "splits": "tsx bin/splits.ts",
     "table": "tsx bin/table.ts",
     "step-load": "tsx bin/step-load.ts",
-    "risk-coverage": "tsx bin/risk-coverage.ts"
+    "risk-coverage": "tsx bin/risk-coverage.ts",
+    "gate": "tsx bin/gate.ts"
   },
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",
