@@ -4,6 +4,7 @@ import { Chain } from "./components/Chain"
 import { Determinism } from "./components/Determinism"
 import { Evidence } from "./components/Evidence"
 import { LiveIngest } from "./components/LiveIngest"
+import { PlanPanel } from "./components/PlanPanel"
 import { ReceiptPanel } from "./components/ReceiptPanel"
 import { Scrubber } from "./components/Scrubber"
 import { Verdict } from "./components/Verdict"
@@ -35,6 +36,9 @@ export const App = () => {
   const [questionDate, setQuestionDate] = useState(DEMO_DATE)
   const [asOf, setAsOf] = useState<number | undefined>(undefined)
   const [premiseCheck, setPremiseCheck] = useState(false)
+  // v2 by default in the demo: it is the pipeline the talk is about, and the
+  // toggle is there so the two can be shown on the same question.
+  const [pipeline, setPipeline] = useState<"v1" | "v2">("v2")
   const [causalBookmark, setCausalBookmark] = useState<string | undefined>(undefined)
 
   const [result, setResult] = useState<AskResponse | null>(null)
@@ -46,6 +50,9 @@ export const App = () => {
   const loadUser = useCallback(async (who: string) => {
     setError(null)
     try {
+      // `stats` is the warm-up as well as a display: HydraDB's object-store
+      // cache is cold per user, and without this the first ask after selecting
+      // someone pays an 11 s cold convergence walk in front of an audience.
       const [rows, s] = await Promise.all([api.sessions(who), api.stats(who)])
       setSessions(rows)
       setStats(s)
@@ -71,6 +78,7 @@ export const App = () => {
           question,
           questionDate,
           premiseCheck,
+          pipeline,
           ...(bookmark === undefined ? {} : { bookmark }),
           ...(asOf === undefined ? {} : { asOf })
         })
@@ -81,7 +89,7 @@ export const App = () => {
     } finally {
       setAsking(false)
     }
-  }, [uid, question, questionDate, asOf, premiseCheck, causalBookmark])
+  }, [uid, question, questionDate, asOf, premiseCheck, pipeline, causalBookmark])
 
   // Re-ask when the scrubber moves, so the slider drives the answer directly.
   useEffect(() => {
@@ -121,6 +129,17 @@ export const App = () => {
             style={{ flex: "0 1 220px" }}
             aria-label="question date"
           />
+          <label className="row" style={{ gap: 6, alignItems: "center" }}>
+            <span className="muted">pipeline</span>
+            <select
+              value={pipeline}
+              onChange={(event) => setPipeline(event.target.value === "v1" ? "v1" : "v2")}
+              aria-label="pipeline"
+            >
+              <option value="v2">v2 — plan</option>
+              <option value="v1">v1 — shipped</option>
+            </select>
+          </label>
         </div>
         <div className="row">
           <input
@@ -168,10 +187,19 @@ export const App = () => {
         )}
       </div>
 
+      {result !== null && result.plan !== null && (
+        <div className="grid">
+          <PlanPanel plan={result.plan} />
+          <Evidence spans={result.evidence} cited={result.citedIds} />
+        </div>
+      )}
+
       {result !== null && (
         <div className="grid">
           <ReceiptPanel receipt={result.receipt} />
-          <Evidence spans={result.evidence} cited={result.citedIds} />
+          {result.plan === null && (
+            <Evidence spans={result.evidence} cited={result.citedIds} />
+          )}
         </div>
       )}
 

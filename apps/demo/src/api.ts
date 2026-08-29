@@ -36,6 +36,9 @@ export interface ConvergenceRow {
 export interface Receipt {
   readonly question: string
   readonly uid: string
+  /** Which read path answered. `v1` is the shipped one. */
+  readonly pipeline: "v1" | "v2"
+  readonly profile: "full" | "fast"
   readonly asOf: number | null
   readonly anchorTerms: ReadonlyArray<string>
   readonly anchorsReachingClaims: ReadonlyArray<string>
@@ -53,6 +56,58 @@ export interface Receipt {
   readonly convergence: ReadonlyArray<ConvergenceRow>
 }
 
+
+/**
+ * The v2 plan: what each stage decided, and how long it took.
+ *
+ * The receipt says what was *read*; this says what was *decided*. Null on v1,
+ * which has no plan — the panel renders the receipt alone in that case, because
+ * showing the two pipelines side by side is the point of the demo.
+ */
+export interface PlanArm {
+  readonly label: string
+  readonly kind: string
+  readonly claims: number
+  readonly paths: number
+  readonly query: string | null
+  readonly timedOut: boolean
+}
+
+export interface RetrievalPlan {
+  readonly route: string
+  readonly routeReason: string
+  readonly flags: ReadonlyArray<string>
+  readonly subQuestions: ReadonlyArray<string>
+  readonly probes: ReadonlyArray<string>
+  readonly extraTerms: ReadonlyArray<string>
+  readonly arms: ReadonlyArray<PlanArm>
+  readonly union: { readonly candidates: number; readonly dropped: number }
+  readonly timeScope: {
+    readonly phrase: string | null
+    readonly interval: readonly [number, number] | null
+    readonly inScope: number
+    readonly outOfScope: number
+    readonly applied: boolean
+  }
+  readonly selection: {
+    readonly kept: ReadonlyArray<string>
+    readonly dropped: ReadonlyArray<{ readonly id: string; readonly reason: string }>
+    readonly reasons: Readonly<Record<string, string>>
+    readonly fallback: boolean
+  }
+  readonly sufficiency: {
+    readonly tier: string
+    readonly missing: string
+    readonly premise: string
+    readonly skipped: boolean
+    readonly secondPass: boolean
+  }
+  readonly intervalSentence: string | null
+  readonly stages: Readonly<Record<string, number>>
+  readonly askMs: number
+  readonly graphMs: number
+}
+
 export interface AskResponse {
   readonly verdict: "ANSWER" | "ABSENT"
   readonly reason: string | null
@@ -64,6 +119,8 @@ export interface AskResponse {
   readonly premiseNote: string
   readonly evidence: ReadonlyArray<EvidenceSpan>
   readonly receipt: Receipt
+  /** Null on v1. */
+  readonly plan: RetrievalPlan | null
   readonly hash: string
   readonly latencyMs: number
 }
@@ -147,6 +204,8 @@ export interface AskInput {
   readonly historical?: boolean
   readonly retrieveOnly?: boolean
   readonly premiseCheck?: boolean
+  readonly pipeline?: "v1" | "v2"
+  readonly profile?: "full" | "fast"
 }
 
 export class ApiError extends Error {
@@ -177,6 +236,24 @@ export const api = {
 
   sessions: (uid: string): Promise<ReadonlyArray<SessionRow>> =>
     request(`/users/${encodeURIComponent(uid)}/sessions`),
+
+  /**
+   * Pulls one user's counts so the first real ask is not also the first page
+   * fault.
+   *
+   * HydraDB's object-store cache is cold per user, and the demo's first ask
+   * after selecting someone would otherwise pay an 11 s cold convergence walk
+   * in front of an audience. `stats` is an indexed read by id off the `User`
+   * vertex — cheap on its own, and enough to pull that user's pages in.
+   */
+  warm: async (uid: string): Promise<void> => {
+    try {
+      await request(`/users/${encodeURIComponent(uid)}/stats`)
+    } catch {
+      // Warming is an optimisation. A failure here must not stop the user
+      // asking a question -- the ask will report its own error if there is one.
+    }
+  },
 
   stats: (uid: string): Promise<Stats> => request(`/users/${encodeURIComponent(uid)}/stats`),
 

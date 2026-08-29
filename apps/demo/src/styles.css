@@ -499,3 +499,45 @@ pre.cypher {
     animation-duration: 3s;
   }
 }
+
+/* ---- the plan panel -------------------------------------------------------
+   Stages, not a table. The pipeline is a sequence and each stage only sees what
+   the one before it left, which a grid of numbers would hide. */
+.stage {
+  border-left: 2px solid var(--line, #2a2a2a);
+  padding: 0 0 12px 12px;
+  margin-left: 6px;
+}
+.stage:last-child {
+  padding-bottom: 0;
+}
+.stage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.stage-n {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  opacity: 0.5;
+  min-width: 1.2em;
+}
+.stage-title {
+  font-weight: 600;
+}
+.stage-ms {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.6;
+}
+.stage-body {
+  font-size: 13px;
+}
+ul.tight {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+ul.tight li {
+  margin: 2px 0;
+}
