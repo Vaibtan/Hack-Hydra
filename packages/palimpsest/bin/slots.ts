@@ -2,7 +2,7 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { Supersede } from "../src/index.js"
+import { prepareDerivedIndexAssertions, Reader, sourceLinkedChainEvidence, Supersede } from "../src/index.js"
 
 /**
  * `slots --uid <question_id> [--skey <slot key>] [--as-of <k>] [--all]`
@@ -25,6 +25,7 @@ const asOf = asOfRaw === "" ? undefined : Number(asOfRaw)
 const showAll = process.argv.includes("--all")
 
 const AppLive = Supersede.Default.pipe(
+  Layer.provideMerge(Reader.Default),
   Layer.provideMerge(HydraClient.Default),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
@@ -32,6 +33,7 @@ const AppLive = Supersede.Default.pipe(
 
 const program = Effect.gen(function* () {
   const supersede = yield* Supersede
+  const reader = yield* Reader
   const slots =
     only === ""
       ? yield* supersede.contestedSlots(uid)
@@ -46,17 +48,27 @@ const program = Effect.gen(function* () {
   let chains = 0
   for (const slot of slots) {
     const chain = allChains.get(slot.skey) ?? []
-    const superseded = chain.filter((claim) => claim.supersededBy !== null).length
+    const sourceSpans = yield* reader.hydrate(sourceLinkedChainEvidence(chain))
+    const assertions = prepareDerivedIndexAssertions(chain, sourceSpans)
+    if (assertions._tag === "Left") return yield* Effect.fail(assertions.left)
+    const superseded = assertions.right.filter((assertion) => assertion.supersededBy !== null).length
     if (superseded === 0 && !showAll && only === "") continue
     if (superseded > 0) chains++
 
     console.log(`${slot.entityName} | ${slot.attr}`)
-    for (const claim of chain) {
+    for (const assertion of assertions.right) {
       const label =
-        claim.supersededBy === null
+        assertion.supersededBy === null
           ? "CURRENT   "
-          : `SUPERSEDED@${String(claim.atSession).padEnd(3)}`
-      console.log(`  ${label}  s${String(claim.sessionOrd).padStart(2)}  ${claim.text}`)
+          : `SUPERSEDED@${String(assertion.atSession).padEnd(3)}`
+      const source = assertion.source
+      const start = Math.max(0, Math.min(source.highlight.start, source.excerpt.length))
+      const end = Math.max(start, Math.min(source.highlight.end, source.excerpt.length))
+      const marked = `${source.excerpt.slice(0, start)}[${source.excerpt.slice(start, end)}]${source.excerpt.slice(end)}`
+      console.log(`  ${label}  s${String(assertion.sessionOrd).padStart(2)}  DERIVED INDEX ASSERTION (not evidence)`)
+      console.log(`               ${assertion.derivedText}`)
+      console.log(`               SOURCE ${source.sid}#${source.turnIdx} [${source.offsetStart},${source.offsetEnd})`)
+      console.log(`               ${marked}`)
     }
     console.log("")
   }

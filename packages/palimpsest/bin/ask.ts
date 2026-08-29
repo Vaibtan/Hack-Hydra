@@ -49,6 +49,12 @@ const program = Effect.gen(function* () {
     noRead || result.verdict === "ABSENT"
       ? null
       : yield* reader.read(question, questionDate, result.evidence)
+  const sourceSpans =
+    result.verdict === "ABSENT"
+      ? []
+      : answer === null
+        ? yield* reader.hydrate(result.evidence)
+        : answer.spans
   const elapsed = ((Date.now() - started) / 1000).toFixed(1)
   const r = result.receipt
 
@@ -69,7 +75,7 @@ const program = Effect.gen(function* () {
     if (answer.reasoning.trim() !== "") console.log(`reasoning      ${answer.reasoning}`)
     console.log(`cited          ${answer.citedIds.join(" ") || "-"}`)
   }
-  console.log(`evidence       ${result.evidence.length} claims`)
+  console.log(`source spans   ${sourceSpans.length}`)
   console.log(`hash           ${result.hash.slice(0, 16)}`)
   console.log(`latency        ${elapsed} s`)
   console.log("")
@@ -95,16 +101,19 @@ const program = Effect.gen(function* () {
     )
   }
 
-  if (result.evidence.length > 0) {
+  if (sourceSpans.length > 0) {
     console.log("")
-    console.log("EVIDENCE")
-    for (const claim of result.evidence.slice(0, full ? 100 : 12)) {
-      const label = claim.status === "CURRENT" ? "CURRENT   " : `SUPERSEDED@${claim.atSession}`
-      console.log(`  ${label}  s${String(claim.sessionOrd).padStart(2)}  conv ${claim.convergence}  ${claim.text}`)
-      console.log(`               ${claim.sid}#${claim.turnIdx} [${claim.cs},${claim.ce})`)
+    console.log("SOURCE SPANS — VERBATIM TRANSCRIPT")
+    for (const span of sourceSpans.slice(0, full ? 100 : 12)) {
+      const label = span.status === "CURRENT" ? "CURRENT   " : `SUPERSEDED@${span.atSession}`
+      const start = Math.max(0, Math.min(span.highlight.start, span.excerpt.length))
+      const end = Math.max(start, Math.min(span.highlight.end, span.excerpt.length))
+      const marked = `${span.excerpt.slice(0, start)}[${span.excerpt.slice(start, end)}]${span.excerpt.slice(end)}`
+      console.log(`  ${label}  s${String(span.sessionOrd).padStart(2)}  ${span.sid}#${span.id}`)
+      console.log(`               ${marked}`)
     }
-    if (result.evidence.length > (full ? 100 : 12)) {
-      console.log(`  … ${result.evidence.length - (full ? 100 : 12)} more`)
+    if (sourceSpans.length > (full ? 100 : 12)) {
+      console.log(`  … ${sourceSpans.length - (full ? 100 : 12)} more`)
     }
   }
 })

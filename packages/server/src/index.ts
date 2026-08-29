@@ -2,8 +2,9 @@ export {
   AskRequest,
   AskResponse,
   BadRequest,
-  ChainClaimRow,
   ConvergenceRow,
+  DerivedAssertionSourceSpan,
+  DerivedIndexAssertion,
   EvidenceSpan,
   GraphError,
   Highlight,
@@ -12,11 +13,14 @@ export {
   IngestTurn,
   NotFound,
   PalimpsestApi,
+  QueryParameters,
   Receipt,
   SessionRow,
+  SourceIndexSessionResponse,
   SlotChainResponse,
   StatsResponse,
   users
 } from "./Api.js"
+export { projectRetrievalReceipt } from "./ReceiptProjection.js"
 export { UsersLive } from "./Handlers.js"
 export { ApiLive, ServerLive, serve } from "./Server.js"

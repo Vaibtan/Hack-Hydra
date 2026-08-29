@@ -27,6 +27,19 @@ export interface SlotClaim {
   readonly sid: string
 }
 
+/** A derived slot assertion with the source-revision witness needed for display. */
+export interface SourceLinkedSlotClaim extends SlotClaim {
+  readonly speaker: string
+  readonly ctype: string
+  readonly sessionDate: number
+  readonly tPrec: string
+  readonly turnIdx: number
+  readonly cs: number
+  readonly ce: number
+  readonly sourceDigest: string
+  readonly sourceLogicalSessionId: string
+}
+
 export interface SupersessionEdge {
   readonly olderCkey: string
   readonly newerCkey: string
@@ -35,7 +48,7 @@ export interface SupersessionEdge {
 }
 
 /** A claim in a slot's chain, labelled with what (if anything) replaced it. */
-export type ChainClaim = SlotClaim & {
+export type ChainClaim = SourceLinkedSlotClaim & {
   readonly supersededBy: string | null
   readonly atSession: number | null
 }
@@ -161,9 +174,9 @@ const make = Effect.gen(function* () {
   const readSlotClaims = (
     uid: string,
     skeys: ReadonlyArray<string>
-  ): Effect.Effect<ReadonlyMap<string, ReadonlyArray<SlotClaim>>, HydraError> =>
+  ): Effect.Effect<ReadonlyMap<string, ReadonlyArray<SourceLinkedSlotClaim>>, HydraError> =>
     Effect.gen(function* () {
-      const bySlot = new Map<string, Array<SlotClaim>>()
+      const bySlot = new Map<string, Array<SourceLinkedSlotClaim>>()
       if (skeys.length === 0) return bySlot
 
       const paths = yield* hydra.msPaths({
@@ -189,7 +202,16 @@ const make = Effect.gen(function* () {
           text: String(claim.properties["text"] ?? ""),
           sessionOrd: Number(claim.properties["session_ord"] ?? 0),
           tEvent: Number(claim.properties["t_event"] ?? 0),
-          sid: String(claim.properties["sid"] ?? "")
+          sid: String(claim.properties["sid"] ?? ""),
+          speaker: String(claim.properties["speaker"] ?? ""),
+          ctype: String(claim.properties["ctype"] ?? ""),
+          sessionDate: Number(claim.properties["session_date"] ?? 0),
+          tPrec: String(claim.properties["t_prec"] ?? ""),
+          turnIdx: Number(claim.properties["turn_idx"] ?? 0),
+          cs: Number(claim.properties["cs"] ?? 0),
+          ce: Number(claim.properties["ce"] ?? 0),
+          sourceDigest: String(claim.properties["source_digest"] ?? ""),
+          sourceLogicalSessionId: String(claim.properties["source_session_id"] ?? "")
         })
         bySlot.set(skey, bucket)
       }
@@ -370,7 +392,7 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<ReadonlyMap<string, ReadonlyArray<ChainClaim>>, HydraError> =>
     Effect.gen(function* () {
       const bySlot = yield* readSlotClaims(uid, skeys)
-      const visible = new Map<string, ReadonlyArray<SlotClaim>>()
+      const visible = new Map<string, ReadonlyArray<SourceLinkedSlotClaim>>()
       for (const [skey, claims] of bySlot) {
         visible.set(
           skey,

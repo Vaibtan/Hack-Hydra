@@ -6,6 +6,7 @@ import { reconcile, type Reconciled } from "./Canon.js"
 import type { ExtractedClaim, ExtractedEntity } from "./Extract.js"
 import { claimKey, claimKind, entityKey, slotKey, tokenKey, turnKey } from "./Keys.js"
 import { claimTokens } from "./Tokenize.js"
+import { canonicalSessionSource } from "./SourceIdentity.js"
 import { EMPTY_STATS, linkToUser, readUserStats, readUserVertices, type UserStats } from "./User.js"
 
 /**
@@ -103,6 +104,7 @@ const make = Effect.gen(function* () {
     reconciled: Reconciled
   ): Effect.Effect<SessionWrite, HydraError> =>
     Effect.gen(function* () {
+      const source = canonicalSessionSource(session)
       const { rename } = reconciled
       const canonOf = (canon: string): string => rename.get(canon) ?? canon
 
@@ -162,6 +164,12 @@ const make = Effect.gen(function* () {
             turn_idx: claim.span.turnIdx,
             cs: claim.span.cs,
             ce: claim.span.ce,
+            // The legacy projection is not a manifest-backed source plane,
+            // but every derived assertion still names the exact canonical
+            // source bytes it was extracted from. Public derived-assertion
+            // surfaces fail closed when this witness is absent.
+            source_digest: source.sourceDigest,
+            source_session_id: session.key,
             session_date: session.date.dateInt,
             located: claim.located
           } satisfies Record<string, Scalar>

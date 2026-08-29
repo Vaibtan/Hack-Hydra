@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "purpose": "Palimpsest benchmark HydraDB runtime provenance and storage contract",
+  "hydradb": {
+    "source_repository": "https://github.com/hydra-db/hydradb",
+    "source_revision": "6a2fbb192f37f51a93690a2ae2d2f5e27e6e4219",
+    "source_describe": "v0.1.1-2-g6a2fbb1",
+    "source_tree_state": "local remediation patch set, identified by required OCI patch fingerprint",
+    "build_context": "vendor/hydradb",
+    "build_target": "runtime",
+    "image_reference": "palimpsest/hydradb:6a2fbb1",
+    "verified_local_image_id": "sha256:514349a17890bf2a35e5e5eb81b41c09b771b07e497fa3f51eb22e7727d66081",
+    "required_oci_labels": {
+      "org.opencontainers.image.source": "https://github.com/hydra-db/hydradb",
+      "org.opencontainers.image.revision": "6a2fbb192f37f51a93690a2ae2d2f5e27e6e4219",
+      "io.palimpsest.hydradb.source-patch-sha256": "6c711ec5c63b42b99620600f8bd09c146e6b9e83d670562e331a6610ebac6638"
+    }
+  },
+  "object_store": {
+    "durability_profile": "s3-compatible",
+    "provider": "aws-compatible",
+    "required_conditional_update": true,
+    "unsupported_for_durable_benchmarks": [
+      "LocalFileSystem(file:///data/store)"
+    ]
+  },
+  "runtime_profile": "ops/hydradb/compose.benchmark.yaml",
+  "result_manifest_required_fields": [
+    "hydradb_image_id",
+    "hydradb_source_revision",
+    "object_store_profile",
+    "dataset_sha256",
+    "volume_schema_version",
+    "runtime_config_sha256"
+  ],
+  "prohibitions": [
+    "Do not use an image tagged latest for a benchmark.",
+    "Do not attach the benchmark profile to the pre-existing hydradb-data Docker volume.",
+    "Do not represent the local object-store backend as durable."
+  ]
+}

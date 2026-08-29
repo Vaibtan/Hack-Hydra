@@ -35,6 +35,7 @@ export const App = () => {
   const [questionDate, setQuestionDate] = useState(DEMO_DATE)
   const [asOf, setAsOf] = useState<number | undefined>(undefined)
   const [premiseCheck, setPremiseCheck] = useState(false)
+  const [causalBookmark, setCausalBookmark] = useState<string | undefined>(undefined)
 
   const [result, setResult] = useState<AskResponse | null>(null)
   const [sessions, setSessions] = useState<ReadonlyArray<SessionRow>>([])
@@ -56,10 +57,11 @@ export const App = () => {
   }, [])
 
   useEffect(() => {
+    setCausalBookmark(undefined)
     void loadUser(uid)
   }, [uid, loadUser])
 
-  const ask = useCallback(async () => {
+  const ask = useCallback(async (bookmark = causalBookmark) => {
     if (question.trim() === "") return
     setAsking(true)
     setError(null)
@@ -69,6 +71,7 @@ export const App = () => {
           question,
           questionDate,
           premiseCheck,
+          ...(bookmark === undefined ? {} : { bookmark }),
           ...(asOf === undefined ? {} : { asOf })
         })
       )
@@ -78,7 +81,7 @@ export const App = () => {
     } finally {
       setAsking(false)
     }
-  }, [uid, question, questionDate, asOf, premiseCheck])
+  }, [uid, question, questionDate, asOf, premiseCheck, causalBookmark])
 
   // Re-ask when the scrubber moves, so the slider drives the answer directly.
   useEffect(() => {
@@ -187,9 +190,11 @@ export const App = () => {
       <div className="grid">
         <LiveIngest
           uid={uid}
-          onIngested={() => {
+          onIngested={(ingested) => {
+            const bookmark = ingested.bookmark ?? undefined
+            setCausalBookmark(bookmark)
             void loadUser(uid)
-            void ask()
+            void ask(bookmark)
           }}
         />
         <Determinism uid={uid} question={question} questionDate={questionDate} asOf={asOf} />

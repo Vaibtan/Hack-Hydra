@@ -8,8 +8,8 @@ import { api, type IngestResult } from "../api"
  * transcript written verbatim, one extraction call, canon reconciliation
  * against what this user's graph already holds, claims/entities/slots/tokens
  * and their edges, then the supersession pass over the slots it touched. The
- * ask that follows is read-your-writes — one `HydraClient` replays HydraDB's
- * bookmark into the next read — so there is nothing to wait for.
+ * ask that follows carries HydraDB's causal bookmark, so it sees this write
+ * even when the read lands on a different server process.
  *
  * It is the one slow thing in the demo (an extraction and a supersession call,
  * a few seconds), so it shows progress rather than freezing.
@@ -60,7 +60,7 @@ export const LiveIngest = ({
   onIngested
 }: {
   readonly uid: string
-  readonly onIngested: () => void
+  readonly onIngested: (result: IngestResult) => void
 }) => {
   const [text, setText] = useState(PLACEHOLDER)
   const [date, setDate] = useState(today())
@@ -78,7 +78,7 @@ export const LiveIngest = ({
       const ingested = await api.ingestSession(uid, { date, turns })
       setResult(ingested)
       setState("done")
-      onIngested()
+      onIngested(ingested)
     } catch (cause: unknown) {
       setError(String(cause))
       setState("idle")
@@ -143,8 +143,8 @@ export const LiveIngest = ({
               </div>
               <p className="muted" style={{ marginTop: 8 }}>
                 Now {result.stats.claims} claims across {result.stats.sessions} sessions. Ask
-                again — the answer sees this session with no delay, because the read replays the
-                write's bookmark.
+                again — the client carries this write's causal bookmark to the read, without
+                relying on process affinity.
               </p>
             </>
           )}

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { vertexId } from "../../src/index.js"
+import {
+  createGraphIdentityRegistry,
+  verifyStoredGraphIdentity,
+  vertexId
+} from "../../src/index.js"
 
 /**
  * Oracle: the published SHA-256 digest of "abc" is
@@ -27,5 +31,71 @@ describe("vertexId", () => {
     expect(vertexId("q1|e|hamster")).toBe(vertexId("q1|e|hamster"))
     expect(vertexId("q1|e|hamster")).not.toBe(vertexId("q2|e|hamster"))
     expect(vertexId("q1|e|hamster")).not.toBe(vertexId("q1|e|hamsters"))
+  })
+})
+
+describe("GraphIdentityRegistry", () => {
+  it("fails closed when an injected numeric-id collision names a different full vertex key", () => {
+    const identities = createGraphIdentityRegistry(() => 7)
+
+    expect(identities.claimVertex("tenant-a|user")).toMatchObject({ _tag: "Right" })
+    const collision = identities.claimVertex("tenant-b|user")
+
+    expect(collision).toMatchObject({
+      _tag: "Left",
+      left: {
+        _tag: "HydraIdentityIntegrityError",
+        kind: "vertex",
+        reason: "numericCollision",
+        numericId: 7
+      }
+    })
+    if (collision._tag === "Left") {
+      expect(collision.left.existingKeyFingerprint).toMatch(/^[a-f0-9]{64}$/)
+      expect(collision.left.requestedKeyFingerprint).toMatch(/^[a-f0-9]{64}$/)
+      expect(collision.left.message).not.toContain("tenant-a")
+      expect(collision.left.message).not.toContain("tenant-b")
+    }
+  })
+
+  it("rejects a persisted full key that differs from the requested key at the same numeric id", () => {
+    const result = verifyStoredGraphIdentity({
+      kind: "vertex",
+      numericId: 7,
+      requestedKey: "tenant-a|user",
+      storedKey: "tenant-b|user",
+      numericIdForKey: () => 7
+    })
+
+    expect(result).toMatchObject({
+      _tag: "Left",
+      left: {
+        _tag: "HydraIdentityIntegrityError",
+        kind: "vertex",
+        reason: "numericCollision",
+        numericId: 7
+      }
+    })
+  })
+
+  it("fails closed when a legacy record lacks its full-key witness", () => {
+    const result = verifyStoredGraphIdentity({
+      kind: "relationship",
+      numericId: 7,
+      requestedKey: "tenant-a|FOLLOWS|tenant-b",
+      storedKey: null,
+      numericIdForKey: () => 7
+    })
+
+    expect(result).toMatchObject({
+      _tag: "Left",
+      left: {
+        _tag: "HydraIdentityIntegrityError",
+        kind: "relationship",
+        reason: "missingFullKey",
+        numericId: 7,
+        existingKeyFingerprint: null
+      }
+    })
   })
 })

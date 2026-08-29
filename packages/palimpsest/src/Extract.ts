@@ -1,7 +1,13 @@
 import type { LanguageModel } from "@effect/ai"
 import type { DatasetSession } from "@palimpsest/dataset"
 import { Llm } from "@palimpsest/llm"
-import { Effect, Schema } from "effect"
+import { Effect, JSONSchema, Schema } from "effect"
+import {
+  createExtractionGeneration,
+  parseCanonicalJson,
+  type ExtractionGeneration,
+  type VersionedDependency
+} from "./SourceIdentity.js"
 
 /**
  * Claim extraction: one LLM call per session.
@@ -216,7 +222,8 @@ export const parseEventDate = (
   return { tEvent: 0, tPrec: "none" }
 }
 
-const SYSTEM = `You build a searchable memory index over a chat transcript.
+/** The static extraction instruction included in each extraction generation. */
+export const EXTRACTION_SYSTEM_PROMPT = `You build a searchable memory index over a chat transcript.
 
 You are given ONE conversation session between a user and an assistant, its date, the entities
 already known about this user, and an attribute vocabulary. You return the atomic claims the session
@@ -276,6 +283,35 @@ Fields
 
 Return only claims grounded in this session's text.`
 
+const extractionOutputSchema = (() => {
+  const parsed = parseCanonicalJson(JSONSchema.make(RawExtraction))
+  if (parsed._tag === "Left") {
+    throw new Error(`Raw extraction schema cannot be canonicalised: ${parsed.left.reason}`)
+  }
+  return parsed.right
+})()
+
+/** Immutable runtime identities used to describe one extraction generation. */
+export interface ExtractionRuntimeDependencies {
+  readonly extractor: VersionedDependency
+  readonly model: VersionedDependency
+  readonly tokenizer: VersionedDependency
+}
+
+/**
+ * Creates a generation from the exact prompt and Effect Schema this extractor
+ * uses at runtime. The extractor revision names the remaining implementation
+ * details, including prompt rendering and span recovery.
+ */
+export const createRuntimeExtractionGeneration = (
+  dependencies: ExtractionRuntimeDependencies
+): ExtractionGeneration =>
+  createExtractionGeneration({
+    ...dependencies,
+    promptTemplate: EXTRACTION_SYSTEM_PROMPT,
+    outputSchema: extractionOutputSchema
+  })
+
 const renderPrompt = (
   session: DatasetSession,
   knownEntities: ReadonlyArray<ExtractedEntity>
@@ -313,7 +349,7 @@ export const extractSession = (
     const generated = yield* llm
       .generateObject({
         kind: "extract",
-        system: SYSTEM,
+        system: EXTRACTION_SYSTEM_PROMPT,
         prompt: renderPrompt(session, knownEntities),
         schema: RawExtraction,
         objectName: "claims"

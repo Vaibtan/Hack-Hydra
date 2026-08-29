@@ -3,6 +3,7 @@ import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { sessionKey, turnChunkKey, turnKey } from "./Keys.js"
 import { linkToUser, readUserVertices } from "./User.js"
+import { canonicalSessionSource } from "./SourceIdentity.js"
 
 /**
  * HydraDB stores at most 32 743 UTF-8 bytes in a string property. Four of the
@@ -94,13 +95,19 @@ const make = Effect.gen(function* () {
         }))
       )
 
-      const turns = sessions.flatMap((session) =>
-        session.turns.map((turn) => ({ session, turn, chunks: chunkText(turn.text) }))
-      )
+      const turns = sessions.flatMap((session) => {
+        const sourceDigest = canonicalSessionSource(session).sourceDigest
+        return session.turns.map((turn) => ({
+          session,
+          turn,
+          chunks: chunkText(turn.text),
+          sourceDigest
+        }))
+      })
 
       yield* hydra.batchMerge(
         "Turn",
-        turns.map(({ session, turn, chunks }) => ({
+        turns.map(({ session, turn, chunks, sourceDigest }) => ({
           key: turnKey(uid, session.key, turn.turnIdx),
           properties: {
             turn: turnKey(uid, session.key, turn.turnIdx),
@@ -110,7 +117,9 @@ const make = Effect.gen(function* () {
             turn_idx: turn.turnIdx,
             role: turn.role,
             text: chunks[0] ?? "",
-            chunks: chunks.length
+            chunks: chunks.length,
+            source_digest: sourceDigest,
+            source_session_id: session.key
           }
         }))
       )

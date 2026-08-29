@@ -6,12 +6,12 @@ import type { Receipt } from "../api"
  * This is the differentiator, so it shows the *actual* artefacts rather than a
  * summary of them: the exact `algo.MSpaths` statement that ran, which anchors
  * reached a claim and which reached nothing, the path counts, and the
- * convergence table behind the ranking. Enough for someone to re-run the read
- * by hand and get the same paths.
+ * convergence table behind the ranking. It is a replayable trace, not proof
+ * that the search was exhaustive or that the graph has not changed.
  *
  * Structural abstention does not carry the pitch on a well-populated graph —
  * with ~2 000 claims and ~15 resolved anchors, something always converges. What
- * the structure delivers is *proof of what was searched*, and that is this
+ * the structure delivers is a trace of what was searched, and that is this
  * panel.
  */
 export const ReceiptPanel = ({ receipt }: { readonly receipt: Receipt }) => (
@@ -83,6 +83,7 @@ export const ReceiptPanel = ({ receipt }: { readonly receipt: Receipt }) => (
         query 1 — anchors to claims, one round trip
       </div>
       <pre className="cypher">{receipt.query1}</pre>
+      <pre className="cypher">{JSON.stringify(receipt.query1Params, null, 2)}</pre>
     </div>
 
     {receipt.query2 !== null && (

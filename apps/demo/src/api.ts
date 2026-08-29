@@ -46,6 +46,7 @@ export interface Receipt {
   readonly convergenceThreshold: number
   readonly totalClaims: number
   readonly query1: string
+  readonly query1Params: Readonly<Record<string, string | number>>
   readonly query1Paths: number
   readonly query2: string | null
   readonly query2Paths: number
@@ -75,12 +76,26 @@ export interface SessionRow {
   readonly turns: number
 }
 
-export interface ChainClaim {
-  readonly ckey: string
-  readonly text: string
+export interface DerivedAssertionSourceSpan {
+  readonly sourceDigest: string
+  readonly logicalSessionId: string
+  readonly sid: string
+  readonly turnIdx: number
+  readonly offsetStart: number
+  readonly offsetEnd: number
+  readonly speaker: string
+  readonly excerpt: string
+  readonly highlight: Highlight
+}
+
+/** Model-generated index output paired with its actual verbatim source span. */
+export interface DerivedIndexAssertion {
+  readonly assertionKey: string
+  readonly derivedText: string
   readonly sessionOrd: number
   readonly tEvent: number
   readonly sid: string
+  readonly source: DerivedAssertionSourceSpan
   readonly supersededBy: string | null
   readonly atSession: number | null
 }
@@ -88,7 +103,7 @@ export interface ChainClaim {
 export interface SlotChain {
   readonly skey: string
   readonly asOf: number | null
-  readonly claims: ReadonlyArray<ChainClaim>
+  readonly assertions: ReadonlyArray<DerivedIndexAssertion>
 }
 
 export interface ContestedSlot {
@@ -126,6 +141,7 @@ export interface IngestResult {
 
 export interface AskInput {
   readonly question: string
+  readonly bookmark?: string
   readonly questionDate?: string
   readonly asOf?: number
   readonly historical?: boolean

@@ -273,6 +273,37 @@ input[type="range"] {
   background: var(--violet-bg);
 }
 
+.derived-assertion-label,
+.chain-source-label,
+.chain-source-digest {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.derived-assertion-label {
+  color: var(--violet);
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.chain-source {
+  margin-top: 9px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--panel-2);
+}
+.chain-source-label {
+  color: var(--ink-2);
+}
+.chain-source p {
+  margin: 5px 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.chain-source-digest {
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
 .kv {
   display: grid;
   grid-template-columns: minmax(120px, auto) minmax(0, 1fr);

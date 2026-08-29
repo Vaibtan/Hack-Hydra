@@ -206,10 +206,10 @@ const program = Effect.gen(function* () {
       path: { uid, skey: contested.skey },
       urlParams: {}
     })
-    const superseded = chain.claims.filter((claim) => claim.supersededBy !== null).length
+    const superseded = chain.assertions.filter((assertion) => assertion.supersededBy !== null).length
     ok(
       "slot chain",
-      `${contested.entityName} | ${contested.attr} — ${chain.claims.length} claims, ${superseded} superseded`
+      `${contested.entityName} | ${contested.attr} — ${chain.assertions.length} derived assertions, ${superseded} superseded`
     )
   } else {
     console.log("  note  no contested slot in this run — the rename did not land in one slot")

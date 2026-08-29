@@ -1,4 +1,4 @@
-export { HydraClient } from "./Client.js"
+export { classifyHydraHttpError, HydraClient } from "./Client.js"
 export type { Params, QueryOptions, RelRow, VertexRow } from "./Client.js"
 export {
   DEFAULT_PATH_COUNT,
@@ -19,6 +19,19 @@ export type {
   Row,
   Scalar
 } from "./Decode.js"
-export { HydraLimitError, HydraParseError, HydraUnavailable } from "./Errors.js"
-export type { HydraError } from "./Errors.js"
-export { edgeId, vertexId } from "./Ids.js"
+export {
+  HYDRA_ENGINE_ERROR_CODES,
+  HydraEngineError,
+  HydraIdentityIntegrityError,
+  HydraLimitError,
+  HydraParseError,
+  HydraUnavailable
+} from "./Errors.js"
+export type { HydraEngineErrorCode, HydraError } from "./Errors.js"
+export { createGraphIdentityRegistry, edgeId, verifyStoredGraphIdentity, vertexId } from "./Ids.js"
+export type {
+  GraphIdentity,
+  GraphIdentityRegistry,
+  NumericIdForKey,
+  VerifyStoredGraphIdentity
+} from "./Ids.js"

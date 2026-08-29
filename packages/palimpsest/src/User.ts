@@ -159,7 +159,7 @@ export const bumpUserStats = (
     return next
   })
 
-export type UserEdge = "HAS_ENTITY" | "HAS_SLOT" | "HAS_SESSION"
+export type UserEdge = "HAS_ENTITY" | "HAS_SLOT" | "HAS_SESSION" | "HAS_SOURCE_REVISION"
 
 /**
  * Hangs a set of the user's vertices off the root. Content-addressed and
@@ -170,7 +170,7 @@ export const linkToUser = (
   hydra: HydraClient,
   uid: string,
   relType: UserEdge,
-  dstLabel: "Entity" | "Slot" | "Session",
+  dstLabel: "Entity" | "Slot" | "Session" | "SourceSession",
   keys: ReadonlyArray<string>
 ): Effect.Effect<void, HydraError> =>
   Effect.gen(function* () {

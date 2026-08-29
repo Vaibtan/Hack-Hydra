@@ -7,11 +7,19 @@ convergence.
 
 | Term | Meaning | Where it lives |
 |---|---|---|
-| **User** (`uid`) | One independent history. Benchmark: the LongMemEval `question_id`. All keys start `uid\|`. Users share the single `default` graph and are separated by key prefix. The `User` vertex (`uid\|user`) carries every per-user count and roots `HAS_ENTITY` / `HAS_SLOT` / `HAS_SESSION`, because the engine indexes ids and `MSpaths` sources and nothing else. | key prefix, `User` vertex |
-| **Session** | One conversation with a timestamp. `session_ord` is its 1-based rank by timestamp within the user; ties keep input order. | `Session` vertex |
+| **User** (`uid`) | One independent history. Benchmark: the LongMemEval `question_id`. All keys start `uid\|`. Users share the single `default` graph and are separated by key prefix. The `User` vertex (`uid\|user`) carries every per-user count and roots legacy projections plus immutable `HAS_SOURCE_REVISION` source records, because the engine indexes ids and `MSpaths` sources and nothing else. | key prefix, `User` vertex |
+| **Session** | A logical conversation identifier with a timestamp. Its verbatim bytes belong to a SourceRevision; `session_ord` is allocated once by the UserManifest and never renumbered. | `Session` projection |
 | **Turn** | One message: `role`, `text`, `turn_idx`. Stored verbatim, because the graph indexes the transcript rather than replacing it. | `Turn` vertex |
+| **SourceRevision** | An immutable, content-addressed set of source bytes for one logical Session. Reusing a logical session identifier with different bytes creates a new revision; it never overwrites the old source. `SourceSession` / `SourceTurn` / `SourceTurnChunk` keys include the full digest and are the transactional source plane; legacy `Session` / `Turn` labels are a separate, not-yet-migrated projection. | ingest manifest, `Source*` vertices |
+| **Ingest State** | The durable readiness of one SourceRevision: `RECEIVED`, `SOURCE_DURABLE`, `INDEXED`, `ENRICHED`, `CONSOLIDATED`, or `COMMITTED`, with terminal or retryable failure metadata. | ingest manifest |
+| **Ingest Commit** | The one logical commit that advances a SourceRevision to `COMMITTED` and names its projection deltas. It is the idempotency authority; source existence alone is not a commit. | ingest manifest, projection deltas |
+| **UserManifest** | The transactional per-user authority that allocates session order, serializes projection activation, and records the current manifest version. It is not a retrieval index. | ingest manifest |
+| **Extraction Generation** | The immutable identity of the extractor/model/tokenizer IDs and revisions plus hashes of the exact prompt template and output schema used to derive claims from a SourceRevision. Its canonical descriptor is content-address-verified before a SourceRevision is accepted. | ingest manifest, extraction artifacts, derived graph |
+| **Index Generation** | An immutable descriptor of one Extraction Generation plus the graph writer and graph schema revisions. The manifest stores it by content address and atomically selects one active generation per user. `Index*` vertices and `INDEX_*` edges carry both this ID and their full source digest; legacy graph labels are not selected by this pointer. | ingest manifest, `Index*` graph |
 | **Span** | `(sid, turn_idx, char_start, char_end)` into a Turn's text. The only thing a reader ever sees. | properties on `Claim`, duplicated on `EVIDENCE` |
-| **Entity** | A canonical thing the user talks about. `me` is an Entity but never an anchor — it connects to everything. | `Entity` vertex, key `uid\|e\|<canon>` |
+| **Entity** | An immutable observed thing the user talks about. Its semantic identity is content-addressed from canon, type, and aliases; `me` is an Entity but never an anchor. Canonical resolution is deliberately separate. | legacy `Entity` projection; isolated `IndexEntity` records |
+| **Entity Canonical View** | An immutable, selected resolution of Entity identities for one User. Selecting a later view changes query-visible identity resolution without rewriting an earlier Entity or its source lineage. The manifest already persists it; retrieval has not yet consumed it. | ingest manifest, future retrieval receipts |
+| **SAME_AS** | A versioned edge from one immutable Entity identity to the selected canonical identity in an Entity Canonical View. It is never an in-place Entity rename. | Entity Canonical View |
 | **Slot** | An `(entity, attribute)` pair that holds a value over time, e.g. `me\|residence`. | `Slot` vertex, key `uid\|s\|<canon>\|<attr>` |
 | **Claim** | One extracted assertion with a speaker, a type, both clocks and one Span. Fills at most one Slot, mentions at least one Entity. | `Claim` vertex, key `uid\|c\|<sha1>` |
 | **Anchor** / **Token** | A normalised content term attached at ingest to Claims (`HITS`) and Entities (`NAMES`). Question anchors are Tokens too — that symmetry is what makes the graph an inverted index. | `Token` vertex, key `uid\|t\|<stem>` |
@@ -19,8 +27,8 @@ convergence.
 | **Supersession** | `(older)-[:SUPERSEDED_BY {at_session}]->(newer)` between two Claims in the same Slot. **Current** = no outgoing edge with `at_session ≤ k`. Edges are only ever added. | edge |
 | **As-of k** | A read that ignores Claims with `session_ord > k` and supersession edges with `at_session > k`. Data-level, not a HydraDB snapshot — bookmarks are causal floors, not time travel. | filter |
 | **Verdict** | `ANSWER` (evidence set + reader answer) or `ABSENT` (structural reason + receipt). Abstention reasons: `A1` no anchor resolves, `A2` no claim converges, `NOT_IN_MEMORY` from the reader. | retrieval result |
-| **Receipt** | The exact MSpaths query text, which anchors resolved and which didn't, the path count, and the convergence table. Enough for a judge to re-run it. | attached to every verdict |
-| **Bookmark** | HydraDB's causal token, returned by every write and replayed on the next read so ingest→ask is read-your-writes. | `HydraClient.lastBookmark` |
+| **Receipt** | A versioned replayable decision trace. It names the selected source, manifest and generation versions, candidate boundaries, source spans, and integrity digest; it must not call derived claim text evidence. | attached to every verdict |
+| **Causal Token** | A request/session-scoped HydraDB causal floor returned by ingestion and optionally supplied to a read. It is never a process-global bookmark. | ingest and ask contracts |
 
 ## Engine facts the design is shaped by
 
