@@ -1,0 +1,210 @@
+import type { LanguageModel } from "@effect/ai"
+import type { HydraError } from "@palimpsest/hydra"
+import type { Llm } from "@palimpsest/llm"
+import { Effect } from "effect"
+import type { Granularity, ReadAnswer, Reader } from "./Reader.js"
+import type { AskOptions, AskResult, Retrieve } from "./Retrieve.js"
+import type { AbstentionReason } from "./Scoring.js"
+import {
+  abstains,
+  judgeSufficiency,
+  premiseContradiction,
+  runsOn,
+  skipped,
+  type SufficiencyReport
+} from "./Sufficiency.js"
+
+/**
+ * The whole v2 path, in one call: retrieve, pack, check, maybe go back once,
+ * read.
+ *
+ * A function and not a service, deliberately. Every caller already holds both
+ * `Retrieve` and `Reader` — the eval, the CLI, the demo server — and adding a
+ * third service to their layers would buy nothing over passing the two they
+ * have. What it does buy is that the *loop* lives in one place: the eval and
+ * the demo must not be able to drift into running different pipelines, because
+ * the numbers in the writeup come from one of them and the video from the
+ * other.
+ *
+ * v1 does not come through here. It is `retrieve.ask` then `reader.read`, as it
+ * has always been, and that is what keeps its evidence byte-identical while
+ * both pipelines read one graph.
+ */
+
+export interface V2Answer {
+  readonly ask: AskResult
+  /** The final read. Absent when the verdict was `ABSENT` before reading. */
+  readonly read: ReadAnswer | null
+  readonly verdict: "ANSWER" | "ABSENT"
+  readonly reason: AbstentionReason | null
+  readonly sufficiency: SufficiencyReport
+  /** The refined pass ran. At most once, by construction. */
+  readonly secondPass: boolean
+  /** The ask that produced the evidence actually read — the second, if there was one. */
+  readonly passes: number
+}
+
+export interface AnswerOptions extends AskOptions {
+  readonly premiseCheck?: boolean
+  /** Forces one granularity for every route, for the `span|turn` ablation. */
+  readonly granularity?: Granularity
+  /** Skips the sufficiency stage entirely, for the `--no-sufficiency` ablation. */
+  readonly noSufficiency?: boolean
+}
+
+/**
+ * Turns an ask into the reader's pack options.
+ *
+ * Only ever called with a plan, because only v2 has one — the option is what
+ * switches the pack stage on, and v1 must never pass it.
+ */
+const packOptions = (ask: AskResult, granularity?: Granularity) => {
+  const plan = ask.plan
+  if (plan === null) return undefined
+  return {
+    route: plan.route,
+    ...(granularity === undefined ? {} : { granularity }),
+    slotOf: new Map(Object.entries(plan.slots)),
+    protectedKeys: new Set(plan.protectedKeys)
+  }
+}
+
+export const answerV2 = (
+  retrieve: Retrieve,
+  reader: Reader,
+  uid: string,
+  question: string,
+  questionDate: string,
+  options: AnswerOptions = {}
+): Effect.Effect<V2Answer, HydraError, LanguageModel.LanguageModel | Llm> =>
+  Effect.gen(function* () {
+    const profile = options.profile ?? "full"
+    const askOptions = { ...options, questionDate, pipeline: "v2" as const }
+
+    const first = yield* retrieve.ask(uid, question, askOptions)
+    if (first.verdict === "ABSENT") {
+      return {
+        ask: first,
+        read: null,
+        verdict: "ABSENT" as const,
+        reason: first.reason,
+        sufficiency: skipped(),
+        secondPass: false,
+        passes: 1
+      }
+    }
+
+    const readOptions = {
+      ...(options.premiseCheck === true ? { premiseCheck: true } : {}),
+      ...(() => {
+        const pack = packOptions(first, options.granularity)
+        return pack === undefined ? {} : { pack }
+      })()
+    }
+
+    // The check reads the *packed* excerpts, which is why it cannot live inside
+    // `ask`: the pack is what the reader will see, and judging sufficiency from
+    // the claim index text instead would be judging a summary of the evidence
+    // rather than the evidence.
+    const firstRead = yield* reader.read(question, questionDate, first.evidence, readOptions)
+    const route = first.plan?.route ?? "fact"
+
+    if (options.noSufficiency === true || !runsOn(route, firstRead.spans, profile)) {
+      return {
+        ask: first,
+        read: firstRead,
+        verdict: "ANSWER" as const,
+        reason: null,
+        sufficiency: skipped(),
+        secondPass: false,
+        passes: 1
+      }
+    }
+
+    const judged = yield* judgeSufficiency(question, questionDate, route, firstRead.spans)
+
+    // A contradicted premise short-circuits: there is nothing a second pass can
+    // find that would make a false presupposition true, and reading on would
+    // produce a confident answer to a question that should not have one.
+    const contradiction = premiseContradiction(judged, firstRead.spans)
+    if (contradiction !== null) {
+      return {
+        ask: first,
+        read: firstRead,
+        verdict: "ABSENT" as const,
+        reason: "CONTRADICTED_PREMISE" as const,
+        sufficiency: judged,
+        secondPass: false,
+        passes: 1
+      }
+    }
+
+    if (judged.tier !== "PARTIAL" || judged.missingTerms.length === 0) {
+      return {
+        ask: first,
+        read: firstRead,
+        verdict: "ANSWER" as const,
+        reason: null,
+        sufficiency: judged,
+        secondPass: false,
+        passes: 1
+      }
+    }
+
+    // ---- exactly one refined pass ------------------------------------------
+    // The same arms, widened by the terms the check named. Not a loop: a second
+    // PARTIAL is information ("this memory does not contain it"), a third would
+    // be a budget, and every extra pass is another graph read and two more LLM
+    // calls on a question that is already the expensive kind.
+    const second = yield* retrieve.ask(uid, question, {
+      ...askOptions,
+      extraTerms: judged.missingTerms
+    })
+    if (second.verdict === "ABSENT") {
+      // The wider search abstained where the narrower one did not, which can
+      // only mean the widening changed the candidate set out from under the
+      // verdict. Keep the first pass's answer: a second pass exists to add
+      // evidence, never to take an answer away.
+      return {
+        ask: first,
+        read: firstRead,
+        verdict: "ANSWER" as const,
+        reason: null,
+        sufficiency: judged,
+        secondPass: true,
+        passes: 2
+      }
+    }
+
+    const secondRead = yield* reader.read(question, questionDate, second.evidence, {
+      ...readOptions,
+      ...(() => {
+        const pack = packOptions(second, options.granularity)
+        return pack === undefined ? {} : { pack }
+      })()
+    })
+    const rejudged = yield* judgeSufficiency(question, questionDate, route, secondRead.spans)
+
+    const stillContradicted = premiseContradiction(rejudged, secondRead.spans)
+    if (stillContradicted !== null) {
+      return {
+        ask: second,
+        read: secondRead,
+        verdict: "ABSENT" as const,
+        reason: "CONTRADICTED_PREMISE" as const,
+        sufficiency: rejudged,
+        secondPass: true,
+        passes: 2
+      }
+    }
+
+    return {
+      ask: second,
+      read: secondRead,
+      verdict: abstains(rejudged) ? ("ABSENT" as const) : ("ANSWER" as const),
+      reason: abstains(rejudged) ? ("INSUFFICIENT_EVIDENCE" as const) : null,
+      sufficiency: rejudged,
+      secondPass: true,
+      passes: 2
+    }
+  })

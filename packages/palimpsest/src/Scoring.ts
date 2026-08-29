@@ -141,7 +141,25 @@ export const beforeAsOf = <A extends { readonly sessionOrd: number }>(
 ): ReadonlyArray<A> =>
   asOf === undefined ? claims : claims.filter((claim) => claim.sessionOrd <= asOf)
 
-export type AbstentionReason = "A1_no_anchors" | "A2_no_convergence"
+/**
+ * Why a verdict was `ABSENT`.
+ *
+ * The first two are structural and belong to retrieval: nothing the question
+ * named exists in this memory (`A1`), or things exist and nothing converged on
+ * the question (`A2`). The second two belong to the pack and are v2's: the
+ * excerpts were reached, judged short of the question, searched again, and
+ * still short (`INSUFFICIENT_EVIDENCE`); or the question assumes something a
+ * current excerpt contradicts (`CONTRADICTED_PREMISE`).
+ *
+ * The reader's `NOT_IN_MEMORY` is deliberately *not* here. That is an answer
+ * the reader gave, and folding it into the verdict would make an abstention
+ * that the retrieval receipt cannot explain look like one it can.
+ */
+export type AbstentionReason =
+  | "A1_no_anchors"
+  | "A2_no_convergence"
+  | "INSUFFICIENT_EVIDENCE"
+  | "CONTRADICTED_PREMISE"
 
 export interface Verdict {
   readonly kind: "ANSWER" | "ABSENT"

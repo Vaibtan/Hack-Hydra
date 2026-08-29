@@ -8,6 +8,7 @@ import {
   Reader,
   Retrieve,
   Supersede,
+  answerV2,
   determinismHash,
   type HydratedSpan
 } from "@palimpsest/palimpsest"
@@ -101,7 +102,8 @@ const ablations = {
   ...(process.argv.includes("--no-time-scope") ? { noTimeScope: true } : {}),
   ...(process.argv.includes("--no-select") ? { noSelect: true } : {})
 } as const
-const ablationNames = Object.keys(ablations).sort()
+const noSufficiency = process.argv.includes("--no-sufficiency")
+const ablationNames = [...Object.keys(ablations), ...(noSufficiency ? ["noSufficiency"] : [])].sort()
 /** Forces one granularity for every route, for the `span|turn` ablation. */
 const granularityFlag = arg("granularity", "")
 const granularityOverride =
@@ -197,11 +199,23 @@ const uidFor = (questionId: string): string =>
  * be said in words — and it has to be the *same* words every time, or the
  * abstention column would be measuring phrasing.
  */
+/**
+ * The refusal a judge sees, phrased by *why* the memory refused.
+ *
+ * The judge scores an abstention question on whether the system declined, not
+ * on the wording, so this exists for the reader of a results file: four
+ * structurally different refusals that all said "I don't have that" would be
+ * indistinguishable in the answer column.
+ */
 const absentResponse = (reason: string | null): string =>
   `I don't have that in my memory. ` +
   (reason === "A1_no_anchors"
     ? "None of the question's search terms exist in this user's memory at all."
-    : "Search terms exist but no stored claim was reached by enough of them to answer.")
+    : reason === "INSUFFICIENT_EVIDENCE"
+      ? "The memory holds some of what the question needs and, after searching again for the rest, not all of it."
+      : reason === "CONTRADICTED_PREMISE"
+        ? "The question assumes something the memory contradicts."
+        : "Search terms exist but no stored claim was reached by enough of them to answer.")
 
 const AppLive = Retrieve.Default.pipe(
   Layer.provideMerge(Reader.Default),
@@ -357,16 +371,73 @@ const program = Effect.gen(function* () {
       let budgetDroppedSessions: ReadonlyArray<string> | undefined
       let granularity: string | undefined
       let estimatedTokens: number | undefined
+      let sufficiencyTier: string | undefined
+      let secondPass: boolean | undefined
       let askMs: number | undefined
       let graphMs: number | undefined
       let stageTimingsMs: Record<string, number> | undefined
 
-      if (system.startsWith("palimpsest")) {
+      if (system === "palimpsest-v2") {
+        // v2 goes through the orchestrator, so the eval and the demo cannot
+        // drift into running different pipelines: retrieve, pack, check, one
+        // refined pass at most, read.
+        const answered = yield* answerV2(retrieve, reader, uid, question.question, questionDate, {
+          profile,
+          ablations,
+          ...(noSufficiency ? { noSufficiency: true } : {}),
+          ...(granularityOverride === undefined ? {} : { granularity: granularityOverride })
+        })
+        const ask = answered.ask
+        const plan = ask.plan
+        askMs = ask.timings.askMs
+        graphMs = ask.timings.graphMs
+        stageTimingsMs = { ...ask.timings.stages }
+        verdict = answered.verdict
+        reason = answered.reason
+        anchorsAsked = ask.receipt.anchorTerms.length
+        anchorsReaching = ask.receipt.anchorsReachingClaims.length
+        claimHash = ask.hash
+        hash = ask.hash
+        sufficiencyTier = answered.sufficiency.skipped ? "skipped" : answered.sufficiency.tier
+        secondPass = answered.secondPass
+        if (plan !== null) {
+          route = plan.route
+          flags = Object.entries(plan.flags)
+            .filter(([, on]) => on === true)
+            .map(([name]) => name)
+            .sort()
+          selectorFallback = plan.selection.fallback
+          unionSessions = plan.unionSessions
+        }
+
+        const read = answered.read
+        if (read === null) {
+          response = absentResponse(ask.reason)
+          notInMemory = true
+          spans = []
+        } else {
+          spans = read.spans
+          // An abstention decided *after* reading still reports the reader's
+          // spans, because they are what the decision was made on -- but the
+          // answer the user gets is the refusal, not the one the reader wrote.
+          response = answered.verdict === "ABSENT" ? absentResponse(answered.reason) : read.answer
+          notInMemory = answered.verdict === "ABSENT" || read.notInMemory
+          premiseSupported = read.premiseSupported
+          premiseNote =
+            answered.sufficiency.premise === "" ? read.premiseNote : answered.sufficiency.premise
+          readerInputTokens = read.inputTokens
+          readerOutputTokens = read.outputTokens
+          graphMs = (graphMs ?? 0) + read.hydrateMs
+          stageTimingsMs = { ...stageTimingsMs, hydrate: read.hydrateMs, read: read.readMs }
+          hash = read.spanHash
+          granularity = read.granularity
+          estimatedTokens = read.estimatedTokens
+          budgetDroppedSessions = read.budgetDroppedSessions
+        }
+      } else if (system.startsWith("palimpsest")) {
         const ask = yield* retrieve.ask(uid, question.question, {
           questionDate,
-          ...(system === "palimpsest-v2"
-            ? ({ pipeline: "v2", profile, ablations } as const)
-            : ({ pipeline: "v1" } as const))
+          pipeline: "v1"
         })
         askMs = ask.timings.askMs
         graphMs = ask.timings.graphMs
@@ -377,39 +448,16 @@ const program = Effect.gen(function* () {
         anchorsReaching = ask.receipt.anchorsReachingClaims.length
         hash = ask.hash
         claimHash = ask.hash
-        if (ask.plan !== null) {
-          route = ask.plan.route
-          flags = Object.entries(ask.plan.flags)
-            .filter(([, on]) => on === true)
-            .map(([name]) => name)
-            .sort()
-          selectorFallback = ask.plan.selection.fallback
-          unionSessions = ask.plan.unionSessions
-        }
 
         if (ask.verdict === "ABSENT") {
           response = absentResponse(ask.reason)
           notInMemory = true
           spans = []
         } else {
-          const plan = ask.plan
+          // No pack option: v1's evidence has to stay byte-identical while both
+          // pipelines read one graph, and the pack stage would change it.
           const read = yield* reader.read(question.question, questionDate, ask.evidence, {
-            premiseCheck: system === "palimpsest-premise",
-            // The pack stage is v2's. Passing it for v1 would change v1's
-            // evidence, and the whole comparison rests on v1's evidence not
-            // moving while both pipelines run against one graph.
-            ...(plan === null
-              ? {}
-              : {
-                  pack: {
-                    route: plan.route,
-                    ...(granularityOverride === undefined
-                      ? {}
-                      : { granularity: granularityOverride }),
-                    slotOf: new Map(Object.entries(plan.slots)),
-                    protectedKeys: new Set(plan.protectedKeys)
-                  }
-                })
+            premiseCheck: system === "palimpsest-premise"
           })
           spans = read.spans
           response = read.answer
@@ -422,16 +470,6 @@ const program = Effect.gen(function* () {
           // graph number is only whole once it is added back.
           graphMs = (graphMs ?? 0) + read.hydrateMs
           stageTimingsMs = { ...stageTimingsMs, hydrate: read.hydrateMs, read: read.readMs }
-          if (plan !== null) {
-            // The span hash is v2's `hash`: two claims can point at one span,
-            // and one claim can be hydrated at two granularities, so "the
-            // reader saw the same bytes" is the question a replay is asking.
-            // v1's claim-key hash stays beside it, unchanged.
-            hash = read.spanHash
-            granularity = read.granularity
-            estimatedTokens = read.estimatedTokens
-            budgetDroppedSessions = read.budgetDroppedSessions
-          }
         }
       } else {
         const selected =
@@ -495,6 +533,8 @@ const program = Effect.gen(function* () {
         ...(budgetDroppedSessions === undefined ? {} : { budgetDroppedSessions }),
         ...(granularity === undefined ? {} : { granularity }),
         ...(estimatedTokens === undefined ? {} : { estimatedTokens }),
+        ...(sufficiencyTier === undefined ? {} : { sufficiencyTier }),
+        ...(secondPass === undefined ? {} : { secondPass }),
         ...(system === 'palimpsest-v2' ? { keptSessions: evidenceSessions, ablations: ablationNames } : {})
       } satisfies EvalRow
       // Derived, and recomputed by `pnpm table` from the same function, so the

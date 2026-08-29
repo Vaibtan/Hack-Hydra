@@ -67,6 +67,8 @@ export interface RetrievalPlan {
   readonly flags: Understood["flags"]
   readonly subQuestions: ReadonlyArray<string>
   readonly probes: ReadonlyArray<string>
+  /** Non-empty only on a refined second pass: the terms sufficiency asked for. */
+  readonly extraTerms: ReadonlyArray<string>
   readonly arms: ReadonlyArray<{
     readonly label: string
     readonly kind: string
@@ -235,6 +237,15 @@ export interface AskOptions {
    * They are recorded in the results envelope, never defaulted on.
    */
   readonly ablations?: Ablations
+  /**
+   * Extra anchor terms for a refined second pass.
+   *
+   * The sufficiency check names what is missing; these are the stems it named.
+   * They join the convergence and discovery arms' sources — a second pass is
+   * the *same* arms asked a wider question, not a different pipeline, so the
+   * only thing that differs between the two passes is what was searched for.
+   */
+  readonly extraTerms?: ReadonlyArray<string>
 }
 
 /**
@@ -626,6 +637,11 @@ const make = Effect.gen(function* () {
 
       const historical = options.historical ?? understood.historical
       const ablations = options.ablations ?? {}
+      const extraTerms = options.extraTerms ?? []
+      const terms =
+        extraTerms.length === 0
+          ? understood.terms
+          : [...new Set([...understood.terms, ...extraTerms])].sort()
       const subQuestions = ablations.noDecompose === true ? [] : understood.subQuestions
       // `exactOptionalPropertyTypes` distinguishes an absent key from an
       // `undefined` one, and the union reads it as "no as-of cut" only when it
@@ -669,7 +685,7 @@ const make = Effect.gen(function* () {
           runArm(
             "convergence",
             "convergence",
-            convergenceArm(hydra, uid, understood.terms, total, maxLen),
+            convergenceArm(hydra, uid, terms, total, maxLen),
             false
           ),
           ...subQuestions.map((sub, index) =>
@@ -704,7 +720,7 @@ const make = Effect.gen(function* () {
           : discoverySeeds(
               convergence.rawPaths,
               firstPass.candidates.slice(0, 10),
-              new Set(understood.terms)
+              new Set(terms)
             )
       const discovery = yield* runArm(
         "discovery",
@@ -823,16 +839,16 @@ const make = Effect.gen(function* () {
         applied: scoped.applied
       }
 
-      const rendered = renderMsPathsQuery(convergenceConfig(uid, understood.terms, maxLen))
+      const rendered = renderMsPathsQuery(convergenceConfig(uid, terms, maxLen))
       const receiptBase = {
         question,
         uid,
         pipeline: "v2" as const,
         profile,
         asOf: options.asOf ?? null,
-        anchorTerms: understood.terms,
+        anchorTerms: terms,
         anchorsReachingClaims: [...resolved].sort(),
-        anchorsReachingNothing: understood.terms.filter((stem) => !resolved.has(stem)),
+        anchorsReachingNothing: terms.filter((stem) => !resolved.has(stem)),
         historical,
         wantsCount: understood.flags.wantsCount,
         timeRef: understood.timeRef,
@@ -861,6 +877,7 @@ const make = Effect.gen(function* () {
         flags: understood.flags,
         subQuestions: understood.subQuestions.map((sub) => sub.question),
         probes: understood.probes.map((probe) => `${probe.entityCanon}|${probe.attr}`),
+        extraTerms,
         arms: armRows,
         union: { candidates: union.candidates.length, dropped: union.dropped.length },
         timeScope: timeScopeRow,
@@ -877,7 +894,7 @@ const make = Effect.gen(function* () {
         ablations
       }
       const anchors: QuestionAnchors = {
-        terms: understood.terms,
+        terms,
         historical: understood.historical,
         wantsCount: understood.flags.wantsCount,
         timeRef: understood.timeRef,

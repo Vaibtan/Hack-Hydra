@@ -29,6 +29,7 @@
     "eval": "pnpm --filter @palimpsest/eval run eval",
     "splits": "pnpm --filter @palimpsest/eval run splits",
     "table": "pnpm --filter @palimpsest/eval run table",
+    "risk-coverage": "pnpm --filter @palimpsest/eval run risk-coverage",
     "serve": "pnpm --filter @palimpsest/server run serve",
     "smoke": "pnpm --filter @palimpsest/server run smoke",
     "demo": "pnpm --filter @palimpsest/demo run dev",
