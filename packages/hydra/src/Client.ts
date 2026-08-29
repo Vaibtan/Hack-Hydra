@@ -140,6 +140,53 @@ const chunkRows = <T>(rows: ReadonlyArray<T>, maxRows: number): Array<Array<T>> 
 }
 
 /**
+ * Sends one `UNWIND` write in chunks, halving when the engine refuses one.
+ *
+ * The 1 000-row chunk is sized by admission control (1 024) and by how fast a
+ * write *used to be* — 500 vertex upserts in ~55 ms. On the durable benchmark
+ * runtime it is not: every write waits on a 1 ms WAL flush to an object store,
+ * and under a four-user ingest a full chunk started crossing the engine's 30 s
+ * runtime cap around the ninth user, losing the whole user each time.
+ *
+ * So the batch halves and *keeps* the smaller size for the rest of the write,
+ * exactly as `deleteByKeys` does: one slow failure for the whole write rather
+ * than one per chunk. It costs nothing when the node is fast, because nothing
+ * fails.
+ *
+ * Takes its `send` as an argument so the halving is testable without a node —
+ * the behaviour it guards against only appears under load, which is the worst
+ * possible place to discover it is wrong.
+ */
+export const writeChunked = <E>(
+  send: (rows: ReadonlyArray<Readonly<Record<string, unknown>>>) => Effect.Effect<unknown, E>,
+  payload: ReadonlyArray<Readonly<Record<string, unknown>>>,
+  maxRows: number
+): Effect.Effect<number, E> =>
+  Effect.gen(function* () {
+    let size = maxRows
+    let chunks = chunkRows(payload, size)
+    let index = 0
+    let written = 0
+    while (index < chunks.length) {
+      const chunk = chunks[index]!
+      const outcome = yield* send(chunk).pipe(Effect.either)
+      if (outcome._tag === "Right") {
+        written += chunk.length
+        index++
+        continue
+      }
+      const failure = outcome.left as { _tag?: string }
+      if (failure._tag !== "HydraLimitError" || size === 1) {
+        return yield* Effect.fail(outcome.left)
+      }
+      size = Math.max(1, Math.floor(size / 2))
+      chunks = chunkRows(chunks.slice(index).flat(), size)
+      index = 0
+    }
+    return written
+  })
+
+/**
  * Admission control rejects an `UNWIND` batch of more than 1 024 rows outright:
  * `client_query_batch_items rejected by admission control: actual 2000 exceeds
  * limit 1024`. Writes themselves are fast at this size — 500 vertex upserts in
@@ -588,47 +635,12 @@ const make = Effect.gen(function* () {
       return Option.some(row)
     })
 
-  /**
-   * Sends one `UNWIND` write, halving the batch when the engine refuses it.
-   *
-   * The 1 000-row chunk is sized by admission control (1 024) and by how fast a
-   * write *used to be* — 500 vertex upserts in ~55 ms. On the durable benchmark
-   * runtime it is not: every write waits on a 1 ms WAL flush to an object store,
-   * and under a four-user ingest a full chunk started crossing the engine's 30 s
-   * runtime cap around the ninth user, losing the whole user each time.
-   *
-   * So the batch halves and *keeps* the smaller size for the rest of the write,
-   * exactly as `deleteByKeys` does: one slow failure for the whole write rather
-   * than one per chunk. It costs nothing when the node is fast, because nothing
-   * fails.
-   */
   const sendChunked = (
     statement: string,
     payload: ReadonlyArray<Readonly<Record<string, unknown>>>,
     maxRows: number
   ): Effect.Effect<number, HydraError> =>
-    Effect.gen(function* () {
-      let size = maxRows
-      let chunks = chunkRows(payload, size)
-      let index = 0
-      let written = 0
-      while (index < chunks.length) {
-        const chunk = chunks[index]!
-        const outcome = yield* send(statement, { rows: chunk }, {}).pipe(Effect.either)
-        if (outcome._tag === "Right") {
-          written += chunk.length
-          index++
-          continue
-        }
-        if (outcome.left._tag !== "HydraLimitError" || size === 1) {
-          return yield* Effect.fail(outcome.left)
-        }
-        size = Math.max(1, Math.floor(size / 2))
-        chunks = chunkRows(chunks.slice(index).flat(), size)
-        index = 0
-      }
-      return written
-    })
+    writeChunked((rows) => send(statement, { rows }, {}), payload, maxRows)
 
   const batchMerge = (
     label: string,

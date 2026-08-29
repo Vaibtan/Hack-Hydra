@@ -1,4 +1,4 @@
-export { classifyHydraHttpError, HydraClient } from "./Client.js"
+export { classifyHydraHttpError, contentAddressedId, HydraClient, writeChunked } from "./Client.js"
 export type { Params, QueryOptions, RelRow, VertexRow } from "./Client.js"
 export {
   DEFAULT_PATH_COUNT,
