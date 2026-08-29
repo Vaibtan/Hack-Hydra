@@ -20,8 +20,9 @@ services:
     # with `await_durable_writes` (`GraphDurabilityConfig::default()`, no env
     # override), so a write-heavy ingest is a stream of tiny durable PUTs and
     # MinIO's fixed per-object cost is what the ingest actually waits on. The
-    # disk read cache is deliberately off in this profile too, so reads land
-    # here as well.
+    # engine's disk read cache is on (see the hydradb service), so a *warm* read
+    # does not land here — a cold one does, and that is why a cold ask is
+    # 11 s against a warm 68 ms.
     mem_limit: 3g
     memswap_limit: 3g
     cpus: 6
@@ -71,24 +72,32 @@ services:
       GRAPH_BOLT_NODE_ADDRESSES: node-p0=hydradb:7687
       GRAPH_ADVERTISED_BOLT_ADDR: hydradb:7687
       GRAPH_DATA_CACHE_DIR: /var/cache/slatedb/data
-      GRAPH_DATA_CACHE_BYTES: "2147483648"
-      # Re-enabled on 2026-08-30 (#23), reversing the P0 profile's decision to
-      # disable it "until it exposes bounded depth/drop telemetry".
+      GRAPH_DATA_CACHE_BYTES: "536870912"
+      # **Chosen per phase**: `false` while ingesting, `true` while evaluating.
+      # `PALIMPSEST_HYDRADB_READ_CACHE=false docker compose up -d hydradb` before
+      # a bulk ingest; unset it before an eval. This is a runtime setting, not
+      # graph state — it changes how a read is served, never what is stored —
+      # and `runtime_config_sha256` records which phase a result came from.
       #
-      # Two things changed. First, this build *does* expose that telemetry:
+      # Read side: the P0 profile disabled this cache, calling it "only an
+      # optimization" and citing missing drop/depth telemetry. Both halves were
+      # retested on 2026-08-30. The telemetry exists in this build —
       # `graph_object_store_cache_event_queue_depth` and
-      # `graph_object_store_cache_events_dropped_total` are both on /metrics, so
-      # a dropped cache event is now a number a benchmark can report rather than
-      # an unbounded unknown. Second, the P0 note called this "only an
-      # optimization", and measurement says otherwise: with the cache off, the
-      # first convergence walk on a 20-user graph did not finish inside a 25 s
-      # ceiling, because every block it reads is an HTTP GET to MinIO. Warm it
-      # is 125 ms. A read path whose cold case is three orders of magnitude past
-      # its own target is not an optimization question.
+      # `graph_object_store_cache_events_dropped_total` are on /metrics, and both
+      # are recorded with the result — and it is not an optimization: with the
+      # cache off, the **first** convergence walk on a 20-user graph did not
+      # finish inside a 25 s ceiling, because every block it reads is an HTTP
+      # GET to MinIO. Warm it was 125 ms; with the cache, 68 ms.
       #
-      # The durable S3-compatible store remains the source of truth; this is a
-      # read cache on local disk, and both counters are recorded with the result.
-      GRAPH_OBJECT_STORE_CACHE_ENABLED: "true"
+      # Write side: SlateDB caches on *put* as well as on get, so during an
+      # ingest — a stream of tiny durable objects at a 1 ms flush interval — the
+      # cache's in-memory bookkeeping grows with the object count rather than
+      # with the graph. Enabled, RSS went from 1.79 GiB to 2.74 GiB in two
+      # minutes of a six-user ingest and the capacity gate stopped the node at
+      # 91.8 % of 6 GiB; disabled, the same ingest peaked at 1.52 GiB.
+      #
+      # The durable S3-compatible store is the source of truth either way.
+      GRAPH_OBJECT_STORE_CACHE_ENABLED: "${PALIMPSEST_HYDRADB_READ_CACHE:-true}"
       GRAPH_AUTH_TOKEN_FILE: /run/secrets/hydradb_auth_token
       GRAPH_ALLOW_PLAINTEXT: "true"
       # The engine's own default, restored from the 3000 ms floor (#23). 3000 is
@@ -123,6 +132,12 @@ services:
       GRAPH_MAX_UNFLUSHED_BYTES: "268435456"
       GRAPH_L0_SST_SIZE_BYTES: "67108864"
       GRAPH_L0_FLUSH_PARALLELISM: "4"
+      # Tier B is **not** applied. It was, briefly, when the capacity gate
+      # stopped the node at 91.8 % of 6 GiB — but that trip was the read cache
+      # caching on put during an ingest, not the matrix and row caches tier B
+      # bounds, and with tier B in place RSS still climbed 1.79 -> 2.74 GiB in
+      # two minutes. Fixing the cause instead cost nothing; tier B would have
+      # cost `graphMs` for a symptom it does not treat.
     depends_on:
       object-store-init:
         condition: service_completed_successfully

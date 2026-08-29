@@ -77,24 +77,52 @@ not the figure after it settles; the container limit has to cover the peak.
 |---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
 | 1 | 20 | 978 | ~192 700 / ~142 900 | 1.52 GiB | 1.90 GiB | 2.7 GB | **68 ms** | 11 397 ms | 24.4 min (12 users; 8 were already in) |
 
-### The read cache is not an optimization
+### The read cache belongs to the read phase, and only to it
 
-Measured at step 20, and it reversed a P0 decision. With
-`GRAPH_OBJECT_STORE_CACHE_ENABLED=false` — the P0 profile's setting, taken
-because the evictor "does not expose the bounded drop/depth telemetry required
-for a benchmark claim" and "affects only an optimization" — the **first**
-convergence walk on this graph did not finish inside a 25 s ceiling. Warm, the
-same walk was 125 ms. With the cache enabled and `GRAPH_DATA_CACHE_BYTES` raised
-to 2 GiB, warm fell to **68 ms** and cold to **11.4 s**.
+This one cost two false starts, and both halves of it are worth writing down.
 
-The telemetry objection no longer holds either: this build exposes
-`graph_object_store_cache_event_queue_depth` and
-`graph_object_store_cache_events_dropped_total` on `/metrics`, and both are
-recorded with every benchmark result. The durable S3-compatible store is still
-the source of truth; this is a read cache on local disk.
+**It is not "only an optimization".** The P0 profile disabled
+`GRAPH_OBJECT_STORE_CACHE_ENABLED` on the grounds that the evictor "does not
+expose the bounded drop/depth telemetry required for a benchmark claim" and that
+it "affects only an optimization". Neither survives measurement. This build
+*does* expose the telemetry — `graph_object_store_cache_event_queue_depth` and
+`graph_object_store_cache_events_dropped_total` are on `/metrics` and are
+recorded with every result — and with the cache off the **first** convergence
+walk on the 20-user graph did not finish inside a 25 s ceiling, because every
+block it reads is an HTTP GET to MinIO. Warm it was 125 ms. Enabled: warm
+**68 ms**, cold **11.4 s**.
+
+**And it must be off while ingesting.** SlateDB caches on *put* as well as on
+get, so during an ingest — a stream of tiny durable objects at the engine's
+hard-coded 1 ms flush interval — the cache's in-memory bookkeeping grows with
+the object count rather than with the graph. Enabled, RSS went 1.79 → 2.74 GiB
+in two minutes of a six-user ingest and the capacity gate stopped the node at
+**91.8 % of its 6 GiB limit at about 25 users**. Disabled, the same ingest
+peaked at 1.52 GiB at 20 users.
+
+So the cache is chosen per phase — `PALIMPSEST_HYDRADB_READ_CACHE=false` for an
+ingest, unset for an eval — and `runtime_config_sha256` records which phase a
+result came from. It is a runtime setting, not graph state: it changes how a
+read is served, never what is stored.
+
+**Tier B was applied and then withdrawn.** When the gate first tripped, the
+engine's `low_memory` storage preset went in on the theory that the matrix and
+row caches were growing. They were not: with tier B in place RSS still climbed
+1.79 → 2.74 GiB in two minutes. The cause was the cache-on-put above, and
+fixing it cost nothing, while tier B would have spent `graphMs` on a symptom it
+does not treat. It is not applied.
 
 A cold ask is reported and is **not** a target (spec, *Latency*). Nothing in the
 20-question smoke eval hit the 25 s read ceiling.
+
+### One stray vertex
+
+A single `WriteCheck` vertex (`writecheck|after-gate-stop`) was written by hand
+to prove the node was still writable after the capacity gate stopped it — it
+was, which also shows the writer lease releases cleanly on a graceful stop, the
+failure mode CONTEXT.md records for an *unclean* one. Deletes are impractical on
+this engine, nothing scans labels, and it belongs to no user prefix, so it is
+left in place and named here rather than quietly ignored.
 
 ## Final profile
 
