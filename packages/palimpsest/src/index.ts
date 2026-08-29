@@ -223,12 +223,13 @@ export type { QuestionAnchors } from "./Anchors.js"
 export {
   DEFAULT_READ_TIMEOUT_MS,
   MAX_SLOT_EXPANSION,
+  MAX_SLOT_MATES_PER_SLOT,
   Retrieve,
   determinismHash,
   questionDateInt,
   readTimeoutMs
 } from "./Retrieve.js"
-export type { AskOptions, AskProfile, AskResult, AskTimings, Pipeline, Receipt, RetrievalPlan } from "./Retrieve.js"
+export type { Ablations, AskOptions, AskProfile, AskResult, AskTimings, Pipeline, Receipt, RetrievalPlan } from "./Retrieve.js"
 export { NOT_IN_MEMORY, Reader, SPAN_CONTEXT, cutExcerpt, renderReaderPrompt } from "./Reader.js"
 export type { HydratedSpan, ReadAnswer, ReadOptions } from "./Reader.js"
 export {
@@ -242,6 +243,7 @@ export {
 } from "./TimeScope.js"
 export type { DayInterval, TimePrecision, TimeScopable, TimeScopeReport } from "./TimeScope.js"
 export {
+  ARM_CAP,
   ARM_PRIORITY,
   MAX_DISCOVERY_SEEDS,
   UNION_CAP,

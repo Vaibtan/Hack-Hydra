@@ -92,6 +92,13 @@ export interface RetrievalPlan {
   }
   /** What the reader is told the window was, when there is one. */
   readonly intervalSentence: string | null
+  /**
+   * Which Slot each surviving candidate fills. The pack stage needs it to say
+   * which of a Slot's claims was stated last, and a judge needs it to see that
+   * two excerpts were about the same thing.
+   */
+  readonly slots: Readonly<Record<string, string>>
+  readonly ablations: Ablations
 }
 
 /** Everything a judge needs to re-run the read by hand and get the same paths. */
@@ -210,6 +217,27 @@ export interface AskOptions {
   readonly maxLen?: number
   readonly pipeline?: Pipeline
   readonly profile?: AskProfile
+  /**
+   * v2 ablations. Each turns off exactly one stage and nothing else, so a dev
+   * run with one flag set measures that stage and not a different pipeline.
+   * They are recorded in the results envelope, never defaulted on.
+   */
+  readonly ablations?: Ablations
+}
+
+/**
+ * The stages an ablation run can switch off.
+ *
+ * Off means *skipped*, not "run and ignored": `--no-discovery` must not pay for
+ * the round trip it is measuring the value of, and `--no-select` must not pay
+ * for the LLM call. Anything else would make the latency column of an ablation
+ * table meaningless.
+ */
+export interface Ablations {
+  readonly noDecompose?: boolean
+  readonly noDiscovery?: boolean
+  readonly noTimeScope?: boolean
+  readonly noSelect?: boolean
 }
 
 /**
@@ -218,6 +246,15 @@ export interface AskOptions {
  * broad slot should not decide the reader's token budget.
  */
 export const MAX_SLOT_EXPANSION = 40
+
+/**
+ * How many slot-mates one Slot may contribute.
+ *
+ * v1 had no per-slot bound, so the forty newest slot-mates could all come from
+ * a single frequently-restated Slot and the other slots the question reached
+ * contributed nothing at all.
+ */
+export const MAX_SLOT_MATES_PER_SLOT = 5
 
 /**
  * `2023/04/10 (Mon) 17:50` to `20230410`, the form every date in the graph has.
@@ -576,6 +613,8 @@ const make = Effect.gen(function* () {
       const total = yield* Fiber.join(statsFiber)
 
       const historical = options.historical ?? understood.historical
+      const ablations = options.ablations ?? {}
+      const subQuestions = ablations.noDecompose === true ? [] : understood.subQuestions
       // `exactOptionalPropertyTypes` distinguishes an absent key from an
       // `undefined` one, and the union reads it as "no as-of cut" only when it
       // is absent — so an unscoped ask must not pass the key at all.
@@ -621,7 +660,7 @@ const make = Effect.gen(function* () {
             convergenceArm(hydra, uid, understood.terms, total, maxLen),
             false
           ),
-          ...understood.subQuestions.map((sub, index) =>
+          ...subQuestions.map((sub, index) =>
             runArm(
               `sub:${index}`,
               "subQuestion",
@@ -647,11 +686,14 @@ const make = Effect.gen(function* () {
       // the question's own words never name.
       const convergence = reaching[0]!
       const firstPass = unionArms(reaching, unionOptions)
-      const seeds = discoverySeeds(
-        convergence.rawPaths,
-        firstPass.candidates.slice(0, 10),
-        new Set(understood.terms)
-      )
+      const seeds =
+        ablations.noDiscovery === true
+          ? []
+          : discoverySeeds(
+              convergence.rawPaths,
+              firstPass.candidates.slice(0, 10),
+              new Set(understood.terms)
+            )
       const discovery = yield* runArm(
         "discovery",
         "discovery",
@@ -665,17 +707,33 @@ const make = Effect.gen(function* () {
       // 120 slots would let one broad slot decide the selector's whole table.
       const reachedArms = [...reaching, discovery]
       const secondPass = unionArms(reachedArms, unionOptions)
-      const skeys = yield* timed(
+      const found = yield* timed(
         "slotKeys",
-        withReadTimeout("slotKeys", candidateSlotKeys(secondPass.candidates.slice(0, topK)))
+        withReadTimeout("slotKeys", candidateSlots(secondPass.candidates.slice(0, topK)))
       )
       const slotClaims = yield* timed(
         "slotClaims",
-        withReadTimeout("slotClaims", readCandidateSlots(uid, skeys, total))
+        withReadTimeout("slotClaims", readCandidateSlots(uid, found.skeys, total))
       )
+      // Grouped, not a flat forty. v1 took the forty newest slot-mates across
+      // every slot, so one slot with a long history - `(me, weight)` on a user
+      // who logs it weekly - took the whole allowance and the other slots the
+      // question reached contributed nothing. Five per slot spends the same
+      // budget across the slots the candidates actually named.
       const alreadyReached = new Set(secondPass.candidates.map((candidate) => candidate.ckey))
-      const slotMates = slotClaims.claims
-        .filter((claim) => !alreadyReached.has(claim.ckey))
+      const perSlot = new Map<string, Array<ReachedClaim>>()
+      for (const claim of [...slotClaims.claims].sort(
+        (a, b) => b.sessionOrd - a.sessionOrd || a.ckey.localeCompare(b.ckey)
+      )) {
+        if (alreadyReached.has(claim.ckey)) continue
+        const slot = slotClaims.slotOf.get(claim.ckey) ?? ""
+        const bucket = perSlot.get(slot) ?? []
+        if (bucket.length >= MAX_SLOT_MATES_PER_SLOT) continue
+        bucket.push(claim)
+        perSlot.set(slot, bucket)
+      }
+      const slotMates = [...perSlot.values()]
+        .flat()
         .sort((a, b) => b.sessionOrd - a.sessionOrd || a.ckey.localeCompare(b.ckey))
         .slice(0, MAX_SLOT_EXPANSION)
       const arms: ReadonlyArray<LiveArm> = [
@@ -691,6 +749,7 @@ const make = Effect.gen(function* () {
       ]
 
       const union = unionArms(arms, unionOptions)
+      const slotOf = new Map([...found.slotOf, ...slotClaims.slotOf])
 
       // Supersession for the whole union, before the selector rather than after
       // it. Reading 120 keys and reading 30 is the same round trip, and doing it
@@ -714,7 +773,8 @@ const make = Effect.gen(function* () {
       // against the question's own date, so with no date there is nothing to
       // resolve it against and any interval it returned would be arithmetic on
       // year zero.
-      const interval = questionDate > 0 ? understood.timeInterval : null
+      const interval =
+        questionDate > 0 && ablations.noTimeScope !== true ? understood.timeInterval : null
       const scoped = applyTimeScope(union.candidates, interval)
 
       // ---- the verdict ---------------------------------------------------
@@ -792,7 +852,16 @@ const make = Effect.gen(function* () {
         arms: armRows,
         union: { candidates: union.candidates.length, dropped: union.dropped.length },
         timeScope: timeScopeRow,
-        intervalSentence: interval === null ? null : intervalSentence(interval)
+        intervalSentence: interval === null ? null : intervalSentence(interval),
+        // Only for the claims that got this far: the whole map is thousands of
+        // rows on a broad user, and the receipt is a record of one decision.
+        slots: Object.fromEntries(
+          union.candidates.flatMap((candidate) => {
+            const slot = slotOf.get(candidate.ckey)
+            return slot === undefined ? [] : [[candidate.ckey, slot] as const]
+          })
+        ),
+        ablations
       }
       const anchors: QuestionAnchors = {
         terms: understood.terms,
@@ -820,10 +889,24 @@ const make = Effect.gen(function* () {
       }
 
       // ---- selection -----------------------------------------------------
-      const selection = yield* timed(
-        "select",
-        select(question, options.questionDate ?? String(questionDate), understood.route, scoped.claims)
-      )
+      const selection =
+        ablations.noSelect === true
+          ? {
+              kept: orderCandidates(scoped.claims).slice(0, MAX_KEPT_TURNS),
+              dropped: [],
+              reasons: {},
+              fallback: false,
+              cached: true
+            }
+          : yield* timed(
+              "select",
+              select(
+                question,
+                options.questionDate ?? String(questionDate),
+                understood.route,
+                scoped.claims
+              )
+            )
       // A selector that kept nothing has not made a decision, it has failed
       // quietly — and an empty evidence set reads downstream as "the memory does
       // not contain it", which is a different claim entirely.
@@ -878,11 +961,17 @@ const make = Effect.gen(function* () {
     skeys: ReadonlyArray<string>,
     total: number
   ): Effect.Effect<
-    { readonly claims: ReadonlyArray<ReachedClaim>; readonly query: string | null; readonly paths: number },
+    {
+      readonly claims: ReadonlyArray<ReachedClaim>
+      readonly query: string | null
+      readonly paths: number
+      /** Which Slot each claim fills, for adjudication and slot grouping. */
+      readonly slotOf: ReadonlyMap<string, string>
+    },
     HydraError
   > =>
     Effect.gen(function* () {
-      if (skeys.length === 0) return { claims: [], query: null, paths: 0 }
+      if (skeys.length === 0) return { claims: [], query: null, paths: 0, slotOf: new Map() }
 
       const config: MsPathsConfig = {
         sourceLabel: "Slot",
@@ -897,9 +986,23 @@ const make = Effect.gen(function* () {
       }
       const rendered = renderMsPathsQuery(config)
       const paths = yield* hydra.msPaths(config)
+      // The walk is Slot -> Claim, so the source node names the Slot the target
+      // claim fills. Reading it here costs nothing; asking for it later would
+      // be a second identical round trip.
+      const slotOf = new Map<string, string>()
+      for (const path of paths) {
+        const skey = String(path.nodes[0]?.properties["skey"] ?? "")
+        const ckey = String(path.nodes[path.nodes.length - 1]?.properties["ckey"] ?? "")
+        if (skey !== "" && ckey !== "") slotOf.set(ckey, skey)
+      }
       // Scored with zero anchors: these claims did not converge, they were
       // pulled in by their slot, and must never outrank the ones that did.
-      return { claims: scoreReached(paths, total).map(withoutConvergence), query: rendered.query, paths: paths.length }
+      return {
+        claims: scoreReached(paths, total).map(withoutConvergence),
+        query: rendered.query,
+        paths: paths.length,
+        slotOf
+      }
     })
 
   const withoutConvergence = (claim: ReachedClaim): ReachedClaim => ({
@@ -913,8 +1016,23 @@ const make = Effect.gen(function* () {
   const candidateSlotKeys = (
     candidates: ReadonlyArray<ReachedClaim>
   ): Effect.Effect<ReadonlyArray<string>, HydraError> =>
+    Effect.map(candidateSlots(candidates), (found) => found.skeys)
+
+  /**
+   * The same read, keeping which candidate filled which Slot.
+   *
+   * v1 only ever needed the set of Slot keys to widen into. v2 needs the
+   * mapping as well — to group slot-mates by Slot rather than taking a flat
+   * forty, and to tell the reader which of a Slot's claims was stated last.
+   */
+  const candidateSlots = (
+    candidates: ReadonlyArray<ReachedClaim>
+  ): Effect.Effect<
+    { readonly skeys: ReadonlyArray<string>; readonly slotOf: ReadonlyMap<string, string> },
+    HydraError
+  > =>
     Effect.gen(function* () {
-      if (candidates.length === 0) return []
+      if (candidates.length === 0) return { skeys: [], slotOf: new Map() }
       const paths = yield* hydra.msPaths({
         sourceLabel: "Claim",
         sourceProperty: "ckey",
@@ -924,12 +1042,15 @@ const make = Effect.gen(function* () {
         maxLen: 1
       })
       const skeys = new Set<string>()
+      const slotOf = new Map<string, string>()
       for (const path of paths) {
-        const slot = path.nodes[path.nodes.length - 1]
-        const skey = String(slot?.properties["skey"] ?? "")
-        if (skey !== "") skeys.add(skey)
+        const skey = String(path.nodes[path.nodes.length - 1]?.properties["skey"] ?? "")
+        const ckey = String(path.nodes[0]?.properties["ckey"] ?? "")
+        if (skey === "") continue
+        skeys.add(skey)
+        if (ckey !== "") slotOf.set(ckey, skey)
       }
-      return [...skeys].sort()
+      return { skeys: [...skeys].sort(), slotOf }
     })
 
   return { ask, totalClaims, forgetUser } as const

@@ -63,6 +63,23 @@ export interface Candidate extends ReachedClaim {
  */
 export const UNION_CAP = 120
 
+/**
+ * How many claims one *walking* arm may contribute.
+ *
+ * A convergence walk over a broad question returns hundreds of claims with a
+ * long tail of convergence-1 rows that no selector will keep and every one of
+ * which costs a place in the union. Sixty is the point past which the tail is
+ * all noise on the dev questions; the probe and slot-mate arms have no cap here
+ * because their own reads are already bounded by the Slots they name.
+ *
+ * It is applied **inside** `unionArms`, after the as-of cut and before the
+ * union cap — a per-arm cap in the arm itself would be exactly the
+ * cap-before-as-of defect this module exists to fix.
+ */
+export const ARM_CAP = 60
+
+const CAPPED_KINDS: ReadonlyArray<ArmKind> = ["convergence", "subQuestion", "discovery"]
+
 export interface UnionReport {
   readonly candidates: ReadonlyArray<Candidate>
   /** Claims the cap removed, most-preferred first, for the receipt. */
@@ -90,9 +107,10 @@ const priorityOf = (kind: ArmKind): number => ARM_PRIORITY.indexOf(kind)
  */
 export const unionArms = (
   arms: ReadonlyArray<ArmResult>,
-  options: { readonly asOf?: number; readonly cap?: number } = {}
+  options: { readonly asOf?: number; readonly cap?: number; readonly armCap?: number } = {}
 ): UnionReport => {
   const cap = options.cap ?? UNION_CAP
+  const armCap = options.armCap ?? ARM_CAP
   const merged = new Map<string, Candidate>()
   const counts: Record<string, number> = {}
 
@@ -101,9 +119,20 @@ export const unionArms = (
       options.asOf === undefined
         ? arm.claims
         : arm.claims.filter((claim) => claim.sessionOrd <= options.asOf!)
-    counts[arm.label] = (counts[arm.label] ?? 0) + visible.length
+    // As-of first, then the arm's own cap, then the union cap. Each cut is over
+    // what the previous one left, so no budget is ever spent on a claim from
+    // after `k` and then thrown away.
+    const capped = CAPPED_KINDS.includes(arm.kind)
+      ? [...visible]
+          .sort(
+            (a, b) =>
+              b.convergence - a.convergence || b.score - a.score || a.ckey.localeCompare(b.ckey)
+          )
+          .slice(0, armCap)
+      : visible
+    counts[arm.label] = (counts[arm.label] ?? 0) + capped.length
 
-    for (const claim of visible) {
+    for (const claim of capped) {
       const existing = merged.get(claim.ckey)
       if (existing === undefined) {
         merged.set(claim.ckey, { ...claim, arms: [arm.label], kind: arm.kind })

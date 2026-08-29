@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  ARM_CAP,
   ARM_PRIORITY,
   MAX_DISCOVERY_SEEDS,
   UNION_CAP,
@@ -148,6 +149,26 @@ describe("the union cap", () => {
 
   it("defaults to 120", () => {
     expect(UNION_CAP).toBe(120)
+    // Across four walking arms, because one arm can no longer reach 120 on its
+    // own: `ARM_CAP` trims each walk to 60 first. Distinct keys per arm, so the
+    // union is the sum rather than one arm four times over.
+    const report = unionArms(
+      ["convergence", "sub:0", "sub:1", "sub:2"].map((label, a) =>
+        arm(
+          a === 0 ? "convergence" : "subQuestion",
+          label,
+          Array.from({ length: 50 }, (_, i) => claim({ ckey: `${label}-${String(i).padStart(3, "0")}` }))
+        )
+      )
+    )
+    expect(report.candidates).toHaveLength(120)
+    expect(report.dropped).toHaveLength(80)
+  })
+})
+
+describe("the per-arm cap", () => {
+  it("trims a walking arm to 60 before the union cap sees it", () => {
+    expect(ARM_CAP).toBe(60)
     const report = unionArms([
       arm(
         "convergence",
@@ -155,8 +176,58 @@ describe("the union cap", () => {
         Array.from({ length: 200 }, (_, i) => claim({ ckey: `c-${String(i).padStart(3, "0")}` }))
       )
     ])
-    expect(report.candidates).toHaveLength(120)
-    expect(report.dropped).toHaveLength(80)
+    expect(report.candidates).toHaveLength(60)
+    // Dropped is what the *union* cap removed. The tail this arm never
+    // contributed is not in it, and the counts say so: the arm reported 60.
+    expect(report.dropped).toHaveLength(0)
+    expect(report.counts["convergence"]).toBe(60)
+  })
+
+  it("keeps the highest-converging rows, not the first ones it saw", () => {
+    const report = unionArms(
+      [
+        arm(
+          "convergence",
+          "convergence",
+          Array.from({ length: 100 }, (_, i) =>
+            claim({ ckey: `c-${String(i).padStart(3, "0")}`, convergence: i })
+          )
+        )
+      ],
+      { armCap: 3 }
+    )
+    expect(report.candidates.map((c) => c.ckey)).toEqual(["c-099", "c-098", "c-097"])
+  })
+
+  it("does not cap a probe or a slot-mate arm, whose reads are bounded already", () => {
+    const rows = (label: string) =>
+      Array.from({ length: 80 }, (_, i) => claim({ ckey: `${label}-${String(i).padStart(3, "0")}` }))
+    const report = unionArms([
+      arm("probe", "probe:me|age", rows("p")),
+      arm("slotMate", "slotMate", rows("s"))
+    ])
+    expect(report.counts["probe:me|age"]).toBe(80)
+    expect(report.counts["slotMate"]).toBe(80)
+  })
+
+  it("cuts as-of BEFORE its own cap, so a post-k claim never costs a place", () => {
+    // The defect this whole module exists to fix, now with two cuts to get
+    // wrong instead of one. Ten claims, five of them after k, and an arm cap of
+    // five: capping first would take the five newest -- all of them invisible
+    // at k -- and the arm would contribute nothing at all.
+    const report = unionArms(
+      [
+        arm(
+          "convergence",
+          "convergence",
+          Array.from({ length: 10 }, (_, i) =>
+            claim({ ckey: `c-${i}`, sessionOrd: i + 1, convergence: i + 1 })
+          )
+        )
+      ],
+      { asOf: 5, armCap: 5 }
+    )
+    expect(report.candidates.map((c) => c.ckey)).toEqual(["c-4", "c-3", "c-2", "c-1", "c-0"])
   })
 })
 
