@@ -189,7 +189,16 @@ const splitFile: SplitFile | null = (() => {
     )
     process.exit(2)
   }
-  assertGenerationMatches(file)
+  // `assertGenerationMatches` throws, because it is a library function and a
+  // library should not decide a process's exit code. Here is where that
+  // decision belongs, and it is the same one its neighbours above make: a
+  // two-line refusal and exit 2, not a stack trace.
+  try {
+    assertGenerationMatches(file)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(2)
+  }
   return file
 })()
 
