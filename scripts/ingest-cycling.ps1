@@ -17,7 +17,7 @@
 # eval settings when the population is in.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ingest-cycling.ps1 `
-#     -Slice 200 -Prefix g3 -Users 4 -RestartAtPercent 70
+#     -Slice 200 -Prefix g3 -Users 3 -RestartAtPercent 70 [-Split dev]
 
 [CmdletBinding()]
 param(
@@ -44,6 +44,15 @@ param(
   # a measurement, which is why this is a switch.
   [ValidateSet("on", "off")]
   [string] $ReadCache = "off",
+  # Narrows the ingest to one half of the committed split.
+  #
+  # The dev half is what every result before the gate is measured on, and it is
+  # scattered through `benchmarkSlice` order rather than being a prefix of it.
+  # Ingesting `-Split dev` first turns an eleven-hour wait before the first
+  # number into about ninety minutes, with the test half loading afterwards
+  # while nothing is blocked on it.
+  [ValidateSet("", "dev", "test")]
+  [string] $Split = "",
   [string] $LogDirectory
 )
 
@@ -140,7 +149,9 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
   $log = Join-Path $LogDirectory ("cycle-{0:d2}.log" -f $cycle)
   $errLog = Join-Path $LogDirectory ("cycle-{0:d2}.err.log" -f $cycle)
   $process = Start-Process -FilePath "pnpm.cmd" `
-    -ArgumentList "ingest-slice", "--slice", "$Slice", "--prefix", "$Prefix", "--users", "$Users", "--skip-existing" `
+    -ArgumentList (@(
+      "ingest-slice", "--slice", "$Slice", "--prefix", "$Prefix", "--users", "$Users", "--skip-existing"
+    ) + $(if ($Split -ne "") { @("--split", $Split) } else { @() })) `
     -WorkingDirectory $repositoryRoot -RedirectStandardOutput $log -RedirectStandardError $errLog `
     -WindowStyle Hidden -PassThru
   Write-Output ("cycle {0} started, pid {1}, ceiling {2:n0} bytes of {3:n0}" -f $cycle, $process.Id, $ceiling, $limitBytes)

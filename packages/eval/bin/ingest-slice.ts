@@ -4,10 +4,13 @@ import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, Ingest, Supersede, Transcript, readUserStats } from "@palimpsest/palimpsest"
 import { Effect, Layer, Option } from "effect"
-import { benchmarkSlice } from "../src/index.js"
+import { existsSync, readFileSync } from "node:fs"
+import { dirname, resolve } from "node:path"
+import { benchmarkSlice, SPLIT_FILE, type SplitFile } from "../src/index.js"
 
 /**
  * `ingest-slice --slice 20 [--dataset s] [--users 3] [--prefix g2] [--skip-existing]`
+ * `             [--split dev|test]`
  *
  * Ingests the deterministic stratified slice, so the retrieval gate measures on
  * the same questions every time. Users run concurrently; sessions within a user
@@ -31,6 +34,17 @@ const arg = (name: string, fallback: string): string => {
   return index === -1 ? fallback : (process.argv[index + 1] ?? fallback)
 }
 
+const workspaceRoot = (): string => {
+  let dir = process.cwd()
+  for (let depth = 0; depth < 8; depth++) {
+    if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return process.cwd()
+}
+
 const sliceSize = Number(arg("slice", "20"))
 const dataset = arg("dataset", "s") as DatasetName
 const userConcurrency = Number(arg("users", "3"))
@@ -48,6 +62,21 @@ const skipExisting = process.argv.includes("--skip-existing")
  * answer every time.
  */
 const retries = Number(arg("retries", "1"))
+/**
+ * `--split dev|test` narrows the slice to the committed id list.
+ *
+ * The population is ingested in `benchmarkSlice` order, and the dev half is
+ * scattered through it — it is *whatever was already cached from the `g2` run*,
+ * not a prefix. That ordering costs nothing when the whole population fits in
+ * one sitting and a great deal when it does not: every result this project
+ * produces before the gate comes from the dev half, so ingesting the dev users
+ * first turns an eleven-hour wait into a ninety-minute one, with the test half
+ * loading afterwards while nothing is blocked on it.
+ *
+ * It changes no key and no claim. `--skip-existing` still applies, so running
+ * `--split dev` and then the whole slice ingests each user exactly once.
+ */
+const splitName = arg("split", "")
 const RETRY_PAUSE_MS = 30_000
 
 export const uidFor = (questionId: string, tag: string): string =>
@@ -67,9 +96,32 @@ const program = Effect.gen(function* () {
   const llm = yield* Llm
   const hydra = yield* HydraClient
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
-  const slice = benchmarkSlice(questions, sliceSize)
+  const population = benchmarkSlice(questions, sliceSize)
+  let slice = population
+  if (splitName !== "") {
+    if (splitName !== "dev" && splitName !== "test") {
+      console.error(`--split must be dev or test, not ${JSON.stringify(splitName)}`)
+      return yield* Effect.sync(() => process.exit(2))
+    }
+    const path = resolve(workspaceRoot(), SPLIT_FILE)
+    if (!existsSync(path)) {
+      console.error(`--split ${splitName} needs ${SPLIT_FILE}; run \`pnpm splits\` first`)
+      return yield* Effect.sync(() => process.exit(2))
+    }
+    const file = JSON.parse(readFileSync(path, "utf8")) as SplitFile
+    const wanted = new Set(splitName === "dev" ? file.dev : file.test)
+    slice = population.filter((question) => wanted.has(question.questionId))
+    if (slice.length !== wanted.size) {
+      console.error(
+        `${SPLIT_FILE} names ${wanted.size} ${splitName} questions but benchmarkSlice(${sliceSize}) ` +
+          `holds ${slice.length} of them`
+      )
+      return yield* Effect.sync(() => process.exit(2))
+    }
+  }
 
   console.log(`dataset    ${dataset}`)
+  console.log(`split      ${splitName === "" ? "(whole population)" : splitName}`)
   console.log(`slice      ${slice.length} questions, ${slice.reduce((n, q) => n + q.sessions.length, 0)} sessions`)
   console.log(`prefix     ${prefix === "" ? "(none)" : prefix}`)
   console.log(`existing   ${skipExisting ? "skipped" : "re-merged"}`)
