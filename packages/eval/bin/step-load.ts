@@ -3,6 +3,7 @@ import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest
 import { HydraClient } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import {
+  claimKind,
   ClaimGraph,
   Retrieve,
   Supersede,
@@ -41,6 +42,28 @@ const sliceSize = Number(arg("slice", "20"))
 const dataset = arg("dataset", "s") as DatasetName
 const prefix = arg("prefix", "g3")
 const askCount = Number(arg("asks", "5"))
+/**
+ * How many users to count edges on. Zero — off — by default.
+ *
+ * #23's box asks for edge counts and the honest options were always two: a
+ * store-wide scan, which this engine refuses past 250 000 candidates of a
+ * label, or a counter at write time, which `UserStats` does not keep and which
+ * cannot be added mid-population without half the users having it. This is the
+ * third: **count them exactly, on a sample, from source-driven `MSpaths` walks**
+ * — the same read shape the product path uses, driven from keys the user's own
+ * root already yields, and therefore indexed rather than scanned.
+ *
+ * It is a sample because it is not cheap: `HITS` alone is up to
+ * `MAX_TOKENS_PER_CLAIM` = 24 paths per claim, which is tens of thousands of
+ * rows and dozens of cursor pages for one user. Five users is minutes; two
+ * hundred would be an hour of read load for a number that is a constant times
+ * the claim count.
+ *
+ * **Never while an ingest is running.** Not because it scans a label — it does
+ * not — but because it is real read load on a node whose object store is
+ * already the bottleneck.
+ */
+const edgeSample = Number(arg("edges", "0"))
 
 const workspaceRoot = (): string => {
   let dir = process.cwd()
@@ -82,6 +105,73 @@ const median = (values: ReadonlyArray<number>): number => {
   return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!
 }
 
+/**
+ * One user's edges, counted exactly.
+ *
+ * Every walk is source-driven — from the user's `Claim.kind` constant, from the
+ * entity keys the root yields, from the session keys it yields — so every one
+ * is an indexed read and none of them is a label scan. `HAS_ENTITY`,
+ * `HAS_SLOT`, `HAS_SESSION`, `HAS_TURN` and `SUPERSEDED_BY` are not walked at
+ * all: the ingest wrote one per Entity, Slot, Session, Turn and supersession
+ * respectively, and `UserStats` already holds those counts.
+ *
+ * `HAS_CHUNK` is the one edge nothing knows, because a chunk exists only for a
+ * turn over HydraDB's 32 743-byte string cap. It is walked from the turn keys.
+ */
+const countEdges = (
+  hydra: HydraClient,
+  uid: string
+): Effect.Effect<Readonly<Record<string, number>>, never> =>
+  Effect.gen(function* () {
+    const fromClaims = (relType: string) =>
+      hydra
+        .msPaths({
+          sourceLabel: "Claim",
+          sourceProperty: "kind",
+          sourceValues: [claimKind(uid)],
+          relTypes: [relType],
+          relDirection: "outgoing",
+          maxLen: 1
+        })
+        .pipe(
+          Effect.map((paths) => paths.length),
+          Effect.catchAll(() => Effect.succeed(-1))
+        )
+
+    // Sequential, not concurrent: this engine degrades under read concurrency
+    // (6.0 -> 3.8 -> 2.9 statements/s at 3 -> 4 -> 8 writers, and reads behave
+    // the same way), and nothing is waiting on this number.
+    const evidence = yield* fromClaims("EVIDENCE")
+    const mentions = yield* fromClaims("MENTIONS")
+    const fills = yield* fromClaims("FILLS")
+    const hits = yield* fromClaims("HITS")
+
+    const entities = yield* readUserVertices(hydra, uid, "HAS_ENTITY").pipe(
+      Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<Readonly<Record<string, unknown>>>))
+    )
+    const entityKeys = entities
+      .map((row) => String(row["ekey"] ?? ""))
+      .filter((key) => key !== "")
+    const names =
+      entityKeys.length === 0
+        ? 0
+        : yield* hydra
+            .msPaths({
+              sourceLabel: "Entity",
+              sourceProperty: "ekey",
+              sourceValues: entityKeys,
+              relTypes: ["NAMES"],
+              relDirection: "incoming",
+              maxLen: 1
+            })
+            .pipe(
+              Effect.map((paths) => paths.length),
+              Effect.catchAll(() => Effect.succeed(-1))
+            )
+
+    return { EVIDENCE: evidence, MENTIONS: mentions, FILLS: fills, HITS: hits, NAMES: names }
+  })
+
 const program = Effect.gen(function* () {
   const hydra = yield* HydraClient
   const retrieve = yield* Retrieve
@@ -120,9 +210,9 @@ const program = Effect.gen(function* () {
     total.sessions + total.turns + total.claims + total.entities + total.slots + total.tokens +
     present.length
 
-  // **Edges are deliberately not reported.**
+  // **Edges are counted on a sample, or not at all.**
   //
-  // An earlier version of this file printed a number, and that number went into
+  // An earlier version of this file printed a formula, and that number went into
   // ops/hydradb/step-load-2026-08.md as a measured graph size. It was wrong by
   // roughly an order of magnitude: it charged two edges per claim, when
   // `ClaimGraph.writeSession` writes one `EVIDENCE`, one `FILLS`, one `MENTIONS`
@@ -130,10 +220,13 @@ const program = Effect.gen(function* () {
   // `MAX_TOKENS_PER_CLAIM` = 24) and one `NAMES` per entity-name token, plus
   // `Transcript` writes one `HAS_CHUNK` per spilled chunk.
   //
-  // The honest options are to count them — which needs a store-wide scan the
-  // engine refuses past 250 000 candidates of a label — or to record them at
-  // write time, which `UserStats` does not. So this prints the components it
-  // actually knows and leaves the total to whoever adds the counter.
+  // Two options were considered and rejected: a store-wide scan, which the
+  // engine refuses past 250 000 candidates of a label, and a write-time counter
+  // on `UserStats`, which cannot be added part-way through a population without
+  // half the users having it. `--edges N` is the third — count them exactly on
+  // N users with source-driven `MSpaths` walks, which are indexed reads, and
+  // report the population total as `ratio x claims`, labelled as the
+  // extrapolation it is.
 
   // ---- warm ask latency -------------------------------------------------
   const splitPath = resolve(workspaceRoot(), SPLIT_FILE)
@@ -198,7 +291,57 @@ const program = Effect.gen(function* () {
   console.log(`tokens        ${total.tokens}`)
   console.log(`supersessions ${total.supersessions}`)
   console.log(`vertices      >=${vertices}   (TurnChunk not counted)`)
-  console.log(`edges         not derivable from the stored counts - see the comment above`)
+
+  // ---- edges, on a sample -----------------------------------------------
+  let edgeLine = "edges         not counted (pass --edges N to sample N users)"
+  let edgeTableCell = "not counted"
+  if (edgeSample > 0) {
+    const sample = complete.slice(0, edgeSample)
+    const counted = yield* Effect.forEach(
+      sample,
+      (row) =>
+        countEdges(hydra, uidFor(row.question.questionId)).pipe(
+          Effect.map((edges) => ({ row, edges }))
+        ),
+      { concurrency: 1 }
+    )
+    let perClaim = 0
+    let sampledClaims = 0
+    let sampledEdges = 0
+    for (const { row, edges } of counted) {
+      // The per-user edges the walks did not have to make: the ingest wrote one
+      // per Entity, Slot, Session, Turn and supersession.
+      const known =
+        row.stats!.entities +
+        row.stats!.slots +
+        row.stats!.sessions +
+        row.stats!.turns +
+        row.stats!.supersessions
+      const walked = Object.values(edges).reduce((n, v) => n + Math.max(0, v), 0)
+      const refused = Object.entries(edges).filter(([, v]) => v < 0)
+      sampledClaims += row.stats!.claims
+      sampledEdges += known + walked
+      console.log(
+        `  edges ${uidFor(row.question.questionId).padEnd(22)} ` +
+          `${String(known + walked).padStart(7)} total  ` +
+          Object.entries(edges)
+            .map(([name, n]) => `${name} ${n < 0 ? "refused" : n}`)
+            .join("  ") +
+          `  root+turns+supersede ${known}` +
+          (refused.length === 0 ? "" : `  (${refused.length} walk(s) refused)`)
+      )
+    }
+    perClaim = sampledClaims === 0 ? 0 : sampledEdges / sampledClaims
+    // Extrapolated and labelled as such. The ratio is the measurement; the
+    // population total is the ratio times a claim count, and saying otherwise
+    // would repeat the mistake the corrected table above records.
+    const estimate = Math.round(perClaim * total.claims)
+    edgeLine =
+      `edges         ${sampledEdges} exact over ${sample.length} user(s) ` +
+      `(${perClaim.toFixed(2)} per claim); ~${estimate} across the population, extrapolated`
+    edgeTableCell = `~${estimate} (${perClaim.toFixed(2)}/claim, ${sample.length}-user sample)`
+  }
+  console.log(edgeLine)
   console.log(
     `warm ask      graphMs p50 ${median(graphMs)} ms, askMs p50 ${median(askMs)} ms ` +
       `over ${graphMs.length} dev questions`
@@ -206,7 +349,7 @@ const program = Effect.gen(function* () {
   console.log(`cold ask      graphMs p50 ${median(coldGraphMs)} ms (first ask on an unread user)`)
   console.log("")
   console.log(
-    `| ${complete.length} | ${total.sessions} | >=${vertices} | ${total.claims} | ` +
+    `| ${complete.length} | ${total.sessions} | >=${vertices} | ${edgeTableCell} | ${total.claims} | ` +
       `${median(graphMs)} ms | ${median(askMs)} ms | ${median(coldGraphMs)} ms |`
   )
 })
