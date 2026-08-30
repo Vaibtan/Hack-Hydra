@@ -166,7 +166,7 @@ export const PlanPanel = ({ plan }: { readonly plan: RetrievalPlan }) => {
       </Stage>
 
       <Stage n={5} title="sufficiency" took={plan.stages["sufficiency"]}>
-        {plan.sufficiency.skipped ? (
+        {plan.sufficiency.tier === "skipped" ? (
           <span className="muted">
             skipped — this route answers from one excerpt, and the fast profile never runs it
           </span>
@@ -199,6 +199,25 @@ export const PlanPanel = ({ plan }: { readonly plan: RetrievalPlan }) => {
           hydrated in {ms(plan.stages["hydrate"] ?? 0)} — verbatim turn text, never a claim's own
           words
         </span>
+        {plan.budget !== null && (
+          <div className="muted" style={{ marginTop: 6 }}>
+            {plan.budget.estimatedTokens} of {plan.budget.budget} reader tokens, estimated at{" "}
+            {plan.budget.charsPerToken} characters each
+            {plan.budget.dropped.length > 0 && (
+              <>
+                {" "}
+                — {plan.budget.dropped.length} excerpt
+                {plan.budget.dropped.length === 1 ? "" : "s"} dropped to fit
+              </>
+            )}
+            {/* Reachable and worth showing: probe hits are never dropped, so a
+                question that named several can exceed the budget with nothing
+                left that may be cut. */}
+            {plan.budget.overBudget && (
+              <> — over budget, and every excerpt left is one the question named</>
+            )}
+          </div>
+        )}
         {plan.intervalSentence !== null && (
           <div className="muted" style={{ marginTop: 6 }}>
             the reader was also told: {plan.intervalSentence}

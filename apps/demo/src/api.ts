@@ -96,12 +96,26 @@ export interface RetrievalPlan {
     readonly fallback: boolean
   }
   readonly sufficiency: {
+    /** `EXACT` / `INFERRABLE` / `PARTIAL`, or `skipped` when the call never ran. */
     readonly tier: string
     readonly missing: string
     readonly premise: string
-    readonly skipped: boolean
+    /** Excerpt ids the check cited, after the CURRENT-and-in-pack verification. */
+    readonly premiseContradictedBy: ReadonlyArray<string>
     readonly secondPass: boolean
   }
+  /** Null when the ask abstained before anything was packed. */
+  readonly budget: {
+    readonly budget: number
+    readonly estimatedTokens: number
+    readonly charsPerToken: number
+    readonly dropped: ReadonlyArray<{
+      readonly id: string
+      readonly reason: string
+      readonly chars: number
+    }>
+    readonly overBudget: boolean
+  } | null
   readonly intervalSentence: string | null
   readonly stages: Readonly<Record<string, number>>
   readonly askMs: number
