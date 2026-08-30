@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import {
   GATE_BOUNDS,
   falseAbstentions,
+  gateRefusals,
+  overwriteRefusal,
   readGate,
   renderGate,
   worstTypeRegression,
@@ -145,5 +147,65 @@ describe("abstention accuracy", () => {
     expect(report.passed).toBe(false)
     expect(report.numbers["v1AbsCorrect"]).toBe(3)
     expect(report.numbers["v2AbsCorrect"]).toBe(1)
+  })
+})
+
+describe("the refusals that stand in front of the gate", () => {
+  const dev = { split: "dev", prefix: "g3", dataset: "s", extractionGeneration: "extract-v1-abc" }
+
+  it("accepts two files that describe one measurement", () => {
+    expect(gateRefusals(dev, dev)).toEqual([])
+  })
+
+  it("refuses two files from different graphs", () => {
+    // The failure this exists for: two plausible tables, one number, and
+    // nothing in the output to say the halves came from different graphs.
+    const [refusal] = gateRefusals({ ...dev, prefix: "g2" }, dev)
+    expect(refusal).toContain("prefix")
+    expect(refusal).toContain("not a comparison")
+  })
+
+  it("refuses two files extracted by different prompts", () => {
+    expect(gateRefusals({ ...dev, extractionGeneration: "extract-v1-zzz" }, dev)[0]).toContain(
+      "extractionGeneration"
+    )
+  })
+
+  it("refuses a gate read on anything but dev", () => {
+    const refusals = gateRefusals({ ...dev, split: "test" }, { ...dev, split: "test" })
+    expect(refusals.some((line) => line.includes("read on dev"))).toBe(true)
+  })
+
+  it("refuses to gate on an ablation run", () => {
+    // An ablation is a different pipeline wearing the same system name, so the
+    // gate would be adopting something nobody is proposing to ship.
+    const refusals = gateRefusals(dev, { ...dev, ablations: ["noSelect", "noDiscovery"] })
+    expect(refusals.some((line) => line.includes("noSelect, noDiscovery"))).toBe(true)
+    expect(refusals.some((line) => line.includes("full pipeline"))).toBe(true)
+  })
+
+  it("reports every reason at once, not the first", () => {
+    // An operator who has to re-run to find the second problem re-runs.
+    const refusals = gateRefusals(
+      { ...dev, prefix: "g2", dataset: "m" },
+      { ...dev, ablations: ["noSelect"] }
+    )
+    expect(refusals.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe("the gate is read once", () => {
+  it("permits a first read", () => {
+    expect(overwriteRefusal(null)).toBeNull()
+  })
+
+  it("refuses a second, and names when the first happened", () => {
+    // A gate that can be re-read until it passes is not a gate. Overwriting is
+    // possible -- by deleting the record by hand, in a commit that says why --
+    // and that is deliberately not a flag.
+    const refusal = overwriteRefusal({ readAt: "2026-08-31T04:00:00.000Z" })
+    expect(refusal).toContain("2026-08-31T04:00:00.000Z")
+    expect(refusal).toContain("read once")
+    expect(refusal).toContain("by hand")
   })
 })

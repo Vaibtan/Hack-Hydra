@@ -8,6 +8,8 @@ import {
   renderErrorClasses,
   renderLatency,
   renderPaired,
+  renderReaderAb,
+  type ReaderAbFile,
   type AblationRow,
   renderTable,
   summariseByType,
@@ -133,6 +135,19 @@ const loadAblations = (): ReadonlyArray<AblationRow> => {
     .map((envelope) => ({ ablations: envelope.ablations ?? [], rows: envelope.rows }))
 }
 
+/**
+ * The reader-route A/B, when one has been run for this population.
+ *
+ * Its own file and its own section because it is not a system: both of its arms
+ * are `palimpsest-v2` reading identical evidence, and folding it into the
+ * accuracy table would put one pipeline in two rows.
+ */
+const loadReaderAb = (): ReaderAbFile | null => {
+  const path = resolve(resultsDir, `reader-ab-${label === "" ? "dev" : label}.json`)
+  if (!existsSync(path)) return null
+  return JSON.parse(readFileSync(path, "utf8")) as ReaderAbFile
+}
+
 const main = async (): Promise<void> => {
   const envelopes = load()
   if (envelopes.length === 0) {
@@ -235,6 +250,21 @@ const main = async (): Promise<void> => {
     "",
     renderAblations(byName.get("palimpsest-v2") ?? [], loadAblations()),
     "",
+    ...(() => {
+      const ab = loadReaderAb()
+      if (ab === null) return []
+      return [
+        "## Reader routes, on identical evidence",
+        "",
+        "The route-specific rules block against v1's single prompt, over the same packed " +
+          "excerpts. Every other v2 stage changes *what* the reader sees and is measured by the " +
+          "ablations above; this one changes only *how it is asked*, so a pipeline ablation " +
+          "would compare two different packs and this does not.",
+        "",
+        renderReaderAb(ab),
+        ""
+      ]
+    })(),
     "## Paired comparisons",
     "",
     ...pairs

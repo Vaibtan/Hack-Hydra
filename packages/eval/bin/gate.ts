@@ -1,7 +1,17 @@
 import { existsSync, readFileSync } from "node:fs"
 import { writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
-import { SPLIT_FILE, readGate, renderGate, type EvalRow, type SplitFile } from "../src/index.js"
+import {
+  SPLIT_FILE,
+  gateRefusals,
+  overwriteRefusal,
+  readGate,
+  renderGate,
+  readRuntimeConfig,
+  type EvalRow,
+  type GateEnvelope,
+  type SplitFile
+} from "../src/index.js"
 
 /**
  * `gate [--v1 results/palimpsest-dev.json] [--v2 results/palimpsest-v2-dev.json] [--write]`
@@ -56,25 +66,11 @@ const v2 = load(arg("v2", "results/palimpsest-v2-dev.json"))
 
 // Two files that came from different populations, generations or splits cannot
 // be compared, and a gate read across them would be meaningless in a way no
-// number in it would reveal.
-for (const field of ["split", "prefix", "extractionGeneration", "dataset"] as const) {
-  if (v1.envelope[field] !== v2.envelope[field]) {
-    console.error(
-      `the two results files disagree on \`${field}\`: ` +
-        `${JSON.stringify(v1.envelope[field])} vs ${JSON.stringify(v2.envelope[field])}`
-    )
-    console.error("  a gate read across two populations is not a comparison")
-    process.exit(2)
-  }
-}
-if (v2.envelope["split"] !== "dev") {
-  console.error(`the gate is read on dev, not ${JSON.stringify(v2.envelope["split"])}`)
-  process.exit(2)
-}
-const ablations = (v2.envelope["ablations"] ?? []) as ReadonlyArray<string>
-if (ablations.length > 0) {
-  console.error(`the v2 results are an ablation run (${ablations.join(", ")})`)
-  console.error("  the gate is read on the full pipeline")
+// number in it would reveal. The rules are in `Gate.ts` so they are testable;
+// deciding the exit code is this file's job.
+const refusals = gateRefusals(v1.envelope as GateEnvelope, v2.envelope as GateEnvelope)
+if (refusals.length > 0) {
+  for (const refusal of refusals) console.error(refusal)
   process.exit(2)
 }
 
@@ -89,10 +85,9 @@ if (!write) {
 
 const splitPath = resolve(root, SPLIT_FILE)
 const split = JSON.parse(readFileSync(splitPath, "utf8")) as SplitFile
-if (split.gate !== null) {
-  console.error(`the split file already carries a gate record, read at ${split.gate.readAt}`)
-  console.error("  the gate is read once. Delete the record by hand if it must be re-read,")
-  console.error("  and say in the commit message why.")
+const overwrite = overwriteRefusal(split.gate)
+if (overwrite !== null) {
+  console.error(overwrite)
   process.exit(2)
 }
 
@@ -108,6 +103,10 @@ const recorded: SplitFile = {
       ),
       v1File: arg("v1", "results/palimpsest-dev.json"),
       v2File: arg("v2", "results/palimpsest-v2-dev.json"),
+      // Which runtime the numbers behind this gate were measured on: the read
+      // cache and the query cap are chosen per phase, and a gate read on
+      // ingest-phase latency would be reading a different measurement.
+      runtimeConfigSha256: readRuntimeConfig().sha256,
       readerModel: String(v2.envelope["readerModel"] ?? ""),
       selectModel: String(v2.envelope["selectModel"] ?? ""),
       sufficiencyModel: String(v2.envelope["sufficiencyModel"] ?? ""),

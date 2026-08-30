@@ -18,6 +18,7 @@
     "table": "tsx bin/table.ts",
     "step-load": "tsx bin/step-load.ts",
     "risk-coverage": "tsx bin/risk-coverage.ts",
+    "reader-ab": "tsx bin/reader-ab.ts",
     "gate": "tsx bin/gate.ts"
   },
   "dependencies": {

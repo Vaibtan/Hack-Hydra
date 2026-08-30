@@ -34,8 +34,16 @@ export {
 } from "./Tables.js"
 export type { AblationRow, ErrorClass, ErrorClassCounts, PairedResult, PairedTable } from "./Tables.js"
 export { oracleSessionSpans } from "./Oracle.js"
-export { GATE_BOUNDS, falseAbstentions, readGate, renderGate, worstTypeRegression } from "./Gate.js"
-export type { AdoptionGateReport, Criterion } from "./Gate.js"
+export {
+  GATE_BOUNDS,
+  falseAbstentions,
+  gateRefusals,
+  overwriteRefusal,
+  readGate,
+  renderGate,
+  worstTypeRegression
+} from "./Gate.js"
+export type { AdoptionGateReport, Criterion, GateEnvelope } from "./Gate.js"
 export {
   canonicalise,
   configEnv,
@@ -50,3 +58,5 @@ export type {
   RuntimeConfigInput,
   RuntimeConfigResult
 } from "./RuntimeConfig.js"
+export { disagreements, renderReaderAb, summariseReaderAb } from "./ReaderAb.js"
+export type { ReaderAbArm, ReaderAbFile, ReaderAbRow, ReaderAbSummary } from "./ReaderAb.js"

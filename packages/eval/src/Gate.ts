@@ -218,3 +218,75 @@ export const renderGate = (report: AdoptionGateReport): string => {
   }
   return lines.join("\n")
 }
+
+// -------------------------------------------------------- reading it safely
+
+/**
+ * The envelope fields a gate reads across two results files.
+ *
+ * A subset of the real envelope, because these guards are about whether two
+ * files describe **one measurement**, and nothing else about them matters here.
+ */
+export interface GateEnvelope {
+  readonly split?: unknown
+  readonly prefix?: unknown
+  readonly dataset?: unknown
+  readonly extractionGeneration?: unknown
+  readonly ablations?: ReadonlyArray<string>
+}
+
+/**
+ * Why this pair of results files cannot be gated on, or an empty list.
+ *
+ * Every one of these is a way to read a gate that looks like a comparison and
+ * is not, and none of them shows up in the numbers the gate prints: two files
+ * from different graphs produce a perfectly plausible table. So the check is a
+ * refusal rather than a warning.
+ *
+ * Lived inline in `bin/gate.ts` until #22's review, which is why it had no
+ * tests — and the gate is the one thing in this project that is read once.
+ */
+export const gateRefusals = (
+  v1: GateEnvelope,
+  v2: GateEnvelope
+): ReadonlyArray<string> => {
+  const refusals: Array<string> = []
+  for (const field of ["split", "prefix", "extractionGeneration", "dataset"] as const) {
+    if (v1[field] !== v2[field]) {
+      refusals.push(
+        `the two results files disagree on \`${field}\`: ` +
+          `${JSON.stringify(v1[field])} vs ${JSON.stringify(v2[field])} — ` +
+          "a gate read across two populations is not a comparison"
+      )
+    }
+  }
+  if (v2.split !== "dev") {
+    refusals.push(
+      `the gate is read on dev, not ${JSON.stringify(v2.split)} — the test half is read once, ` +
+        "after the gate is written down"
+    )
+  }
+  const ablations = v2.ablations ?? []
+  if (ablations.length > 0) {
+    refusals.push(
+      `the v2 results are an ablation run (${ablations.join(", ")}) — ` +
+        "the gate is read on the full pipeline"
+    )
+  }
+  return refusals
+}
+
+/**
+ * Why an existing gate record may not be overwritten, or null.
+ *
+ * The record is the whole of "we did not tune on test": a gate that can be
+ * re-read until it passes is not a gate. Overwriting is possible — by deleting
+ * the record by hand, in a commit that says why — and that is deliberately not
+ * a flag.
+ */
+export const overwriteRefusal = (existing: { readonly readAt: string } | null): string | null =>
+  existing === null
+    ? null
+    : `the split file already carries a gate record, read at ${existing.readAt}. ` +
+      "The gate is read once. Delete the record by hand if it must be re-read, and say " +
+      "in the commit message why."

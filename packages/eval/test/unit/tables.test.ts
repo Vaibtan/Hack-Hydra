@@ -4,6 +4,8 @@ import {
   mcnemarExact,
   paired,
   pairedDifferenceCi,
+  renderAblations,
+  renderLatency,
   type PairedTable
 } from "../../src/Tables.js"
 import type { EvalRow } from "../../src/Results.js"
@@ -132,5 +134,103 @@ describe("error class", () => {
   it("falls back to the surviving evidence for a v1 row, which records no union", () => {
     expect(errorClass(row({ sessionHit: false }))).toBe("retrieval_miss")
     expect(errorClass(row({ sessionHit: true }))).toBe("reader")
+  })
+})
+
+describe("latency table", () => {
+  it("shows a dash where a row recorded nothing, because zero is a measurement", () => {
+    // Every baseline and every pre-timings v1 row has no `graphMs`. Printing
+    // `0 ms` for them would put the fastest number in the table next to the
+    // system that never measured it.
+    const table = renderLatency([
+      ["bm25", [row({ readerInputTokens: 4000 }), row({ readerInputTokens: 6000 })]]
+    ])
+    expect(table).toContain("| bm25 | — | — | — | — |")
+  })
+
+  it("reports p50 and p90 separately, so a long tail is visible", () => {
+    // The shape is the point: a pipeline whose median ask is 3 s and whose
+    // ninetieth percentile is 40 s is not a 3 s pipeline, and a p50 alone says
+    // it is. Nearest-rank, so five of ten slow rows move p90 and not p50.
+    const rows = [
+      ...Array.from({ length: 5 }, (_, i) => row({ questionId: `f${i}`, askMs: 3000, graphMs: 100 })),
+      ...Array.from({ length: 5 }, (_, i) => row({ questionId: `s${i}`, askMs: 40_000, graphMs: 100 }))
+    ]
+    const table = renderLatency([["palimpsest-v2", rows]])
+    expect(table).toContain("| palimpsest-v2 | 100 ms | 100 ms | 3.0 s | 40.0 s |")
+  })
+
+  it("prints sub-second latency in ms and anything longer in seconds", () => {
+    const table = renderLatency([["palimpsest-v2", [row({ graphMs: 68, askMs: 1500 })]]])
+    expect(table).toContain("68 ms")
+    expect(table).toContain("1.5 s")
+  })
+
+  it("thousands-separates reader tokens, which are read as a budget", () => {
+    const table = renderLatency([["fullctx", [row({ readerInputTokens: 128_000 })]]])
+    expect(table).toContain("128,000")
+  })
+
+  it("renders one row per system, in the order given", () => {
+    const table = renderLatency([
+      ["palimpsest", [row({})]],
+      ["palimpsest-v2", [row({})]]
+    ])
+    const lines = table.split("\n").slice(2)
+    expect(lines.map((line) => line.split("|")[1]!.trim())).toEqual(["palimpsest", "palimpsest-v2"])
+  })
+})
+
+describe("ablation table", () => {
+  const answerable = (id: string, judged: boolean, askMs?: number): EvalRow =>
+    row({ questionId: id, judged, ...(askMs === undefined ? {} : { askMs }) })
+
+  const full = [
+    answerable("1", true, 5000),
+    answerable("2", true, 5000),
+    answerable("3", false, 5000),
+    row({ questionId: "abs", isAbstention: true, judged: true })
+  ]
+
+  it("says so plainly when there is nothing to compare", () => {
+    expect(renderAblations(full, [])).toContain("No ablation runs")
+  })
+
+  it("scores against the answerable questions only", () => {
+    // The abstention questions are scored by a different rubric; counting them
+    // in an accuracy delta would let an ablation look better by refusing more.
+    const table = renderAblations(full, [
+      { ablations: ["noSelect"], rows: [answerable("1", true), answerable("2", false), answerable("3", false), row({ questionId: "abs", isAbstention: true, judged: true })] }
+    ])
+    expect(table).toContain("correct of 3")
+    expect(table).toContain("| _none (full plan)_ | 2 | — |")
+    expect(table).toContain("| noSelect | 1 | -1 |")
+  })
+
+  it("reports a stage whose removal helped with the same emphasis as one that hurt", () => {
+    const table = renderAblations(full, [
+      { ablations: ["noDiscovery"], rows: [answerable("1", true), answerable("2", true), answerable("3", true)] }
+    ])
+    expect(table).toContain("| noDiscovery | 3 | +1 |")
+  })
+
+  it("orders the rows so two runs diff line for line", () => {
+    const table = renderAblations(full, [
+      { ablations: ["noTimeScope"], rows: [answerable("1", true)] },
+      { ablations: ["noDecompose"], rows: [answerable("1", true)] }
+    ])
+    expect(table.indexOf("noDecompose")).toBeLessThan(table.indexOf("noTimeScope"))
+  })
+
+  it("names a combination of flags as one row", () => {
+    const table = renderAblations(full, [
+      { ablations: ["noDiscovery", "noSelect"], rows: [answerable("1", false)] }
+    ])
+    expect(table).toContain("| noDiscovery + noSelect |")
+  })
+
+  it("shows a dash for latency an ablation did not record", () => {
+    const table = renderAblations(full, [{ ablations: ["noSelect"], rows: [answerable("1", true)] }])
+    expect(table).toMatch(/\| noSelect \| 1 \| -1 \| — \|/)
   })
 })
