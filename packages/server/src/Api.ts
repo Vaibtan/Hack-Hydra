@@ -152,6 +152,20 @@ export const PlanSufficiency = Schema.Struct({
   secondPass: Schema.Boolean
 })
 
+/**
+ * What the token budget cost. Ids and reasons, not a count: a count says how
+ * many excerpts went and not which, or why.
+ */
+export const PlanBudget = Schema.Struct({
+  budget: Schema.Number,
+  estimatedTokens: Schema.Number,
+  charsPerToken: Schema.Number,
+  dropped: Schema.Array(
+    Schema.Struct({ id: Schema.String, reason: Schema.String, chars: Schema.Number })
+  ),
+  overBudget: Schema.Boolean
+})
+
 export const RetrievalPlan = Schema.Struct({
   route: Schema.String,
   routeReason: Schema.String,
@@ -164,6 +178,8 @@ export const RetrievalPlan = Schema.Struct({
   timeScope: PlanTimeScope,
   selection: PlanSelection,
   sufficiency: PlanSufficiency,
+  /** Null when the ask abstained before anything was packed. */
+  budget: Schema.NullOr(PlanBudget),
   intervalSentence: Schema.NullOr(Schema.String),
   /** Per-stage wall time. Concurrent stages overlap, so these do not sum. */
   stages: Schema.Record({ key: Schema.String, value: Schema.Number }),

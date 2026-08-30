@@ -81,6 +81,7 @@ export const projectPlan = (answered: V2Answer) => {
       premiseContradictedBy: [],
       secondPass: false
     } satisfies PlanSufficiency),
+    budget: plan.budget,
     intervalSentence: plan.intervalSentence,
     stages: {
       ...answered.ask.timings.stages,

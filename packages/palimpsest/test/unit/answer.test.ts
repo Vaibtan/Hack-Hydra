@@ -51,6 +51,7 @@ const plan = (over: Partial<RetrievalPlan> = {}): RetrievalPlan => ({
   unionSessions: ["s1"],
   ablations: {},
   sufficiency: null,
+  budget: null,
   ...over
 })
 
@@ -93,6 +94,9 @@ const readAnswer = (over: Partial<ReadAnswer> = {}): ReadAnswer =>
     estimatedTokens: 25,
     budgetDropped: 0,
     budgetDroppedSessions: [],
+    budgetDrops: [],
+    overBudget: false,
+    charsPerToken: 4,
     recited: false,
     ...over
   }) as ReadAnswer

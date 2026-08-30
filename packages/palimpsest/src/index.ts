@@ -236,6 +236,7 @@ export type {
   AskResult,
   AskTimings,
   Pipeline,
+  PlanBudget,
   PlanSufficiency,
   Receipt,
   RetrievalPlan

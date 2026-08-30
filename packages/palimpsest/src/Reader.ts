@@ -3,7 +3,15 @@ import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Schema } from "effect"
 import { turnKey } from "./Keys.js"
-import { adjudicate, applyBudget, dedupeByTurn, spanHash, type PackLabel } from "./Pack.js"
+import {
+  adjudicate,
+  applyBudget,
+  dedupeByTurn,
+  CHARS_PER_TOKEN,
+  spanHash,
+  type BudgetDrop,
+  type PackLabel
+} from "./Pack.js"
 import type { AsOfLabelled } from "./Scoring.js"
 import type { Route } from "./Understand.js"
 
@@ -326,6 +334,18 @@ export interface ReadAnswer {
    * say so.
    */
   readonly budgetDroppedSessions: ReadonlyArray<string>
+  /**
+   * Which excerpts the budget cut, with the reason the receipt records.
+   *
+   * A count says how many went; a reader of a receipt asking "why is the answer
+   * session not in the evidence" needs to know *which* — and that the reason
+   * was money rather than the selector's judgement.
+   */
+  readonly budgetDrops: ReadonlyArray<BudgetDrop>
+  /** The pack is over budget and nothing left may be dropped. See `BudgetReport`. */
+  readonly overBudget: boolean
+  /** The chars-per-token ratio this estimate used, echoed for the receipt. */
+  readonly charsPerToken: number
   /** The first answer cited nothing that exists and the reader was asked again. */
   readonly recited: boolean
 }
@@ -598,6 +618,9 @@ const make = Effect.gen(function* () {
           estimatedTokens: 0,
           budgetDropped: 0,
           budgetDroppedSessions: [],
+          budgetDrops: [],
+          overBudget: false,
+          charsPerToken: CHARS_PER_TOKEN,
           recited: false
         }
       }
@@ -639,6 +662,9 @@ const make = Effect.gen(function* () {
           estimatedTokens: 0,
           budgetDropped: 0,
           budgetDroppedSessions: [],
+          budgetDrops: [],
+          overBudget: false,
+          charsPerToken: CHARS_PER_TOKEN,
           recited: false
         }
       }
@@ -704,6 +730,9 @@ If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
         estimatedTokens: 0,
         budgetDropped: 0,
         budgetDroppedSessions: [],
+        budgetDrops: [],
+        overBudget: false,
+        charsPerToken: CHARS_PER_TOKEN,
         recited
       }
     })
@@ -754,7 +783,10 @@ If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
         hydrateMs,
         estimatedTokens: budgeted.estimatedTokens,
         budgetDropped: budgeted.dropped.length,
-        budgetDroppedSessions: [...new Set(budgeted.dropped.map((span) => span.sid))].sort()
+        budgetDroppedSessions: [...new Set(budgeted.dropped.map((span) => span.sid))].sort(),
+        budgetDrops: budgeted.drops,
+        overBudget: budgeted.overBudget,
+        charsPerToken: budgeted.charsPerToken
       }
     })
 

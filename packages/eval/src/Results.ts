@@ -95,6 +95,20 @@ export interface EvalRow {
   readonly keptSessions?: ReadonlyArray<string>
   /** Sessions the selector kept and the token budget then dropped. */
   readonly budgetDroppedSessions?: ReadonlyArray<string>
+  /**
+   * The excerpt ids the budget dropped, with their reason.
+   *
+   * The sessions above answer "did a recall miss happen here"; these answer
+   * "which excerpt, and was it money or the selector" — the two questions the
+   * error-class table cannot separate from a count alone.
+   */
+  readonly budgetDropIds?: ReadonlyArray<string>
+  /**
+   * The pack exceeded the budget and nothing left in it could be dropped —
+   * every remaining excerpt was a probe hit. The reader-token target is missed
+   * on this row on purpose, and this is what says so.
+   */
+  readonly overBudget?: boolean
   /** `span` or `turn` — how much of each turn the reader was shown. */
   readonly granularity?: string
   /** The chars/4 estimate of the packed excerpts, beside the provider's count. */

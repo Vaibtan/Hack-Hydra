@@ -121,12 +121,48 @@ export interface Packable {
 export const estimateTokens = (spans: ReadonlyArray<{ readonly excerpt: string }>): number =>
   Math.ceil(spans.reduce((n, span) => n + span.excerpt.length, 0) / CHARS_PER_TOKEN)
 
+/**
+ * Why one excerpt did not reach the reader.
+ *
+ * One value today, and named rather than implied because the receipt has to
+ * distinguish it from the two other ways an excerpt can be missing: the
+ * selector dropped it (`selector`), or the turn cap did (`turn_cap`). Those are
+ * decisions about relevance; this one is a decision about money, and a reader
+ * of a receipt asking "why is the answer session not in the evidence" needs to
+ * be told which.
+ */
+export type BudgetDropReason = "budget"
+
+/** One dropped excerpt, in the form the receipt and the results row record. */
+export interface BudgetDrop {
+  readonly ckey: string
+  /** The short id the reader would have cited — the claim key's tail. */
+  readonly id: string
+  readonly reason: BudgetDropReason
+  /** What dropping it saved, so the cut is auditable against the estimate. */
+  readonly chars: number
+}
+
 export interface BudgetReport<A> {
   readonly kept: ReadonlyArray<A>
   readonly dropped: ReadonlyArray<A>
+  /** The same drops, with the id and reason the receipt needs. */
+  readonly drops: ReadonlyArray<BudgetDrop>
   readonly estimatedTokens: number
   readonly charsPerToken: number
   readonly budget: number
+  /**
+   * The pack is still over budget and nothing left may be dropped.
+   *
+   * Reachable, and silent until now: `protectedKeys` are never dropped, so a
+   * question with many probe hits can produce a pack that exceeds the budget
+   * with nothing droppable in it. That is the right trade — losing the
+   * `(entity, attribute)` the question named outright to a token budget is
+   * losing the thing the question was about — but it must not be invisible,
+   * because the alternative is a reader-token number that quietly misses its
+   * target with no row saying why.
+   */
+  readonly overBudget: boolean
 }
 
 /**
@@ -150,6 +186,7 @@ export const applyBudget = <A extends { readonly ckey: string; readonly excerpt:
 
   const kept = [...spans]
   const dropped: Array<A> = []
+  let overBudget = false
   while (estimateTokens(kept) > budget) {
     // From the tail, skipping protected rows.
     let index = -1
@@ -159,7 +196,10 @@ export const applyBudget = <A extends { readonly ckey: string; readonly excerpt:
         break
       }
     }
-    if (index === -1) break
+    if (index === -1) {
+      overBudget = true
+      break
+    }
     dropped.push(kept[index]!)
     kept.splice(index, 1)
   }
@@ -167,9 +207,19 @@ export const applyBudget = <A extends { readonly ckey: string; readonly excerpt:
   return {
     kept,
     dropped,
+    // `ckey.slice(-8)` and not an import from `Select`: the short id is the
+    // reader's citation format and belongs to the pack, and `Pack` depending on
+    // the selector to name its own rows would be the wrong direction.
+    drops: dropped.map((span) => ({
+      ckey: span.ckey,
+      id: span.ckey.slice(-8),
+      reason: "budget" as const,
+      chars: span.excerpt.length
+    })),
     estimatedTokens: estimateTokens(kept),
     charsPerToken: CHARS_PER_TOKEN,
-    budget
+    budget,
+    overBudget
   }
 }
 

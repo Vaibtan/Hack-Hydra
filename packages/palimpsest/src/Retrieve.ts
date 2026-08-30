@@ -125,6 +125,36 @@ export interface RetrievalPlan {
    * `answerV2` — the only caller that has both halves — writes it back.
    */
   readonly sufficiency: PlanSufficiency | null
+  /**
+   * What the token budget cost, or `null` on a plan that has not been packed.
+   *
+   * Null coming out of `Retrieve.ask` and non-null coming out of `answerV2`,
+   * for the same reason as `sufficiency`: the budget is applied to the packed
+   * excerpts, which do not exist until after `ask` has returned.
+   */
+  readonly budget: PlanBudget | null
+}
+
+/**
+ * The token budget as the receipt records it.
+ *
+ * `dropped` carries ids and reasons rather than a count: a count says how many
+ * excerpts went, and a reader of a receipt asking "why is the answer session
+ * not in the evidence" needs to know which, and that the reason was money
+ * rather than the selector's judgement.
+ */
+export interface PlanBudget {
+  readonly budget: number
+  readonly estimatedTokens: number
+  /** The chars-per-token ratio, echoed because it is a calibrated constant. */
+  readonly charsPerToken: number
+  readonly dropped: ReadonlyArray<{
+    readonly id: string
+    readonly reason: string
+    readonly chars: number
+  }>
+  /** The pack exceeds the budget and nothing left in it may be dropped. */
+  readonly overBudget: boolean
 }
 
 /**
@@ -927,9 +957,10 @@ const make = Effect.gen(function* () {
         ),
         unionSessions: [...new Set(union.candidates.map((candidate) => candidate.sid))].sort(),
         ablations,
-        // Filled in by `answerV2`: the check judges the pack, and the pack does
-        // not exist yet here.
-        sufficiency: null
+        // Both filled in by `answerV2`: the check judges the pack and the
+        // budget cuts it, and the pack does not exist yet here.
+        sufficiency: null,
+        budget: null
       }
       const anchors: QuestionAnchors = {
         terms,

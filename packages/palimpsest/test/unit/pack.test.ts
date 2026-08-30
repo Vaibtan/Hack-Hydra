@@ -145,6 +145,44 @@ describe("the token budget", () => {
     expect(report).toMatchObject({ charsPerToken: 4, budget: 6000 })
   })
 
+  it("names every drop with its id, reason and cost", () => {
+    // A count says how many excerpts went. A reader of a receipt asking why the
+    // answer session is not in the evidence needs to know which, and that the
+    // reason was money rather than the selector's judgement.
+    const spans = [span("aaaaaaaakeep0001", 4000), span("bbbbbbbbdrop0002", 4000)]
+    const report = applyBudget(spans, { budget: 1500 })
+
+    expect(report.drops).toEqual([
+      { ckey: "bbbbbbbbdrop0002", id: "drop0002", reason: "budget", chars: 4000 }
+    ])
+  })
+
+  it("uses the reader's own citation form for the dropped id", () => {
+    // The id in the receipt has to be the id the reader would have cited, or a
+    // reader of the trace cannot match a drop to an excerpt.
+    const report = applyBudget([span("u|c|0123456789abcdef", 40_000)], { budget: 10 })
+    expect(report.drops[0]!.id).toBe("89abcdef")
+  })
+
+  it("flags a pack that is over budget with nothing droppable left", () => {
+    // Reachable and previously silent: a question with many probe hits produces
+    // a pack that exceeds the budget with nothing in it that may be cut. That
+    // is the right trade, but a reader-token number that quietly misses its
+    // target needs a row saying why.
+    const report = applyBudget([span("probe", 400_000)], {
+      budget: 10,
+      protectedKeys: new Set(["probe"])
+    })
+
+    expect(report.overBudget).toBe(true)
+    expect(report.drops).toEqual([])
+  })
+
+  it("does not flag a pack that fits, or one the budget successfully cut", () => {
+    expect(applyBudget([span("a", 40)]).overBudget).toBe(false)
+    expect(applyBudget([span("a", 4000), span("b", 4000)], { budget: 1500 }).overBudget).toBe(false)
+  })
+
   it("keeps everything when the pack already fits", () => {
     const spans = [span("a", 40), span("b", 40)]
     expect(applyBudget(spans).dropped).toEqual([])

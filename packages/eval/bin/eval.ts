@@ -407,6 +407,8 @@ const program = Effect.gen(function* () {
       let budgetDroppedSessions: ReadonlyArray<string> | undefined
       let granularity: string | undefined
       let estimatedTokens: number | undefined
+      let budgetDropIds: ReadonlyArray<string> | undefined
+      let overBudget: boolean | undefined
       let sufficiencyTier: string | undefined
       let sufficiencyMissing: string | undefined
       let sufficiencyPremise: string | undefined
@@ -479,6 +481,8 @@ const program = Effect.gen(function* () {
           granularity = read.granularity
           estimatedTokens = read.estimatedTokens
           budgetDroppedSessions = read.budgetDroppedSessions
+          budgetDropIds = read.budgetDrops.map((drop) => drop.id)
+          overBudget = read.overBudget
           recited = read.recited
         }
       } else if (system.startsWith("palimpsest")) {
@@ -578,6 +582,8 @@ const program = Effect.gen(function* () {
         ...(selectorFallback === undefined ? {} : { selectorFallback }),
         ...(unionSessions === undefined ? {} : { unionSessions }),
         ...(budgetDroppedSessions === undefined ? {} : { budgetDroppedSessions }),
+        ...(budgetDropIds === undefined || budgetDropIds.length === 0 ? {} : { budgetDropIds }),
+        ...(overBudget === true ? { overBudget } : {}),
         ...(granularity === undefined ? {} : { granularity }),
         ...(estimatedTokens === undefined ? {} : { estimatedTokens }),
         ...(sufficiencyTier === undefined ? {} : { sufficiencyTier }),
