@@ -33,6 +33,17 @@ param(
   [int] $SampleIntervalSeconds = 15,
   [ValidateRange(1, 100)]
   [int] $MaxCycles = 40,
+  # The object-store read cache during the ingest phase.
+  #
+  # The ops note turned it off for a reason that no longer holds: with it on,
+  # RSS grew ~2 GiB/min and the capacity gate stopped the node in three minutes.
+  # Cycling is what handles that now, and with the cache *off* every block
+  # compaction reads is an HTTP GET -- MinIO measured 450 % of its six CPUs and
+  # 251 GB of network out during an ingest, while HydraDB sat at 164 % of four.
+  # Whether trading more frequent restarts for fewer round trips is a net win is
+  # a measurement, which is why this is a switch.
+  [ValidateSet("on", "off")]
+  [string] $ReadCache = "off",
   [string] $LogDirectory
 )
 
@@ -77,7 +88,7 @@ function Restart-HydraForIngest {
   # The two phase-selected settings, every cycle. A node brought up without them
   # would ingest with the read cache on, which is the configuration that took
   # RSS up ~2 GiB a minute during writes.
-  $env:PALIMPSEST_HYDRADB_READ_CACHE = "false"
+  $env:PALIMPSEST_HYDRADB_READ_CACHE = if ($ReadCache -eq "on") { "true" } else { "false" }
   $env:PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS = "120000"
   & docker compose --project-directory $opsDirectory --env-file $envFile -f $composePath up -d hydradb | Out-Null
 

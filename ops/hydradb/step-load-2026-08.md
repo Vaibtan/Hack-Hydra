@@ -327,6 +327,52 @@ GiB is still the right limit, but the growth was never hydration: the first
 three rows of that table are a node that had just started, and a restarted node
 now reaches 4.3 MiB and stays low until writes begin.
 
+### The read cache stays off during an ingest, but not for the reason recorded
+
+Cycling the node removes the original argument for disabling the read cache
+during an ingest — RSS grew ~2 GiB/min with it on and the capacity gate stopped
+the node in three minutes, and that is now a scheduled restart rather than an
+incident. So it was worth re-testing, because the cost of leaving it off is
+large and had not been quantified.
+
+**What it costs.** During the population ingest, with the cache off:
+
+| container | CPU | network out |
+|---|---:|---:|
+| object store | **450 %** of its 6 CPUs | 251 GB |
+| HydraDB | 164 % of its 4 | 1.05 GB |
+
+The WSL load average was 9.63 on 8 processors. The object store is not merely
+the bottleneck, it is *CPU-saturated*, and a quarter of a terabyte of egress
+during a write-only workload is compaction: with the cache off, every block
+SlateDB rereads to compact an L0 SST is an HTTP GET.
+
+**Turning it on does shift that work.** Measured on the same graph: object store
+CPU fell 450 % -> 106 % and HydraDB's rose 164 % -> 303 %, exactly as the theory
+predicts.
+
+**And it is still not worth it.** With the cache on, the node reached the
+cycling driver's 70 % ceiling in **about four minutes, before a single user
+completed**. Partial writes carry over — every write is a content-addressed
+`MERGE` — but each cycle then pays the skip-check pass again for no completed
+user, and the skip pass grows with the population. With the cache off a cycle
+runs for over an hour and completes a dozen users.
+
+So the setting stays as the note had it, and the reason is now measured rather
+than assumed: not "the cache is dangerous during writes" but "the memory it
+costs buys shorter cycles than it saves round trips". `scripts/ingest-cycling.ps1`
+takes `-ReadCache on|off` so the comparison can be re-run in one command.
+
+**Throughput, and what it is not.** ~3.1 statements/s and ~4.6 minutes per user
+on a graph of this size, which puts the remaining 140 users at roughly eleven
+hours. The lever is not ingest concurrency (measured above: 3.06 vs 3.10
+statements/s at 4 vs 3 writers) and not the read cache (above). It is host CPU:
+WSL is running at a load average above its processor count, and both containers
+want more than they can get. Raising `.wslconfig` `processors` from 8 is the
+change that would move it; it is **not** made here, because it requires a WSL
+restart and `docs/run-log.md` records what a wedged WSL costs, and a graph that
+cannot be written to is a worse outcome than a slow one.
+
 ### One stray vertex
 
 A single `WriteCheck` vertex (`writecheck|after-gate-stop`) was written by hand

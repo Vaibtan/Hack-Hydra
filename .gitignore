@@ -30,3 +30,4 @@ ops/hydradb/.env.benchmark
 ops/hydradb/secrets/*
 !ops/hydradb/secrets/hydradb-auth-token.example
 .ingest-logs/
+.ingest-logs-*/
