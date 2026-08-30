@@ -13,7 +13,7 @@ import {
 import { Effect, Layer, Option } from "effect"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { benchmarkSlice, SPLIT_FILE, type SplitFile } from "../src/index.js"
+import { benchmarkSlice, readRuntimeConfig, SPLIT_FILE, type SplitFile } from "../src/index.js"
 
 /**
  * `step-load --slice 60 [--prefix g3] [--asks 5]`
@@ -173,7 +173,21 @@ const program = Effect.gen(function* () {
     askMs.push(warm.timings.askMs)
   }
 
+  // Which runtime this row was measured on. A step-load row taken with the read
+  // cache off (the ingest phase) and one taken with it on (the eval phase) are
+  // not the same measurement — 11 397 ms cold against 68 ms warm — so the row
+  // carries the hash of the configuration it came from.
+  const runtimeConfig = readRuntimeConfig()
   console.log(`prefix        ${prefix}`)
+  console.log(
+    runtimeConfig.sha256 === null
+      ? `runtime       (unavailable: ${runtimeConfig.reason})`
+      : `runtime       ${runtimeConfig.sha256}
+` +
+        `              read-cache ${runtimeConfig.readCacheEnabled ? "on" : "off"}, ` +
+        `query-cap ${runtimeConfig.queryRuntimeMs} ms, ` +
+        `mem-limit ${(runtimeConfig.memoryLimitBytes / 1024 ** 3).toFixed(1)} GiB`
+  )
   console.log(`population    ${population.length} questions`)
   console.log(`ingested      ${complete.length} complete, ${present.length - complete.length} partial`)
   console.log(`sessions      ${total.sessions}`)

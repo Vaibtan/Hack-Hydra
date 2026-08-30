@@ -36,3 +36,17 @@ export type { AblationRow, ErrorClass, ErrorClassCounts, PairedResult, PairedTab
 export { oracleSessionSpans } from "./Oracle.js"
 export { GATE_BOUNDS, falseAbstentions, readGate, renderGate, worstTypeRegression } from "./Gate.js"
 export type { AdoptionGateReport, Criterion } from "./Gate.js"
+export {
+  canonicalise,
+  configEnv,
+  fromInspected,
+  hashRuntimeConfig,
+  readRuntimeConfig
+} from "./RuntimeConfig.js"
+export type {
+  HydraRuntimeConfig,
+  HydraRuntimeConfigUnavailable,
+  InspectedContainer,
+  RuntimeConfigInput,
+  RuntimeConfigResult
+} from "./RuntimeConfig.js"

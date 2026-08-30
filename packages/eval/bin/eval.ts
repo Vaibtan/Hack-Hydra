@@ -29,6 +29,7 @@ import {
   judge,
   liveExtractionGeneration,
   oracleSessionSpans,
+  readRuntimeConfig,
   renderTable,
   summariseByType,
   topSpans,
@@ -307,6 +308,18 @@ const program = Effect.gen(function* () {
   console.log(`reader       ${llm.model}   judge  ${judgeModel}   profile ${profile}`)
   console.log(`prefix       ${prefix || "(none)"}   concurrency ${concurrency}`)
   console.log(`generation   ${liveExtractionGeneration().id}`)
+  // Read once per run and echoed here as well as into the envelope, because the
+  // phase it names is the difference between a latency number that means
+  // something and one that was measured against a 120 s cap with the read cache
+  // off. A run where Docker is not reachable says so and continues.
+  const runtimeConfig = readRuntimeConfig()
+  console.log(
+    runtimeConfig.sha256 === null
+      ? `runtime     (unavailable: ${runtimeConfig.reason})`
+      : `runtime      ${runtimeConfig.sha256.slice(0, 16)}  read-cache ` +
+        `${runtimeConfig.readCacheEnabled ? "on" : "off"}  query-cap ` +
+        `${runtimeConfig.queryRuntimeMs} ms`
+  )
   console.log("")
 
   if (needsGraph) {
@@ -620,6 +633,13 @@ const program = Effect.gen(function* () {
             sufficiencyModel: models.sufficiency,
             judgeModel,
             extractionGeneration: liveExtractionGeneration().id,
+            // `runtime_config_sha256` from `ops/hydradb/runtime-manifest.v1.json`,
+            // read off the running node rather than off the Compose file. Two
+            // settings are chosen per phase — the object-store read cache and
+            // the query runtime cap — so without this a result measured during
+            // an ingest and one measured for the gate are the same shape with
+            // quietly different runtimes behind them.
+            runtimeConfig,
             // Named in the envelope as well as on every row: an ablation file
             // and a full-pipeline file are otherwise the same shape with
             // quietly different numbers, and the filename does not say which.
