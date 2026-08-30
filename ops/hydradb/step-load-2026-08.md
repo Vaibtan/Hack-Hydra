@@ -373,6 +373,68 @@ change that would move it; it is **not** made here, because it requires a WSL
 restart and `docs/run-log.md` records what a wedged WSL costs, and a graph that
 cannot be written to is a worse outcome than a slow one.
 
+### The eval phase does not currently complete a cold ask — two node failures
+
+Stopped here under the run rule, and recorded rather than worked around.
+
+With the dev split complete (60/60 users, 0 failures) the node was switched to
+eval settings — read cache on, 30 s query cap — and three things happened in
+sequence.
+
+**1. A cold convergence walk does not finish inside the product's ceiling.**
+
+```
+pnpm ask --uid g3-001be529 --question "Where do I live?" --no-read
+HydraLimitError: retrieval stage convergence exceeded 25000 ms
+```
+
+`DEFAULT_READ_TIMEOUT_MS` is 25 s and the engine's eval-phase cap is 30 s. The
+ops note recorded 15 979 ms for the same walk on the **20-user** graph; at 60
+users it is past both. Warm it is 68 ms. So on this graph the first ask of a
+user cannot complete at the shipped configuration, and an eval whose first pass
+is all first-asks fails every row rather than producing slow ones.
+
+**2. Warming enough to prevent that does not fit.** `pnpm warm` on one user —
+its 51 sessions' turns, 455 slots' claims, 2 292 entities' tokens — took **28.8 s
+and took RSS to 2.09 GiB**, and ran out of its budget before reaching the
+Tokens. Sixty users of that does not fit in 5.5 GiB, and the graph is 60 of a
+planned 200.
+
+**3. The node stopped twice.**
+
+- The capacity gate stopped it at **90.45 %** of the 5.5 GiB limit during the
+  probe suite — a graceful stop; the graph is intact and writable, verified
+  afterwards.
+- A single subsequent cold ask killed the process outright: `RestartCount 1`,
+  **not** an OOM kill (`State.OOMKilled: false`), no error in the log, and
+  immediately before it:
+
+  ```
+  WARN slatedb::cached_object_store::storage_fs
+  evictor queue skipped cache write/access event because it was full 1 times in the last 30s
+  ```
+
+That warning is the same evictor the P0 profile disabled this cache for, and the
+same one the previous session cleared on the grounds that its telemetry exists.
+The telemetry does exist. The evictor still falls over.
+
+**The likely cause, untested:** `GRAPH_DATA_CACHE_BYTES` is **512 MiB** against
+an object store holding **~3.5 GB**. The disk read cache is roughly a seventh of
+the working set, so it thrashes; the evictor queue fills, its bookkeeping grows,
+and RSS climbs with churn rather than with data. It is a *disk* cache, so
+raising it costs disk and not RAM, and it is exactly the knob that would make a
+second read cheap without holding the graph in memory.
+
+That change is not made here. Two node failures in one run is the point at which
+this project stops and reports (`docs/run-log.md`), and a runtime change made
+while standing on a node that has just died twice is how a benchmark acquires a
+number nobody can explain.
+
+**What is unaffected.** The graph: 60/60 dev users complete, 0 failures, verified
+after both stops. The ingest path: it ran for hours at the ingest settings
+without a single node failure, and the two failures here are both read-side and
+both with the read cache on.
+
 ### One stray vertex
 
 A single `WriteCheck` vertex (`writecheck|after-gate-stop`) was written by hand

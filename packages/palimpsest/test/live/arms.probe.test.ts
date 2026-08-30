@@ -308,11 +308,12 @@ describe.runIf(hasDataset && split !== null)("whole-turn hydration", () => {
             relDirection: "incoming",
             maxLen: 1
           })
-          return {
-            uid,
-            doubled,
-            seen: new Set(paths.map((path) => String(path.nodes[0]?.properties["turn"] ?? "")))
+          const byKey = new Map<string, string>()
+          for (const path of paths) {
+            const key = String(path.nodes[0]?.properties["turn"] ?? "")
+            if (key !== "") byKey.set(key, String(path.nodes[0]?.properties["text"] ?? ""))
           }
+          return { uid, doubled, seen: new Set(byKey.keys()), byKey }
         }
         return null
       })
@@ -322,11 +323,19 @@ describe.runIf(hasDataset && split !== null)("whole-turn hydration", () => {
       "no repeated-sid dev user is ingested yet; run the ingest to completion first"
     ).not.toBeNull()
 
-    // The key built from `session.key` is the one the graph holds ...
+    // Both keys exist, and that is the hazard rather than a contradiction of
+    // it. A repeated session id appears twice in the haystack: the first
+    // occurrence is keyed by the bare id and the second by `id#2`, so
+    // `turnKey(uid, sid, 0)` names a real turn — of the *other* conversation.
+    // Hydrating by the bare id therefore reads the wrong session and does not
+    // error, which is exactly why Turn keys are built from `session.key`.
     expect(found!.seen.has(turnKey(found!.uid, found!.doubled.key, 0))).toBe(true)
-    // ... and the bare sid is not, which is the whole point: hydrating by it
-    // would read the other conversation without erroring.
-    expect(found!.seen.has(turnKey(found!.uid, found!.doubled.sid, 0))).toBe(false)
+    expect(found!.seen.has(turnKey(found!.uid, found!.doubled.sid, 0))).toBe(true)
+    // And they are different turns. If they were the same vertex the
+    // distinction would not matter and neither would the key rule.
+    expect(found!.byKey.get(turnKey(found!.uid, found!.doubled.key, 0))).not.toBe(
+      found!.byKey.get(turnKey(found!.uid, found!.doubled.sid, 0))
+    )
   }, 180_000)
 })
 
@@ -401,7 +410,6 @@ describe.runIf(hasDataset && split !== null)("the two-fact comparison question",
           const uid = uidFor(question.questionId)
           const stats = yield* readUserStats(hydra, uid)
           if (stats._tag !== "Some" || stats.value.claims === 0) continue
-
           // The probe arm on its own, which is the arm the box is about. A
           // union that contained `(me, age)` only because the convergence walk
           // happened to reach it would not be evidence for the probe.

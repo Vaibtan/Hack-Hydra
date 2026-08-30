@@ -55,10 +55,18 @@ for ($i = 0; $i -lt 90; $i++) {
   }
 }
 
+# `@(...)` wraps the *whole* pipeline: a one-container result would otherwise
+# come back as a bare string, and `$container[0]` would then be its first
+# character rather than the id.
 $container = @(
-  & docker ps --filter "label=com.docker.compose.project=palimpsest-hydradb-benchmark" `
-    --filter "label=com.docker.compose.service=hydradb" --format "{{.ID}}"
-) | ForEach-Object { ([string] $_).Trim() } | Where-Object { $_.Length -gt 0 }
+  @(
+    & docker ps --filter "label=com.docker.compose.project=palimpsest-hydradb-benchmark" `
+      --filter "label=com.docker.compose.service=hydradb" --format "{{.ID}}"
+  ) | ForEach-Object { ([string] $_).Trim() } | Where-Object { $_.Length -gt 0 }
+)
+if ($container.Count -ne 1) {
+  throw "expected exactly one running benchmark HydraDB container, found $($container.Count)"
+}
 
 # Read back rather than reported: `compose up -d` is a no-op when nothing
 # changed, and a phase switch that silently did not happen is the failure this
