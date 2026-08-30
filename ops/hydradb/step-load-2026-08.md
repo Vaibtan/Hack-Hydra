@@ -54,9 +54,10 @@ the bottleneck.
 
 ## Step load
 
-Ingested with `pnpm ingest-slice --slice N --prefix g3 --users 4
---skip-existing`, with `scripts/p0-hydradb-capacity-gate.ps1` sampling
-alongside. `--users 4` rather than the spec's 3: the spec pinned 3 because it
+Ingested with `pnpm ingest-slice --slice N --prefix g3 --users 3
+--skip-existing` (step 1 was run at `--users 4`; see the re-measurement below),
+with `scripts/p0-hydradb-capacity-gate.ps1` sampling alongside. Step 1's
+`--users 4` rather than the spec's 3: the spec pinned 3 because it
 was the concurrency that completed 60 users with 0 failures *on the previous
 runtime*, which had a local-file object store and none of the round trips this
 one makes. Ingest concurrency does not change the resulting graph — every write
@@ -151,6 +152,27 @@ low end that is fast, and the reason is structural rather than tuning.
 `--users 4` is what the population is ingested at: the only setting with a clean
 completed step behind it (12 users, 0 failures, 24.4 min), and within noise of
 the best rate measured.
+
+**Re-measured on 2026-08-31, and the table above does not hold on this
+runtime.** Sampled off `graph_query_completed` over two-minute windows during
+the population ingest, on the 5.5 GiB node with the read cache off, at about
+55 users in the graph:
+
+| `--users` | statements/s |
+|---:|---:|
+| 4 | 3.06 |
+| 3 | 3.10 |
+
+A 1 % difference, not a 58 % one. Concurrency is **not** the lever on this
+configuration: the bottleneck is the object-store round trip behind a single
+writer lease, and three writers saturate it as completely as four. The earlier
+6.0-at-3 figure was measured on a smaller graph and a different container
+profile and does not reproduce.
+
+The population is therefore ingested at the spec's **`--users 3`**, not 4. Not
+because it is faster — it is not, measurably — but because it is what the spec
+says, it costs nothing, and it removes a deviation that would otherwise have had
+to be argued for on the ticket.
 
 ### A first-touch eval row is a cold row
 

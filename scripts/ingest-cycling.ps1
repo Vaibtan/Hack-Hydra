@@ -23,7 +23,7 @@
 param(
   [int] $Slice = 200,
   [string] $Prefix = "g3",
-  [int] $Users = 4,
+  [int] $Users = 3,
   # Well below the capacity gate's 90 %: the point is to cycle the node before
   # the gate has to stop it, so a restart is a scheduled cost rather than an
   # incident.
