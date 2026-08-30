@@ -17,6 +17,8 @@ export {
   linkToUser,
   readUserStats,
   readUserVertices,
+  WARM_BUDGET_MS,
+  WARM_SOURCES_PER_WALK,
   warmUser,
   writeUserStats
 } from "./User.js"

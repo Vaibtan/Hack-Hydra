@@ -377,6 +377,10 @@ export const WarmResponse = Schema.Struct({
   /** Claims reached through `FILLS` from the slots — the shape of Query 2. */
   slotClaims: Schema.Number,
   turns: Schema.Number,
+  /** Walks that failed. A warm that reached nothing must not look like success. */
+  failed: Schema.Number,
+  /** The budget ran out before every walk was made. */
+  truncated: Schema.Boolean,
   ms: Schema.Number
 })
 

@@ -349,6 +349,8 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
             tokens: it.tokens,
             slotClaims: it.slotClaims,
             turns: it.turns,
+            failed: it.failed,
+            truncated: it.truncated,
             ms: it.ms
           }
         })

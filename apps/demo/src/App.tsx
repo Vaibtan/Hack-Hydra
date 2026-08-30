@@ -54,9 +54,15 @@ export const App = () => {
       // indexed read by id off the `User` vertex and touches none of the blocks
       // a convergence walk reads; `warm` walks what an ask walks, so the first
       // question after selecting someone does not pay an 11 s cold convergence
-      // walk in front of an audience. It resolves to null on failure and is
-      // never awaited for its value.
-      const [rows, s] = await Promise.all([api.sessions(who), api.stats(who), api.warm(who)])
+      // walk in front of an audience.
+      //
+      // **Not awaited.** It has a server-side budget of its own and can take
+      // seconds on a broad user, and blocking the session list behind it would
+      // trade a slow first question for a slow first *screen* — which is worse,
+      // because the audience is already looking at it. It resolves to null on
+      // failure and nothing here reads its value.
+      void api.warm(who)
+      const [rows, s] = await Promise.all([api.sessions(who), api.stats(who)])
       setSessions(rows)
       setStats(s)
     } catch (cause: unknown) {

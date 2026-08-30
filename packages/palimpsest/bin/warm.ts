@@ -5,7 +5,7 @@ import { Effect, Layer, Option } from "effect"
 import { userKey, warmUser } from "@palimpsest/palimpsest"
 
 /**
- * `warm --uid g3-001be529 [--uid …] [--deep]`
+ * `warm --uid g3-001be529 [--uid …] [--deep] [--budget-ms 15000]`
  *
  * Reads the blocks an ask will read, before the ask, so the demo's first
  * question is not the one that pays for them. The walk itself — and why it
@@ -24,9 +24,12 @@ const uids = process.argv.reduce<Array<string>>((acc, value, index) => {
   return acc
 }, [])
 const deep = process.argv.includes("--deep")
+const budgetArg = process.argv.indexOf("--budget-ms")
+const budgetMs =
+  budgetArg === -1 ? undefined : Number(process.argv[budgetArg + 1] ?? "")
 
 if (uids.length === 0) {
-  console.error("usage: warm --uid <uid> [--uid <uid> …] [--deep]")
+  console.error("usage: warm --uid <uid> [--uid <uid> …] [--deep] [--budget-ms 15000]")
   process.exit(2)
 }
 
@@ -36,7 +39,10 @@ const program = Effect.gen(function* () {
   const hydra = yield* HydraClient
 
   for (const uid of uids) {
-    const report = yield* warmUser(hydra, uid, { deep })
+    const report = yield* warmUser(hydra, uid, {
+      deep,
+      ...(budgetMs === undefined || !Number.isFinite(budgetMs) ? {} : { budgetMs })
+    })
     if (Option.isNone(report)) {
       console.log(`${uid.padEnd(24)} no User vertex — nothing to warm`)
       continue
@@ -48,7 +54,10 @@ const program = Effect.gen(function* () {
         `${String(it.tokens).padStart(5)} tokens  ${String(it.slotClaims).padStart(5)} slot claims  ` +
         `${String(it.turns).padStart(5)} turns` +
         (deep ? `  ${String(it.hitClaims).padStart(6)} claims via HITS` : "") +
-        `  ${it.ms} ms  (root key ${userKey(uid)})`
+        `  ${it.ms} ms` +
+        (it.truncated ? "  TRUNCATED (budget)" : "") +
+        (it.failed > 0 ? `  ${it.failed} walk(s) FAILED` : "") +
+        `  (root key ${userKey(uid)})`
     )
   }
 })

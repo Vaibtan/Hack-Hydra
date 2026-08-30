@@ -222,11 +222,11 @@ export const readUserVertices = (
     )
 
 /**
- * What a warm reached, per level.
+ * What a warm reached.
  *
  * Counts rather than nothing, because a warm that silently touched nothing is
  * indistinguishable from one that worked — which is exactly how the first
- * version of this went unnoticed.
+ * version of this went unnoticed, and then how the second one did.
  */
 export interface WarmReport {
   readonly entities: number
@@ -237,10 +237,40 @@ export interface WarmReport {
   readonly turns: number
   /** Non-zero only under `deep`. */
   readonly hitClaims: number
+  /** Walks that failed. Reported, never swallowed into a zero. */
+  readonly failed: number
+  /** The budget ran out before every walk was made. */
+  readonly truncated: boolean
   readonly ms: number
 }
 
-/** Every key at the far end of a one-hop walk, best-effort. */
+/**
+ * How many source keys one `MSpaths` walk may carry.
+ *
+ * Measured on 2026-08-31 against a 51-session user: 5 entity keys returned 12
+ * paths in 573 ms, 50 returned 112 in 5.8 s, and **2 292 returned nothing at
+ * all** — the walk exceeded a limit and failed. The first version of this
+ * function caught that failure and reported it as an empty result, so a warm
+ * that touched no Token at all looked exactly like a user with no Tokens.
+ *
+ * 200 keeps a fan-out walk inside the row cap and well inside the per-call
+ * ceiling.
+ */
+export const WARM_SOURCES_PER_WALK = 200
+
+/**
+ * How long a warm may take before it stops and says it stopped.
+ *
+ * A warm is an optimisation with a deadline: the demo calls it on user select,
+ * and its entire value is in being finished before the first question. A user
+ * with 2 292 entities cannot have every Token warmed inside any budget a person
+ * would wait through — at the measured rate that is minutes — so the warm takes
+ * what fits and **reports `truncated`** rather than running to completion or
+ * pretending it did.
+ */
+export const WARM_BUDGET_MS = 15_000
+
+/** Every key at the far end of a one-hop walk, in bounded batches. */
 const warmHop = (
   hydra: HydraClient,
   source: {
@@ -250,35 +280,48 @@ const warmHop = (
   },
   relType: string,
   direction: "outgoing" | "incoming",
-  targetProperty: string
-): Effect.Effect<ReadonlyArray<string>> => {
-  if (source.values.length === 0) return Effect.succeed([])
-  return hydra
-    .msPaths({
-      sourceLabel: source.label,
-      sourceProperty: source.property,
-      sourceValues: [...source.values],
-      relTypes: [relType],
-      relDirection: direction,
-      maxLen: 1
-    })
-    .pipe(
-      Effect.map((paths) => {
-        const keys = new Set<string>()
-        for (const path of paths) {
-          const node = path.nodes[path.nodes.length - 1]
-          const key = String(node?.properties[targetProperty] ?? "")
-          if (key !== "") keys.add(key)
-        }
-        return [...keys] as ReadonlyArray<string>
-      }),
-      // A warm exists to make the *next* read faster. Failing it must never be
-      // able to fail the thing it was warming for, so a level that could not be
-      // read reports zero and the ask that follows pays what it would have paid
-      // anyway.
-      Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<string>))
-    )
-}
+  targetProperty: string,
+  deadline: number
+): Effect.Effect<{
+  readonly keys: ReadonlyArray<string>
+  readonly failed: number
+  readonly truncated: boolean
+}> =>
+  Effect.gen(function* () {
+    const keys = new Set<string>()
+    let failed = 0
+    let truncated = false
+    for (let at = 0; at < source.values.length; at += WARM_SOURCES_PER_WALK) {
+      if (Date.now() >= deadline) {
+        truncated = true
+        break
+      }
+      const batch = source.values.slice(at, at + WARM_SOURCES_PER_WALK)
+      const outcome = yield* Effect.either(
+        hydra.msPaths({
+          sourceLabel: source.label,
+          sourceProperty: source.property,
+          sourceValues: batch,
+          relTypes: [relType],
+          relDirection: direction,
+          maxLen: 1
+        })
+      )
+      if (outcome._tag === "Left") {
+        // Counted, not swallowed. A warm is best-effort — it must never be able
+        // to fail the thing it was warming for — but "best effort" is not
+        // "silently nothing", and the difference is the whole of this fix.
+        failed++
+        continue
+      }
+      for (const path of outcome.right) {
+        const node = path.nodes[path.nodes.length - 1]
+        const key = String(node?.properties[targetProperty] ?? "")
+        if (key !== "") keys.add(key)
+      }
+    }
+    return { keys: [...keys] as ReadonlyArray<string>, failed, truncated }
+  })
 
 /**
  * Reads the blocks an ask will read, before the ask.
@@ -303,24 +346,30 @@ const warmHop = (
  * Levels, in the order an ask reads them:
  *
  * 1. `User` -> Entity / Slot / Session
- * 2. Entity <-`NAMES`- Token · Slot <-`FILLS`- Claim (Query 2's shape) ·
- *    Session -`HAS_TURN`-> Turn (what hydration reads)
+ * 2. Session -`HAS_TURN`-> Turn (what hydration reads) · Slot <-`FILLS`- Claim
+ *    (Query 2's shape) · Entity <-`NAMES`- Token
  * 3. `deep` only: Token -`HITS`-> Claim, the convergence walk itself
  *
- * `deep` is off by default because it is that user's whole inverted index
- * rather than one question's slice of it — tens of thousands of paths and many
- * cursor pages on a 2 000-claim user, where a real question walks from five to
- * fifteen anchors. Whether it buys anything is a measurement.
+ * Level 2 runs in that order, sequentially, so a warm that runs out of budget
+ * has warmed the stages an answer cannot skip rather than a random third of all
+ * of them.
+ *
+ * **Bounded twice, both times because the unbounded version does not work.**
+ * Source keys are chunked at `WARM_SOURCES_PER_WALK`, because a single walk from
+ * 2 292 entity keys fails outright; and the whole thing stops at
+ * `WARM_BUDGET_MS` and reports `truncated`. `deep` is off by default because it
+ * is that user's whole inverted index rather than one question's slice of it.
  *
  * Reads only, so warming twice is free and warming the wrong user is harmless.
  */
 export const warmUser = (
   hydra: HydraClient,
   uid: string,
-  options: { readonly deep?: boolean } = {}
+  options: { readonly deep?: boolean; readonly budgetMs?: number } = {}
 ): Effect.Effect<Option.Option<WarmReport>, HydraError> =>
   Effect.gen(function* () {
     const started = Date.now()
+    const deadline = started + (options.budgetMs ?? WARM_BUDGET_MS)
     const stats = yield* readUserStats(hydra, uid)
     if (Option.isNone(stats)) return Option.none()
 
@@ -338,52 +387,54 @@ export const warmUser = (
     ): ReadonlyArray<string> =>
       rows.map((row) => String(row[property] ?? "")).filter((key) => key !== "")
 
-    const [tokens, slotClaims, turns] = yield* Effect.all(
-      [
-        warmHop(
-          hydra,
-          { label: "Entity", property: "ekey", values: keysOf(entities, "ekey") },
-          "NAMES",
-          "incoming",
-          "tkey"
-        ),
-        warmHop(
-          hydra,
-          { label: "Slot", property: "skey", values: keysOf(slots, "skey") },
-          "FILLS",
-          "incoming",
-          "ckey"
-        ),
-        warmHop(
-          hydra,
-          { label: "Session", property: "sess", values: keysOf(sessions, "sess") },
-          "HAS_TURN",
-          "outgoing",
-          "turn"
-        )
-      ],
-      { concurrency: 3 }
+    const turns = yield* warmHop(
+      hydra,
+      { label: "Session", property: "sess", values: keysOf(sessions, "sess") },
+      "HAS_TURN",
+      "outgoing",
+      "turn",
+      deadline
+    )
+    const slotClaims = yield* warmHop(
+      hydra,
+      { label: "Slot", property: "skey", values: keysOf(slots, "skey") },
+      "FILLS",
+      "incoming",
+      "ckey",
+      deadline
+    )
+    const tokens = yield* warmHop(
+      hydra,
+      { label: "Entity", property: "ekey", values: keysOf(entities, "ekey") },
+      "NAMES",
+      "incoming",
+      "tkey",
+      deadline
     )
 
     const hitClaims =
       options.deep === true
         ? yield* warmHop(
             hydra,
-            { label: "Token", property: "tkey", values: tokens },
+            { label: "Token", property: "tkey", values: tokens.keys },
             "HITS",
             "outgoing",
-            "ckey"
+            "ckey",
+            deadline
           )
-        : []
+        : { keys: [] as ReadonlyArray<string>, failed: 0, truncated: false }
 
     return Option.some({
       entities: entities.length,
       slots: slots.length,
       sessions: sessions.length,
-      tokens: tokens.length,
-      slotClaims: slotClaims.length,
-      turns: turns.length,
-      hitClaims: hitClaims.length,
+      tokens: tokens.keys.length,
+      slotClaims: slotClaims.keys.length,
+      turns: turns.keys.length,
+      hitClaims: hitClaims.keys.length,
+      failed: turns.failed + slotClaims.failed + tokens.failed + hitClaims.failed,
+      truncated:
+        turns.truncated || slotClaims.truncated || tokens.truncated || hitClaims.truncated,
       ms: Date.now() - started
     })
   })

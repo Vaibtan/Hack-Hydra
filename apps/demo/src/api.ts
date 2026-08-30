@@ -192,6 +192,10 @@ export interface WarmResult {
   readonly tokens: number
   readonly slotClaims: number
   readonly turns: number
+  /** Walks that failed; a warm that reached nothing must not look like success. */
+  readonly failed: number
+  /** The budget ran out before every walk was made. */
+  readonly truncated: boolean
   readonly ms: number
 }
 

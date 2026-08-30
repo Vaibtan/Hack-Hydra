@@ -1,0 +1,240 @@
+import { HydraClient, type HydraPath } from "@palimpsest/hydra"
+import { Effect, Layer, Option } from "effect"
+import { describe, expect, it } from "vitest"
+import { WARM_SOURCES_PER_WALK, warmUser } from "../../src/index.js"
+
+/**
+ * The warm's two bounds, and the bug that made both necessary.
+ *
+ * The first version walked from every entity key in one call. Measured against
+ * a 51-session user: 5 keys returned 12 paths in 573 ms, 50 returned 112 in
+ * 5.8 s, and **2 292 returned nothing at all** — the walk exceeded a limit and
+ * failed. The failure was caught and reported as an empty result, so a warm
+ * that touched no Token at all was indistinguishable from a user who has none.
+ *
+ * So: chunk the sources, stop at a deadline, and never turn a failure into a
+ * zero. Those are the three things asserted here.
+ */
+
+const node = (property: string, key: string) => ({
+  id: 1,
+  labels: [],
+  properties: { [property]: key }
+})
+
+/** A path from `source` to `target`, in the shape `MSpaths` returns. */
+const path = (
+  sourceProperty: string,
+  source: string,
+  targetProperty: string,
+  target: string
+): HydraPath =>
+  ({
+    nodes: [node(sourceProperty, source), node(targetProperty, target)],
+    relationships: [{ id: 1, type: "REL", properties: {} }]
+  }) as unknown as HydraPath
+
+interface Call {
+  readonly relType: string
+  readonly sources: number
+}
+
+/**
+ * A HydraDB that answers the user root's fan-out from a fixture and every other
+ * walk from `answer`, recording what it was asked.
+ */
+const stubHydra = (
+  options: {
+    readonly entities: number
+    readonly slots: number
+    readonly sessions: number
+    readonly answer: (relType: string, sources: ReadonlyArray<string>) => "fail" | number
+    readonly perCallMs?: number
+    readonly calls: Array<Call>
+    readonly now: { value: number }
+  }
+) =>
+  Layer.succeed(HydraClient, {
+    getById: (label: string, key: string) =>
+      Effect.succeed(
+        Option.some({
+          ukey: key,
+          claims: 10,
+          entities: options.entities,
+          slots: options.slots,
+          tokens: 0,
+          sessions: options.sessions,
+          turns: 0,
+          supersessions: 0,
+          contested_slots: 0,
+          n_claims: 10,
+          n_entities: options.entities,
+          n_slots: options.slots,
+          n_tokens: 0,
+          n_sessions: options.sessions,
+          n_turns: 0,
+          n_supersessions: 0,
+          n_contested_slots: 0,
+          label
+        })
+      ),
+    msPaths: (config: {
+      readonly relTypes: ReadonlyArray<string>
+      readonly sourceValues: ReadonlyArray<string>
+      readonly sourceProperty: string
+    }) =>
+      Effect.suspend(() => {
+        const relType = config.relTypes[0]!
+        options.now.value += options.perCallMs ?? 0
+        if (relType === "HAS_ENTITY" || relType === "HAS_SLOT" || relType === "HAS_SESSION") {
+          const count =
+            relType === "HAS_ENTITY"
+              ? options.entities
+              : relType === "HAS_SLOT"
+                ? options.slots
+                : options.sessions
+          const property =
+            relType === "HAS_ENTITY" ? "ekey" : relType === "HAS_SLOT" ? "skey" : "sess"
+          return Effect.succeed(
+            Array.from({ length: count }, (_, i) =>
+              path("ukey", "u|user", property, `u|${property}|${i}`)
+            )
+          )
+        }
+        options.calls.push({ relType, sources: config.sourceValues.length })
+        const answered = options.answer(relType, config.sourceValues)
+        if (answered === "fail") {
+          return Effect.fail(new Error("engine refused") as never)
+        }
+        const target =
+          relType === "NAMES" ? "tkey" : relType === "FILLS" ? "ckey" : relType === "HITS" ? "ckey" : "turn"
+        return Effect.succeed(
+          Array.from({ length: answered }, (_, i) =>
+            path(config.sourceProperty, config.sourceValues[0]!, target, `u|${target}|${i}`)
+          )
+        )
+      })
+  } as unknown as HydraClient)
+
+const warm = (
+  options: Parameters<typeof stubHydra>[0],
+  warmOptions: Parameters<typeof warmUser>[2] = {}
+) =>
+  Effect.runPromise(
+    Effect.provide(
+      Effect.gen(function* () {
+        const hydra = yield* HydraClient
+        return yield* warmUser(hydra, "u", warmOptions)
+      }),
+      stubHydra(options)
+    ) as unknown as Effect.Effect<Option.Option<Awaited<ReturnType<typeof describeReport>>>, never, never>
+  )
+
+declare const describeReport: () => Promise<{
+  readonly entities: number
+  readonly slots: number
+  readonly sessions: number
+  readonly tokens: number
+  readonly slotClaims: number
+  readonly turns: number
+  readonly failed: number
+  readonly truncated: boolean
+  readonly ms: number
+}>
+
+describe("source keys are chunked", () => {
+  it("never sends more than one walk's worth of keys", async () => {
+    // 2 292 keys in one call is the case that failed outright.
+    const calls: Array<Call> = []
+    await warm({
+      entities: 2292,
+      slots: 3,
+      sessions: 2,
+      answer: () => 1,
+      calls,
+      now: { value: 0 }
+    })
+
+    expect(calls.every((call) => call.sources <= WARM_SOURCES_PER_WALK)).toBe(true)
+    const names = calls.filter((call) => call.relType === "NAMES")
+    expect(names).toHaveLength(Math.ceil(2292 / WARM_SOURCES_PER_WALK))
+  })
+
+  it("makes one walk when the keys fit in one", async () => {
+    const calls: Array<Call> = []
+    await warm({ entities: 5, slots: 0, sessions: 0, answer: () => 1, calls, now: { value: 0 } })
+
+    expect(calls.filter((call) => call.relType === "NAMES")).toHaveLength(1)
+  })
+
+  it("makes no walk at all when a level has no keys", async () => {
+    const calls: Array<Call> = []
+    await warm({ entities: 0, slots: 0, sessions: 0, answer: () => 1, calls, now: { value: 0 } })
+
+    expect(calls).toEqual([])
+  })
+})
+
+describe("a failed walk is counted, never swallowed", () => {
+  it("reports the failure rather than an empty result", async () => {
+    // The bug: `catchAll(() => [])` made a walk that failed look exactly like a
+    // user with no Tokens, and a warm that touched nothing looked like success.
+    const report = await warm({
+      entities: 10,
+      slots: 0,
+      sessions: 0,
+      answer: (relType) => (relType === "NAMES" ? "fail" : 1),
+      calls: [],
+      now: { value: 0 }
+    })
+
+    expect(Option.isSome(report)).toBe(true)
+    const it = Option.getOrThrow(report)
+    expect(it.failed).toBe(1)
+    expect(it.tokens).toBe(0)
+  })
+
+  it("carries on to the other levels after one fails", async () => {
+    // A warm exists to make the next read faster; one refused walk must not
+    // take the rest of it down.
+    const report = Option.getOrThrow(
+      await warm({
+        entities: 10,
+        slots: 10,
+        sessions: 10,
+        answer: (relType) => (relType === "NAMES" ? "fail" : 4),
+        calls: [],
+        now: { value: 0 }
+      })
+    )
+
+    expect(report.failed).toBe(1)
+    expect(report.slotClaims).toBe(4)
+    expect(report.turns).toBe(4)
+  })
+})
+
+describe("the budget", () => {
+  it("stops and says it stopped", async () => {
+    // A warm is an optimisation with a deadline: its whole value is in being
+    // finished before the first question.
+    const now = { value: 0 }
+    const report = Option.getOrThrow(
+      await warm(
+        { entities: 4000, slots: 0, sessions: 0, answer: () => 1, perCallMs: 0, calls: [], now },
+        { budgetMs: -1 }
+      )
+    )
+
+    expect(report.truncated).toBe(true)
+  })
+
+  it("does not claim truncation when everything fit", async () => {
+    const report = Option.getOrThrow(
+      await warm({ entities: 5, slots: 5, sessions: 5, answer: () => 1, calls: [], now: { value: 0 } })
+    )
+
+    expect(report.truncated).toBe(false)
+    expect(report.failed).toBe(0)
+  })
+})
