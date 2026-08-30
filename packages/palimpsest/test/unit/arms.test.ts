@@ -3,9 +3,11 @@ import {
   ARM_CAP,
   ARM_PRIORITY,
   MAX_DISCOVERY_SEEDS,
+  MAX_SLOT_MATES_PER_SLOT,
   UNION_CAP,
   convergenceConfig,
   discoverySeeds,
+  groupSlotMates,
   unionArms,
   type ArmResult
 } from "../../src/Arms.js"
@@ -305,5 +307,78 @@ describe("discovery seeds", () => {
     const seeds = discoverySeeds([], top, new Set())
     expect(seeds.length).toBe(MAX_DISCOVERY_SEEDS)
     expect(seeds).toEqual(discoverySeeds([], top, new Set()))
+  })
+})
+
+describe("slot-mate grouping", () => {
+  const mate = (ckey: string, sessionOrd: number): ReachedClaim =>
+    claim({ ckey, sessionOrd })
+
+  it("spends the allowance across slots instead of on the longest history", () => {
+    // The defect this rule exists for: `(me, weight)` on a user who logs it
+    // weekly has ten mates, and v1's flat "forty newest" would take all of
+    // them before the other two slots the question reached contributed one.
+    const weight = Array.from({ length: 10 }, (_, i) => mate(`w${i}`, 100 - i))
+    const claims = [...weight, mate("residence", 50), mate("job", 49)]
+    const slotOf = new Map<string, string>([
+      ...weight.map((c) => [c.ckey, "u|s|me|weight"] as const),
+      ["residence", "u|s|me|residence"],
+      ["job", "u|s|me|job"]
+    ])
+
+    const grouped = groupSlotMates(claims, slotOf, new Set(), 40)
+
+    const bySlot = new Map<string, number>()
+    for (const c of grouped) {
+      const slot = slotOf.get(c.ckey)!
+      bySlot.set(slot, (bySlot.get(slot) ?? 0) + 1)
+    }
+    expect(bySlot.get("u|s|me|weight")).toBe(MAX_SLOT_MATES_PER_SLOT)
+    expect(bySlot.get("u|s|me|residence")).toBe(1)
+    expect(bySlot.get("u|s|me|job")).toBe(1)
+  })
+
+  it("takes the newest five of a slot, not the oldest", () => {
+    const claims = Array.from({ length: 8 }, (_, i) => mate(`c${i}`, i + 1))
+    const slotOf = new Map(claims.map((c) => [c.ckey, "u|s|me|weight"] as const))
+
+    const grouped = groupSlotMates(claims, slotOf, new Set(), 40)
+
+    expect(grouped.map((c) => c.sessionOrd)).toEqual([8, 7, 6, 5, 4])
+  })
+
+  it("does not spend the allowance on a claim an arm already reached", () => {
+    const claims = [mate("already", 9), mate("fresh", 8)]
+    const slotOf = new Map(claims.map((c) => [c.ckey, "u|s|me|weight"] as const))
+
+    const grouped = groupSlotMates(claims, slotOf, new Set(["already"]), 40)
+
+    expect(grouped.map((c) => c.ckey)).toEqual(["fresh"])
+  })
+
+  it("groups claims whose slot the FILLS walk did not return into one bucket", () => {
+    // Not one bucket each: an unknown slot is exactly the case where a long
+    // history could take the whole allowance.
+    const claims = Array.from({ length: 9 }, (_, i) => mate(`c${i}`, i + 1))
+
+    const grouped = groupSlotMates(claims, new Map(), new Set(), 40)
+
+    expect(grouped).toHaveLength(MAX_SLOT_MATES_PER_SLOT)
+  })
+
+  it("applies the overall cap after the per-slot one", () => {
+    const claims = Array.from({ length: 20 }, (_, i) => mate(`c${i}`, i + 1))
+    const slotOf = new Map(claims.map((c, i) => [c.ckey, `slot-${Math.floor(i / 2)}`] as const))
+
+    const grouped = groupSlotMates(claims, slotOf, new Set(), 6)
+
+    expect(grouped).toHaveLength(6)
+    expect(grouped.map((c) => c.sessionOrd)).toEqual([20, 19, 18, 17, 16, 15])
+  })
+
+  it("orders deterministically when two mates share a session", () => {
+    const claims = [mate("b", 3), mate("a", 3)]
+
+    expect(groupSlotMates(claims, new Map(), new Set(), 40).map((c) => c.ckey)).toEqual(["a", "b"])
   })
 })

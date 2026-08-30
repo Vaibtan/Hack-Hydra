@@ -97,6 +97,15 @@ export const Receipt = Schema.Struct({
   query1Paths: Schema.Number,
   query2: Schema.NullOr(Schema.String),
   query2Paths: Schema.Number,
+  /**
+   * The read path's three model ids. `pipeline` says which were called: v1 uses
+   * `reader` alone, v2 uses all three.
+   */
+  models: Schema.Struct({
+    reader: Schema.String,
+    select: Schema.String,
+    sufficiency: Schema.String
+  }),
   convergence: Schema.Array(ConvergenceRow)
 })
 
@@ -134,10 +143,12 @@ export const PlanSelection = Schema.Struct({
 })
 
 export const PlanSufficiency = Schema.Struct({
+  /** `EXACT` / `INFERRABLE` / `PARTIAL`, or `skipped` when the call never ran. */
   tier: Schema.String,
   missing: Schema.String,
   premise: Schema.String,
-  skipped: Schema.Boolean,
+  /** Excerpt ids the check cited, after the CURRENT-and-in-pack verification. */
+  premiseContradictedBy: Schema.Array(Schema.String),
   secondPass: Schema.Boolean
 })
 

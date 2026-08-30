@@ -223,13 +223,22 @@ export type { QuestionAnchors } from "./Anchors.js"
 export {
   DEFAULT_READ_TIMEOUT_MS,
   MAX_SLOT_EXPANSION,
-  MAX_SLOT_MATES_PER_SLOT,
   Retrieve,
   determinismHash,
   questionDateInt,
   readTimeoutMs
 } from "./Retrieve.js"
-export type { Ablations, AskOptions, AskProfile, AskResult, AskTimings, Pipeline, Receipt, RetrievalPlan } from "./Retrieve.js"
+export type {
+  Ablations,
+  AskOptions,
+  AskProfile,
+  AskResult,
+  AskTimings,
+  Pipeline,
+  PlanSufficiency,
+  Receipt,
+  RetrievalPlan
+} from "./Retrieve.js"
 export {
   NOT_IN_MEMORY,
   ROUTE_RULES,
@@ -262,11 +271,13 @@ export {
   ARM_CAP,
   ARM_PRIORITY,
   MAX_DISCOVERY_SEEDS,
+  MAX_SLOT_MATES_PER_SLOT,
   UNION_CAP,
   convergenceArm,
   convergenceConfig,
   discoveryArm,
   discoverySeeds,
+  groupSlotMates,
   probeArm,
   subQuestionArm,
   unionArms
@@ -297,6 +308,7 @@ export type { Adjudicable, BudgetReport, PackLabel, Packable } from "./Pack.js"
 export {
   ALWAYS_KEEP_TOP_CONVERGENCE,
   MAX_KEPT_TURNS,
+  applySelection,
   enforceSelection,
   orderCandidates,
   renderCandidateTable,

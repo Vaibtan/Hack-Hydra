@@ -75,6 +75,15 @@ export interface EvalRow {
   readonly stageTimingsMs?: Readonly<Record<string, number>>
   /** `EXACT` / `INFERRABLE` / `PARTIAL`, or `skipped`. */
   readonly sufficiencyTier?: string | null
+  /**
+   * What the check said was missing, in the question's own words. Present only
+   * when it said something: a `PARTIAL` count in a table says the stage fired,
+   * and only this says on what — which is the difference between "sufficiency
+   * abstained 6 times" and a diagnosis.
+   */
+  readonly sufficiencyMissing?: string
+  /** The premise the check named, when it named one. */
+  readonly sufficiencyPremise?: string
   readonly secondPass?: boolean
   /** The listwise selector failed and the deterministic top-25 was used. */
   readonly selectorFallback?: boolean

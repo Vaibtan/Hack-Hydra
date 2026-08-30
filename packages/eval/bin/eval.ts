@@ -399,6 +399,8 @@ const program = Effect.gen(function* () {
       let granularity: string | undefined
       let estimatedTokens: number | undefined
       let sufficiencyTier: string | undefined
+      let sufficiencyMissing: string | undefined
+      let sufficiencyPremise: string | undefined
       let secondPass: boolean | undefined
       let recited: boolean | undefined
       let askMs: number | undefined
@@ -427,7 +429,13 @@ const program = Effect.gen(function* () {
         anchorsReaching = ask.receipt.anchorsReachingClaims.length
         claimHash = ask.hash
         hash = ask.hash
-        sufficiencyTier = answered.sufficiency.skipped ? "skipped" : answered.sufficiency.tier
+        // Off the plan `answerV2` completed, so the row and the receipt cannot
+        // disagree about what the check decided. #29's box asks for the missing
+        // text and the premise, not only the tier: a table of `PARTIAL` counts
+        // says the check fired, and only the text says on what.
+        sufficiencyTier = plan?.sufficiency?.tier ?? (answered.sufficiency.skipped ? "skipped" : answered.sufficiency.tier)
+        sufficiencyMissing = plan?.sufficiency?.missing ?? answered.sufficiency.missing
+        sufficiencyPremise = plan?.sufficiency?.premise ?? answered.sufficiency.premise
         secondPass = answered.secondPass
         if (plan !== null) {
           route = plan.route
@@ -564,6 +572,12 @@ const program = Effect.gen(function* () {
         ...(granularity === undefined ? {} : { granularity }),
         ...(estimatedTokens === undefined ? {} : { estimatedTokens }),
         ...(sufficiencyTier === undefined ? {} : { sufficiencyTier }),
+        ...(sufficiencyMissing === undefined || sufficiencyMissing === ""
+          ? {}
+          : { sufficiencyMissing }),
+        ...(sufficiencyPremise === undefined || sufficiencyPremise === ""
+          ? {}
+          : { sufficiencyPremise }),
         ...(secondPass === undefined ? {} : { secondPass }),
         ...(recited === undefined ? {} : { recited }),
         ...(system === 'palimpsest-v2' ? { keptSessions: evidenceSessions, ablations: ablationNames } : {})

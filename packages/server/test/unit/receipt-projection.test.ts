@@ -22,6 +22,7 @@ const receipt = (): RetrievalReceipt => ({
   query1Paths: 2,
   query2: null,
   query2Paths: 0,
+  models: { reader: "gpt-5.6-luna", select: "gpt-5.6-luna", sufficiency: "gpt-5.6-luna" },
   convergence: [
     { ckey: "user-a|c|one", convergence: 1, score: 1.2, anchors: ["move"] }
   ]

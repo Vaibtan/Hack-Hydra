@@ -6,7 +6,7 @@ import {
   type HydraError,
   type MsPathsConfig
 } from "@palimpsest/hydra"
-import type { Llm } from "@palimpsest/llm"
+import { Llm, readPathModels, type ReadPathModels } from "@palimpsest/llm"
 import { Duration, Effect, Fiber } from "effect"
 import { createHash } from "node:crypto"
 import { questionAnchors, type QuestionAnchors } from "./Anchors.js"
@@ -15,13 +15,14 @@ import {
   convergenceConfig,
   discoveryArm,
   discoverySeeds,
+  groupSlotMates,
   probeArm,
   subQuestionArm,
   unionArms,
   type ArmKind,
   type LiveArm
 } from "./Arms.js"
-import { MAX_KEPT_TURNS, orderCandidates, select, shortId } from "./Select.js"
+import { MAX_KEPT_TURNS, applySelection, orderCandidates, select, shortId } from "./Select.js"
 import { applyTimeScope, intervalSentence } from "./TimeScope.js"
 import { understand, type Route, type Understood } from "./Understand.js"
 import { claimKind, tokenKey } from "./Keys.js"
@@ -113,6 +114,36 @@ export interface RetrievalPlan {
    */
   readonly unionSessions: ReadonlyArray<string>
   readonly ablations: Ablations
+  /**
+   * What the sufficiency stage decided, or `null` on a plan that has not been
+   * through it.
+   *
+   * It is null coming out of `Retrieve.ask` and non-null coming out of
+   * `answerV2`, and that is not an oversight: the check reads the *packed*
+   * excerpts, which do not exist until after `ask` has returned and `Reader`
+   * has hydrated them. #29's receipt box still wants it on the plan, so
+   * `answerV2` — the only caller that has both halves — writes it back.
+   */
+  readonly sufficiency: PlanSufficiency | null
+}
+
+/**
+ * The sufficiency verdict as the receipt records it.
+ *
+ * Its own shape rather than `SufficiencyReport` because the receipt records a
+ * decision, not a call: `cached` says something about the LLM cache and
+ * `missingTerms` is the second pass's input, both of which belong to the run
+ * and not to the trace. `tier: "skipped"` is a real value here — a reader of a
+ * receipt needs to tell "the check said EXACT" from "the check did not run",
+ * and those are the same tier in `SufficiencyReport`.
+ */
+export interface PlanSufficiency {
+  readonly tier: "EXACT" | "INFERRABLE" | "PARTIAL" | "skipped"
+  readonly missing: string
+  readonly premise: string
+  /** Excerpt ids the check cited, after the CURRENT-and-in-pack verification. */
+  readonly premiseContradictedBy: ReadonlyArray<string>
+  readonly secondPass: boolean
 }
 
 /** Everything a judge needs to re-run the read by hand and get the same paths. */
@@ -155,6 +186,17 @@ export interface Receipt {
   readonly query1Paths: number
   readonly query2: string | null
   readonly query2Paths: number
+  /**
+   * The model ids this read path was configured with.
+   *
+   * On the receipt and not only in the results envelope, because a receipt is
+   * supposed to be replayable on its own: every LLM decision in the read path
+   * is cached by content hash, and the hash says nothing about *which model*
+   * produced the value behind it. `pipeline` says which of the three were
+   * actually called — v1 uses `reader` alone (anchors and the read), v2 uses
+   * all three.
+   */
+  readonly models: ReadPathModels
   /** claim key, convergence, score, anchors — the table behind the decision. */
   readonly convergence: ReadonlyArray<{
     readonly ckey: string
@@ -269,15 +311,6 @@ export interface Ablations {
  * broad slot should not decide the reader's token budget.
  */
 export const MAX_SLOT_EXPANSION = 40
-
-/**
- * How many slot-mates one Slot may contribute.
- *
- * v1 had no per-slot bound, so the forty newest slot-mates could all come from
- * a single frequently-restated Slot and the other slots the question reached
- * contributed nothing at all.
- */
-export const MAX_SLOT_MATES_PER_SLOT = 5
 
 /**
  * `2023/04/10 (Mon) 17:50` to `20230410`, the form every date in the graph has.
@@ -407,6 +440,10 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<AskResult, HydraError, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
       const askStarted = Date.now()
+      // On the receipt from here rather than from the results envelope: a
+      // receipt has to be replayable on its own, and a content-hash cache key
+      // says nothing about which model produced the value behind it.
+      const models = readPathModels((yield* Llm).model)
       const stages: Record<string, number> = {}
       /** Wall time of one stage, recorded whether it succeeds or fails. */
       const timed = <A, E, R>(stage: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
@@ -486,6 +523,7 @@ const make = Effect.gen(function* () {
         query1: rendered.query,
         query1Params: rendered.parameters,
         query1Paths: paths.length,
+        models,
         convergence: rank(reached)
           .slice(0, topK)
           .map((claim) => ({
@@ -611,6 +649,10 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<AskResult, HydraError, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
       const askStarted = Date.now()
+      // On the receipt from here rather than from the results envelope: a
+      // receipt has to be replayable on its own, and a content-hash cache key
+      // says nothing about which model produced the value behind it.
+      const models = readPathModels((yield* Llm).model)
       const stages: Record<string, number> = {}
       const timed = <A, E, R>(stage: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
         Effect.suspend(() => {
@@ -750,22 +792,12 @@ const make = Effect.gen(function* () {
       // who logs it weekly - took the whole allowance and the other slots the
       // question reached contributed nothing. Five per slot spends the same
       // budget across the slots the candidates actually named.
-      const alreadyReached = new Set(secondPass.candidates.map((candidate) => candidate.ckey))
-      const perSlot = new Map<string, Array<ReachedClaim>>()
-      for (const claim of [...slotClaims.claims].sort(
-        (a, b) => b.sessionOrd - a.sessionOrd || a.ckey.localeCompare(b.ckey)
-      )) {
-        if (alreadyReached.has(claim.ckey)) continue
-        const slot = slotClaims.slotOf.get(claim.ckey) ?? ""
-        const bucket = perSlot.get(slot) ?? []
-        if (bucket.length >= MAX_SLOT_MATES_PER_SLOT) continue
-        bucket.push(claim)
-        perSlot.set(slot, bucket)
-      }
-      const slotMates = [...perSlot.values()]
-        .flat()
-        .sort((a, b) => b.sessionOrd - a.sessionOrd || a.ckey.localeCompare(b.ckey))
-        .slice(0, MAX_SLOT_EXPANSION)
+      const slotMates = groupSlotMates(
+        slotClaims.claims,
+        slotClaims.slotOf,
+        new Set(secondPass.candidates.map((candidate) => candidate.ckey)),
+        MAX_SLOT_EXPANSION
+      )
       const arms: ReadonlyArray<LiveArm> = [
         ...reachedArms,
         {
@@ -864,6 +896,7 @@ const make = Effect.gen(function* () {
         query1Paths: convergence.paths,
         query2: slotClaims.query,
         query2Paths: slotClaims.paths,
+        models,
         convergence: rank(union.candidates)
           .slice(0, topK)
           .map((claim) => ({
@@ -893,7 +926,10 @@ const make = Effect.gen(function* () {
           })
         ),
         unionSessions: [...new Set(union.candidates.map((candidate) => candidate.sid))].sort(),
-        ablations
+        ablations,
+        // Filled in by `answerV2`: the check judges the pack, and the pack does
+        // not exist yet here.
+        sufficiency: null
       }
       const anchors: QuestionAnchors = {
         terms,
@@ -942,11 +978,10 @@ const make = Effect.gen(function* () {
             )
       // A selector that kept nothing has not made a decision, it has failed
       // quietly — and an empty evidence set reads downstream as "the memory does
-      // not contain it", which is a different claim entirely.
-      const emptied = selection.kept.length === 0
-      const kept = emptied
-        ? orderCandidates(scoped.claims).slice(0, MAX_KEPT_TURNS)
-        : selection.kept
+      // not contain it", which is a different claim entirely. `applySelection`
+      // is that rule, tested without a graph.
+      const applied = applySelection(scoped.claims, selection)
+      const kept = applied.kept
 
       const labelled = applyAsOf(kept, edges, options.asOf)
       const evidence = orderEvidence(labelled, historical)
@@ -966,12 +1001,12 @@ const make = Effect.gen(function* () {
             .map((candidate) => candidate.ckey),
           selection: {
             kept: kept.map((candidate) => shortId(candidate.ckey)),
-            dropped: selection.dropped.map((drop) => ({
+            dropped: applied.dropped.map((drop) => ({
               id: shortId(drop.candidate.ckey),
               reason: drop.reason as string
             })),
             reasons: selection.reasons,
-            fallback: selection.fallback || emptied
+            fallback: applied.fallback
           }
         }
       }

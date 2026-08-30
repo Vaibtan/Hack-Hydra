@@ -3,6 +3,7 @@ import type { Candidate } from "../../src/Arms.js"
 import {
   ALWAYS_KEEP_TOP_CONVERGENCE,
   MAX_KEPT_TURNS,
+  applySelection,
   enforceSelection,
   orderCandidates,
   shortId,
@@ -238,5 +239,49 @@ describe("the candidate table", () => {
 
   it("is empty for no candidates rather than a stray newline", () => {
     expect(renderCandidateTable([])).toBe("")
+  })
+})
+
+describe("an empty keep set is a failure, not a decision", () => {
+  it("falls back to the deterministic ordering and flags it", () => {
+    // The rule the dev run's `selectorFallback` column counts. A selector that
+    // kept nothing produces an empty pack, and an empty pack reads downstream
+    // as "the memory does not contain it" -- a structural claim the selector
+    // was never asked to make.
+    const candidates = [
+      spread("aaaaaaaaone", { convergence: 3, score: 4 }, 1),
+      spread("bbbbbbbbtwo", { convergence: 1, score: 1 }, 2)
+    ]
+
+    const applied = applySelection(candidates, { kept: [], dropped: [], fallback: false })
+
+    expect(applied.kept.map((c) => c.ckey)).toEqual(["aaaaaaaaone", "bbbbbbbbtwo"])
+    expect(applied.fallback).toBe(true)
+  })
+
+  it("leaves a non-empty selection exactly as the selector reported it", () => {
+    const kept = spread("aaaaaaaaone", {}, 1)
+    const dropped = spread("bbbbbbbbtwo", {}, 2)
+    const selection = {
+      kept: [kept],
+      dropped: [{ candidate: dropped, reason: "selector" as const }],
+      fallback: false
+    }
+
+    expect(applySelection([kept, dropped], selection)).toEqual(selection)
+  })
+
+  it("keeps a failed call flagged when the fallback it produced is also empty", () => {
+    expect(applySelection([], { kept: [], dropped: [], fallback: true }).fallback).toBe(true)
+  })
+
+  it("respects the turn cap in the fallback it substitutes", () => {
+    const many = Array.from({ length: MAX_KEPT_TURNS + 5 }, (_, i) =>
+      spread(`c${String(i).padStart(8, "0")}`, { convergence: MAX_KEPT_TURNS + 5 - i }, i)
+    )
+
+    expect(applySelection(many, { kept: [], dropped: [], fallback: false }).kept).toHaveLength(
+      MAX_KEPT_TURNS
+    )
   })
 })

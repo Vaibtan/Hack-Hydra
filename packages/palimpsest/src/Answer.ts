@@ -3,7 +3,7 @@ import type { HydraError } from "@palimpsest/hydra"
 import type { Llm } from "@palimpsest/llm"
 import { Effect } from "effect"
 import type { Granularity, ReadAnswer, Reader } from "./Reader.js"
-import type { AskOptions, AskResult, Retrieve } from "./Retrieve.js"
+import type { AskOptions, AskResult, PlanSufficiency, Retrieve } from "./Retrieve.js"
 import type { AbstentionReason } from "./Scoring.js"
 import {
   abstains,
@@ -60,6 +60,37 @@ export interface AnswerOptions extends AskOptions {
 }
 
 /**
+ * Writes the sufficiency verdict back onto the ask's plan.
+ *
+ * #29's receipt box asks for `plan.sufficiency`, and the plan comes out of
+ * `Retrieve.ask` before the pack the check judges exists. Rather than leave the
+ * field to whichever caller happens to hold both halves — the eval, the HTTP
+ * projection and the CLI each held a different subset, and the HTTP projection
+ * was the only one that assembled it — `answerV2` returns an `AskResult` whose
+ * plan is already complete. Every consumer then reads one shape.
+ *
+ * A v1 ask has no plan and gets none.
+ */
+const withSufficiency = (
+  ask: AskResult,
+  report: SufficiencyReport,
+  secondPass: boolean
+): AskResult => {
+  if (ask.plan === null) return ask
+  const sufficiency: PlanSufficiency = {
+    // `skipped` is a value the tier enum does not have, and the distinction
+    // matters to a reader of a receipt: `skipped()` reports `EXACT`, which
+    // would otherwise read as "the check ran and was satisfied".
+    tier: report.skipped ? "skipped" : report.tier,
+    missing: report.missing,
+    premise: report.premise,
+    premiseContradictedBy: report.premiseContradictedBy,
+    secondPass
+  }
+  return { ...ask, plan: { ...ask.plan, sufficiency } }
+}
+
+/**
  * Turns an ask into the reader's pack options.
  *
  * Only ever called with a plan, because only v2 has one — the option is what
@@ -91,7 +122,7 @@ export const answerV2 = (
     const first = yield* retrieve.ask(uid, question, askOptions)
     if (first.verdict === "ABSENT") {
       return {
-        ask: first,
+        ask: withSufficiency(first, skipped(), false),
         read: null,
         verdict: "ABSENT" as const,
         reason: first.reason,
@@ -119,7 +150,7 @@ export const answerV2 = (
 
     if (options.noSufficiency === true || !runsOn(route, firstRead.spans, profile)) {
       return {
-        ask: first,
+        ask: withSufficiency(first, skipped(), false),
         read: firstRead,
         verdict: "ANSWER" as const,
         reason: null,
@@ -137,7 +168,7 @@ export const answerV2 = (
     const contradiction = premiseContradiction(judged, firstRead.spans)
     if (contradiction !== null) {
       return {
-        ask: first,
+        ask: withSufficiency(first, judged, false),
         read: firstRead,
         verdict: "ABSENT" as const,
         reason: "CONTRADICTED_PREMISE" as const,
@@ -149,7 +180,7 @@ export const answerV2 = (
 
     if (judged.tier !== "PARTIAL" || judged.missingTerms.length === 0) {
       return {
-        ask: first,
+        ask: withSufficiency(first, judged, false),
         read: firstRead,
         verdict: "ANSWER" as const,
         reason: null,
@@ -174,7 +205,7 @@ export const answerV2 = (
       // verdict. Keep the first pass's answer: a second pass exists to add
       // evidence, never to take an answer away.
       return {
-        ask: first,
+        ask: withSufficiency(first, judged, true),
         read: firstRead,
         verdict: "ANSWER" as const,
         reason: null,
@@ -196,7 +227,7 @@ export const answerV2 = (
     const stillContradicted = premiseContradiction(rejudged, secondRead.spans)
     if (stillContradicted !== null) {
       return {
-        ask: second,
+        ask: withSufficiency(second, rejudged, true),
         read: secondRead,
         verdict: "ABSENT" as const,
         reason: "CONTRADICTED_PREMISE" as const,
@@ -207,7 +238,7 @@ export const answerV2 = (
     }
 
     return {
-      ask: second,
+      ask: withSufficiency(second, rejudged, true),
       read: secondRead,
       verdict: abstains(rejudged) ? ("ABSENT" as const) : ("ANSWER" as const),
       reason: abstains(rejudged) ? ("INSUFFICIENT_EVIDENCE" as const) : null,

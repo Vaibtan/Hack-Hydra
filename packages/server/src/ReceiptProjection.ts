@@ -1,4 +1,8 @@
-import type { Receipt as RetrievalReceipt, V2Answer } from "@palimpsest/palimpsest"
+import type {
+  PlanSufficiency,
+  Receipt as RetrievalReceipt,
+  V2Answer
+} from "@palimpsest/palimpsest"
 
 /**
  * Projects the retrieval trace into the HTTP contract without dropping any
@@ -23,6 +27,7 @@ export const projectRetrievalReceipt = (receipt: RetrievalReceipt) => ({
   query1Paths: receipt.query1Paths,
   query2: receipt.query2,
   query2Paths: receipt.query2Paths,
+  models: receipt.models,
   convergence: receipt.convergence
 })
 
@@ -66,13 +71,16 @@ export const projectPlan = (answered: V2Answer) => {
     union: plan.union,
     timeScope: plan.timeScope,
     selection: plan.selection,
-    sufficiency: {
-      tier: answered.sufficiency.skipped ? "skipped" : answered.sufficiency.tier,
-      missing: answered.sufficiency.missing,
-      premise: answered.sufficiency.premise,
-      skipped: answered.sufficiency.skipped,
-      secondPass: answered.secondPass
-    },
+    // Off the plan, not reassembled here. `answerV2` writes the verdict back
+    // onto the plan it returns, so the panel, the results row and the CLI all
+    // read the field #29 asks for rather than three private projections of it.
+    sufficiency: plan.sufficiency ?? ({
+      tier: "skipped",
+      missing: "",
+      premise: "",
+      premiseContradictedBy: [],
+      secondPass: false
+    } satisfies PlanSufficiency),
     intervalSentence: plan.intervalSentence,
     stages: {
       ...answered.ask.timings.stages,

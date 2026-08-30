@@ -306,3 +306,35 @@ export const select = (
       cached: generated.right.cached
     }
   })
+
+/**
+ * The selection the pipeline actually uses, after the rule that a selector
+ * which kept *nothing* has not made a decision.
+ *
+ * `select` reports `fallback: true` when the call itself failed. It cannot
+ * report it for an empty keep set, because an empty keep set is a well-formed
+ * answer from a working call — and it is the one answer the pipeline must not
+ * take at face value. An empty pack reads downstream as "the memory does not
+ * contain it", which is a different claim from "none of these rows helps", and
+ * the receipt would show a successful selection behind a structural-looking
+ * abstention.
+ *
+ * So an empty keep set falls back to the deterministic v1 ordering **and flags
+ * itself**, exactly as a failed call does. The flag is the point: a dev run's
+ * `selectorFallback` column has to count both, or the number is not a count of
+ * "asks where the selector's judgement was not used".
+ *
+ * Lived inline in `askV2` until #22's review; it is here so it can be tested
+ * without a graph and a live model.
+ */
+export const applySelection = (
+  candidates: ReadonlyArray<Candidate>,
+  selection: SelectionReport
+): SelectionReport => {
+  if (selection.kept.length > 0) return selection
+  return {
+    kept: orderCandidates(candidates).slice(0, MAX_KEPT_TURNS),
+    dropped: selection.dropped,
+    fallback: true
+  }
+}

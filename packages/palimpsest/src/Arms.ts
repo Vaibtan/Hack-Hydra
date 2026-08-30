@@ -391,3 +391,54 @@ export const discoveryArm = (
       rawPaths: paths
     }
   })
+
+/**
+ * How many slot-mates one Slot may contribute to the evidence.
+ *
+ * v1 had no per-slot bound, so the forty newest slot-mates could all come from
+ * a single frequently-restated Slot — `(me, weight)` on a user who logs it
+ * weekly — and the other Slots the question actually reached contributed
+ * nothing at all.
+ */
+export const MAX_SLOT_MATES_PER_SLOT = 5
+
+/**
+ * The slot-mate arm's grouping rule, as a function of what came back.
+ *
+ * Three things happen here and the order of them is the whole rule:
+ *
+ * 1. **Newest first.** A slot-mate exists so a knowledge-update question can
+ *    see the value that was replaced; taking the oldest five of a long history
+ *    would show the reader the least relevant end of it.
+ * 2. **Skip what an arm already reached.** A claim the convergence walk found
+ *    earned its place through the question's own words; letting it in again as
+ *    a slot-mate would spend the allowance twice on one claim.
+ * 3. **At most five per Slot, then at most `MAX_SLOT_EXPANSION` overall.** The
+ *    per-Slot bound is what spreads the budget across the Slots the candidates
+ *    named instead of letting one broad Slot take all of it.
+ *
+ * `ckey` breaks every ordering tie, so the same node state produces the same
+ * evidence in the same order on a replay.
+ */
+export const groupSlotMates = (
+  claims: ReadonlyArray<ReachedClaim>,
+  slotOf: ReadonlyMap<string, string>,
+  alreadyReached: ReadonlySet<string>,
+  overallCap: number
+): ReadonlyArray<ReachedClaim> => {
+  const newestFirst = (a: ReachedClaim, b: ReachedClaim): number =>
+    b.sessionOrd - a.sessionOrd || a.ckey.localeCompare(b.ckey)
+  const perSlot = new Map<string, Array<ReachedClaim>>()
+  for (const claim of [...claims].sort(newestFirst)) {
+    if (alreadyReached.has(claim.ckey)) continue
+    // A claim whose Slot the `FILLS` walk did not return is grouped under `""`.
+    // It is one bucket rather than one bucket each, on purpose: an unknown Slot
+    // is exactly the case where a long history could take the whole allowance.
+    const slot = slotOf.get(claim.ckey) ?? ""
+    const bucket = perSlot.get(slot) ?? []
+    if (bucket.length >= MAX_SLOT_MATES_PER_SLOT) continue
+    bucket.push(claim)
+    perSlot.set(slot, bucket)
+  }
+  return [...perSlot.values()].flat().sort(newestFirst).slice(0, overallCap)
+}
