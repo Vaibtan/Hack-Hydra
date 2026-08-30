@@ -23,8 +23,14 @@ services:
     # engine's disk read cache is on (see the hydradb service), so a *warm* read
     # does not land here — a cold one does, and that is why a cold ask is
     # 11 s against a warm 68 ms.
-    mem_limit: 6g
-    memswap_limit: 6g
+    # 5 GiB, not 6, from 2026-08-31: HydraDB needed the gigabyte more than this
+    # container did. MinIO's RSS tracks the object *count* and was 3.19 GiB with
+    # 3.5 GB of objects and ~37 users in; HydraDB was at 82 % of its 4 GiB and
+    # climbing. The two limits plus the profile's headroom have to fit inside
+    # Docker's 11.68 GiB, so raising one meant lowering the other. See
+    # step-load-2026-08.md, *The limit was raised mid-ingest*.
+    mem_limit: 5120m
+    memswap_limit: 5120m
     cpus: 6
     restart: on-failure:3
     healthcheck:
@@ -163,13 +169,28 @@ services:
       - "127.0.0.1:29090:9090"
     secrets:
       - hydradb_auth_token
-    # Interim, from the step-load curve so far: HydraDB peaked at 1.94 GiB
-    # ingesting 40 users, so 6 GiB was reserving room it never used while the
-    # object store — whose RSS tracks the object *count*, and which held 3.5 GB
-    # of objects by then — ran out at 4 GiB. The final value comes from the
-    # completed curve; this is the rebalance that let the ingest continue.
-    mem_limit: 4g
-    memswap_limit: 4g
+    # From the step-load curve, raised twice and for opposite reasons.
+    #
+    # 6 GiB was a guess. It came down to 4 GiB on 2026-08-30 because HydraDB had
+    # peaked at 1.94 GiB ingesting 40 users while the object store — whose RSS
+    # tracks the object *count*, and which held 3.5 GB of objects by then — ran
+    # out at 4 GiB. That reading was true of an ingest that grew the graph from
+    # empty in one process.
+    #
+    # It went back up to 5.5 GiB on 2026-08-31, mid-ingest, when a *resumed*
+    # ingest against a graph that already held 64 users reached 82 % of the
+    # 4 GiB inside eight minutes. The difference is hydration: a node restarted
+    # onto an existing graph pays for all of it at once, and this profile
+    # restarts the node between phases by design, because the read cache and the
+    # query cap are chosen per phase. 5.5 GiB is the measured 3.55 GiB plateau
+    # plus the ticket's 25 % headroom, rounded up to what the host can give once
+    # the object store has 5 GiB and the profile has its 0.75 GiB of headroom.
+    #
+    # Raised with `docker update` rather than a recreate: a recreate would have
+    # cost the four users in flight and a second hydration, which is the cost
+    # being measured.
+    mem_limit: 5632m
+    memswap_limit: 5632m
     cpus: 4
     restart: on-failure:3
     # The reviewed runtime contains no HTTP client. This is a liveness check;

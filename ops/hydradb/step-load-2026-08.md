@@ -200,6 +200,51 @@ Set them with `PALIMPSEST_HYDRADB_READ_CACHE=false
 PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS=120000 docker compose up -d hydradb` before an
 ingest, and unset both before an eval.
 
+### The limit was raised mid-ingest, and hydration is why
+
+The 4 GiB HydraDB limit above was set on 2026-08-30 from a curve that had
+HydraDB peaking at 1.94 GiB across 40 users while the object store ran out at
+4 GiB. On 2026-08-31 the ingest was **resumed** against a graph that already
+held 64 users, and the same limit was 82 % full inside eight minutes:
+
+| minutes into the resumed ingest | HydraDB RSS | users written in this process |
+|---:|---:|---:|
+| 0 | 5 MiB | 0 |
+| 2 | 376 MiB | 0 (still skipping) |
+| 5 | 901 MiB | 0 |
+| 8 | 2.36 GiB | 3 |
+| 13 | 3.42 GiB | 4 |
+| 15 | **3.55 GiB (plateau)** | 5 |
+
+The difference from the 2026-08-30 curve is **hydration**, not the graph. A node
+that grows a graph from empty in one process pays for it a user at a time; a
+node restarted onto an existing graph pays for all of it at once, before it
+writes anything — the first three rows above are the node reading 64 users back
+out of the object store while `ingest-slice` was still doing by-id skip checks.
+This profile restarts the node *between phases by design*, because the read
+cache and the query cap are chosen per phase, so this is a cost the benchmark
+pays every time and not an artefact of one interrupted session.
+
+RSS plateaus at **3.55 GiB** and oscillates there while writing, which is the
+number the limit is set from. With the ticket's ≥ 25 % headroom that is 4.44
+GiB; the limit is **5.5 GiB (5632 MiB)**, the largest that fits once the object
+store keeps 5 GiB and the profile keeps its 0.75 GiB of host headroom inside
+Docker's 11.68 GiB. The object store came down from 6 GiB to 5 GiB to pay for
+it: its RSS tracks the object count and was 3.19 GiB at 3.5 GB of objects, so it
+had the gigabyte to give and HydraDB did not.
+
+Both limits were changed with `docker update` on the running containers, not
+with a recreate. A recreate would have cost the four users in flight *and* a
+second hydration — the cost being measured — and `docker update` changes the
+cgroup limit without touching the process. `benchmark-profile.v1.json` and the
+Compose file were updated to match, the preflight re-run (required 12.08 GiB of
+Docker's 12.54 GiB, passed), and the capacity gate restarted so that it
+measures against the new limit rather than the one it read at startup.
+
+`runtime_config_sha256` changes with the memory limit, which is deliberate: a
+latency number measured under a 4 GiB limit is not the same measurement as one
+measured under 5.5 GiB, and the hash is what says so.
+
 ### One stray vertex
 
 A single `WriteCheck` vertex (`writecheck|after-gate-stop`) was written by hand
