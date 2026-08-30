@@ -245,6 +245,66 @@ measures against the new limit rather than the one it read at startup.
 latency number measured under a 4 GiB limit is not the same measurement as one
 measured under 5.5 GiB, and the hash is what says so.
 
+### The memory grows with the *work*, not the graph — so the node is cycled
+
+The rebalance above bought about twenty minutes. RSS then went past the new
+5.5 GiB limit's 80 % at roughly 480 MB/min, which is far faster than users were
+being written — about a gigabyte per user, when a user is a few thousand
+vertices. That is not graph size, so it was worth finding out what it was before
+spending the limit again.
+
+**Every engine cache was empty.** At 5.06 GiB of RSS, `/metrics` reported:
+
+| cache | entries | resident bytes |
+|---|---:|---:|
+| `matrix_artifacts` | 0 | — |
+| `matrix_adjacencies` | 0 | 0 |
+| `graphblas_matrices` | 0 | 0 |
+| `relationship_rows` | 1 024 | 430 256 |
+| `source_relationship_rows` | — | 0 |
+| `relationship_property_rows` | 0 | 0 |
+
+430 KB of caches inside 5.06 GiB of RSS. Tier B bounds exactly these caches, so
+tier B could not have helped, and applying it would have bought `graphMs` for
+nothing — the same conclusion the previous session reached for a different
+reason.
+
+**A restart took RSS from 5.06 GiB to 4.3 MiB, with the same graph underneath.**
+So the memory is not the graph and not the engine's caches: it is allocator
+growth under a sustained write-heavy workload, on a runtime that flushes SlateDB's
+WAL every 1 ms and therefore makes an enormous number of small, short-lived
+allocations. `MALLOC_ARENA_MAX=2` and `MALLOC_TRIM_THRESHOLD_=64 MiB` are
+already set and do not reclaim it; `GRAPH_TRIM_MEMORY_AFTER_HYDRATION` trims
+after a *hydration*, which is not the phase this happens in.
+
+This is good news, because it means the 200-user population fits on a 15 GiB
+host after all. It just cannot be ingested by one long-lived process.
+
+**`scripts/ingest-cycling.ps1`** is the consequence: run `ingest-slice`, watch
+the container, and at 70 % of the limit stop the ingest, `docker restart` the
+node and run it again. Three properties make that safe and nearly free, and all
+three are already true for other reasons:
+
+- every write is a content-addressed `MERGE`, so a user interrupted mid-write
+  completes on the next pass rather than being corrupted or duplicated;
+- `--skip-existing` costs one ~100 ms read by id per completed user, so a
+  resumed pass reaches the frontier in well under a minute;
+- the ingest is killed *before* the node, so the node stops gracefully with no
+  statement in flight and releases its writer lease — the failure mode
+  `CONTEXT.md` records for an unclean stop is a node that comes back
+  permanently read-only.
+
+The cycle threshold is 70 %, deliberately below the capacity gate's 90 %: a
+scheduled restart is cheaper than an incident, and the gate should stay a
+backstop rather than become the mechanism.
+
+The earlier reading of the same curve — "hydration is why" — was wrong about the
+cause. It was the right decision from the evidence available at the time (the
+limit was two minutes from tripping and 4 GiB was explicitly interim), and 5.5
+GiB is still the right limit, but the growth was never hydration: the first
+three rows of that table are a node that had just started, and a restarted node
+now reaches 4.3 MiB and stays low until writes begin.
+
 ### One stray vertex
 
 A single `WriteCheck` vertex (`writecheck|after-gate-stop`) was written by hand
