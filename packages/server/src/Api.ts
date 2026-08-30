@@ -343,6 +343,27 @@ const AsOfQuery = Schema.Struct({
   asOf: Schema.optional(Schema.NumberFromString)
 })
 
+/**
+ * What a warm actually touched.
+ *
+ * Counts rather than a bare 204 because a warm that silently reached nothing is
+ * indistinguishable from one that worked, and the whole reason this endpoint
+ * exists is that the previous warm — a by-id read of the `User` vertex — did not
+ * touch the blocks the cold ask pays for.
+ */
+export const WarmResponse = Schema.Struct({
+  uid: Schema.String,
+  entities: Schema.Number,
+  slots: Schema.Number,
+  sessions: Schema.Number,
+  /** Reached backwards along `NAMES` from the entities; there is no User->Token edge. */
+  tokens: Schema.Number,
+  /** Claims reached through `FILLS` from the slots — the shape of Query 2. */
+  slotClaims: Schema.Number,
+  turns: Schema.Number,
+  ms: Schema.Number
+})
+
 export const users = HttpApiGroup.make("users")
   .add(
     HttpApiEndpoint.post("ingestSession", "/users/:uid/sessions")
@@ -386,6 +407,21 @@ export const users = HttpApiGroup.make("users")
     HttpApiEndpoint.get("stats", "/users/:uid/stats")
       .setPath(UidPath)
       .addSuccess(StatsResponse)
+      .addError(GraphError)
+      .addError(NotFound)
+  )
+  /**
+   * Reads the blocks the next ask will read, so the first question after
+   * selecting a user is not the one that pays for them.
+   *
+   * `POST` rather than `GET` because it is an instruction and not a resource:
+   * nothing is returned that a caller wants for its own sake, and a `GET` would
+   * invite a cache in front of it.
+   */
+  .add(
+    HttpApiEndpoint.post("warm", "/users/:uid/warm")
+      .setPath(UidPath)
+      .addSuccess(WarmResponse)
       .addError(GraphError)
       .addError(NotFound)
   )

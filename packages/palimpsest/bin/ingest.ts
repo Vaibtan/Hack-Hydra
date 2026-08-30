@@ -1,7 +1,7 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
-import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
+import { Llm, LlmLive, loadDotEnv, verifyModelsAtStartup } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { ClaimGraph, Ingest, Supersede, Transcript } from "../src/index.js"
 
@@ -41,6 +41,11 @@ const AppLive = Ingest.Default.pipe(
 )
 
 const program = Effect.gen(function* () {
+  // Before anything is spent. A typo in `PALIMPSEST_SELECT_MODEL` is otherwise a
+  // run of provider errors -- or, on a provider that silently substitutes, real
+  // numbers from a model nobody chose. Fails closed on an unknown id and only
+  // on that: an unreachable provider warns and the command proceeds.
+  yield* verifyModelsAtStartup({ quiet: true })
   const ingest = yield* Ingest
   const llm = yield* Llm
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)

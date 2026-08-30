@@ -50,10 +50,13 @@ export const App = () => {
   const loadUser = useCallback(async (who: string) => {
     setError(null)
     try {
-      // `stats` is the warm-up as well as a display: HydraDB's object-store
-      // cache is cold per user, and without this the first ask after selecting
-      // someone pays an 11 s cold convergence walk in front of an audience.
-      const [rows, s] = await Promise.all([api.sessions(who), api.stats(who)])
+      // `warm` is a separate call from `stats` on purpose. `stats` is an
+      // indexed read by id off the `User` vertex and touches none of the blocks
+      // a convergence walk reads; `warm` walks what an ask walks, so the first
+      // question after selecting someone does not pay an 11 s cold convergence
+      // walk in front of an audience. It resolves to null on failure and is
+      // never awaited for its value.
+      const [rows, s] = await Promise.all([api.sessions(who), api.stats(who), api.warm(who)])
       setSessions(rows)
       setStats(s)
     } catch (cause: unknown) {

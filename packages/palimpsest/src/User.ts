@@ -220,3 +220,170 @@ export const readUserVertices = (
         return out
       })
     )
+
+/**
+ * What a warm reached, per level.
+ *
+ * Counts rather than nothing, because a warm that silently touched nothing is
+ * indistinguishable from one that worked — which is exactly how the first
+ * version of this went unnoticed.
+ */
+export interface WarmReport {
+  readonly entities: number
+  readonly slots: number
+  readonly sessions: number
+  readonly tokens: number
+  readonly slotClaims: number
+  readonly turns: number
+  /** Non-zero only under `deep`. */
+  readonly hitClaims: number
+  readonly ms: number
+}
+
+/** Every key at the far end of a one-hop walk, best-effort. */
+const warmHop = (
+  hydra: HydraClient,
+  source: {
+    readonly label: string
+    readonly property: string
+    readonly values: ReadonlyArray<string>
+  },
+  relType: string,
+  direction: "outgoing" | "incoming",
+  targetProperty: string
+): Effect.Effect<ReadonlyArray<string>> => {
+  if (source.values.length === 0) return Effect.succeed([])
+  return hydra
+    .msPaths({
+      sourceLabel: source.label,
+      sourceProperty: source.property,
+      sourceValues: [...source.values],
+      relTypes: [relType],
+      relDirection: direction,
+      maxLen: 1
+    })
+    .pipe(
+      Effect.map((paths) => {
+        const keys = new Set<string>()
+        for (const path of paths) {
+          const node = path.nodes[path.nodes.length - 1]
+          const key = String(node?.properties[targetProperty] ?? "")
+          if (key !== "") keys.add(key)
+        }
+        return [...keys] as ReadonlyArray<string>
+      }),
+      // A warm exists to make the *next* read faster. Failing it must never be
+      // able to fail the thing it was warming for, so a level that could not be
+      // read reports zero and the ask that follows pays what it would have paid
+      // anyway.
+      Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<string>))
+    )
+}
+
+/**
+ * Reads the blocks an ask will read, before the ask.
+ *
+ * On this runtime a cold block is an HTTP GET to the object store rather than a
+ * page fault — the read cache is off while ingesting — and a first ask measured
+ * 11 397 ms of `graphMs` against a warm 68 ms.
+ *
+ * **The first version of this touched the wrong thing.** It walked the `User`
+ * root's `HAS_ENTITY` / `HAS_SLOT` / `HAS_SESSION` fan-out and stopped, and the
+ * ops note recorded the consequence honestly: it did not move the cold number,
+ * because the cold cost is the convergence walk `Token -HITS-> Claim` and
+ * nothing there touched a Token.
+ *
+ * There is no `User -HAS_TOKEN-> Token` edge to walk: a Token is linked to
+ * Claims by `HITS` and to Entities by `NAMES`, and to nothing else. So Tokens
+ * are reached the only way that is not a store-wide label scan — **backwards
+ * along `NAMES` from the entity keys the fan-out just returned**. That is a
+ * subset of the user's Tokens, and it is the useful subset: a question's anchors
+ * are the words it uses for the things it asks about, which are the entities.
+ *
+ * Levels, in the order an ask reads them:
+ *
+ * 1. `User` -> Entity / Slot / Session
+ * 2. Entity <-`NAMES`- Token · Slot <-`FILLS`- Claim (Query 2's shape) ·
+ *    Session -`HAS_TURN`-> Turn (what hydration reads)
+ * 3. `deep` only: Token -`HITS`-> Claim, the convergence walk itself
+ *
+ * `deep` is off by default because it is that user's whole inverted index
+ * rather than one question's slice of it — tens of thousands of paths and many
+ * cursor pages on a 2 000-claim user, where a real question walks from five to
+ * fifteen anchors. Whether it buys anything is a measurement.
+ *
+ * Reads only, so warming twice is free and warming the wrong user is harmless.
+ */
+export const warmUser = (
+  hydra: HydraClient,
+  uid: string,
+  options: { readonly deep?: boolean } = {}
+): Effect.Effect<Option.Option<WarmReport>, HydraError> =>
+  Effect.gen(function* () {
+    const started = Date.now()
+    const stats = yield* readUserStats(hydra, uid)
+    if (Option.isNone(stats)) return Option.none()
+
+    const [entities, slots, sessions] = yield* Effect.all(
+      [
+        readUserVertices(hydra, uid, "HAS_ENTITY"),
+        readUserVertices(hydra, uid, "HAS_SLOT"),
+        readUserVertices(hydra, uid, "HAS_SESSION")
+      ],
+      { concurrency: 3 }
+    )
+    const keysOf = (
+      rows: ReadonlyArray<Readonly<Record<string, unknown>>>,
+      property: string
+    ): ReadonlyArray<string> =>
+      rows.map((row) => String(row[property] ?? "")).filter((key) => key !== "")
+
+    const [tokens, slotClaims, turns] = yield* Effect.all(
+      [
+        warmHop(
+          hydra,
+          { label: "Entity", property: "ekey", values: keysOf(entities, "ekey") },
+          "NAMES",
+          "incoming",
+          "tkey"
+        ),
+        warmHop(
+          hydra,
+          { label: "Slot", property: "skey", values: keysOf(slots, "skey") },
+          "FILLS",
+          "incoming",
+          "ckey"
+        ),
+        warmHop(
+          hydra,
+          { label: "Session", property: "sess", values: keysOf(sessions, "sess") },
+          "HAS_TURN",
+          "outgoing",
+          "turn"
+        )
+      ],
+      { concurrency: 3 }
+    )
+
+    const hitClaims =
+      options.deep === true
+        ? yield* warmHop(
+            hydra,
+            { label: "Token", property: "tkey", values: tokens },
+            "HITS",
+            "outgoing",
+            "ckey"
+          )
+        : []
+
+    return Option.some({
+      entities: entities.length,
+      slots: slots.length,
+      sessions: sessions.length,
+      tokens: tokens.length,
+      slotClaims: slotClaims.length,
+      turns: turns.length,
+      hitClaims: hitClaims.length,
+      ms: Date.now() - started
+    })
+  })

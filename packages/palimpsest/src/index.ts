@@ -17,9 +17,10 @@ export {
   linkToUser,
   readUserStats,
   readUserVertices,
+  warmUser,
   writeUserStats
 } from "./User.js"
-export type { UserEdge, UserStats } from "./User.js"
+export type { UserEdge, UserStats, WarmReport } from "./User.js"
 export { Transcript } from "./Transcript.js"
 export type { StoredSession, StoredTurn, TranscriptReport } from "./Transcript.js"
 export {

@@ -1,7 +1,7 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadQuestion, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
-import { LlmLive, loadDotEnv } from "@palimpsest/llm"
+import { LlmLive, loadDotEnv, verifyModelsAtStartup } from "@palimpsest/llm"
 import {
   SourceIndex,
   SourceIndexLive,
@@ -35,6 +35,11 @@ const RuntimeLive = NodeHttpClient.layerUndici.pipe(
 const AppLive = RuntimeLive.pipe(Layer.provideMerge(SourceIndexLive))
 
 const program = Effect.gen(function* () {
+  // Before anything is spent. A typo in `PALIMPSEST_SELECT_MODEL` is otherwise a
+  // run of provider errors -- or, on a provider that silently substitutes, real
+  // numbers from a model nobody chose. Fails closed on an unknown id and only
+  // on that: an unreachable provider warns and the command proceeds.
+  yield* verifyModelsAtStartup({ quiet: true })
   if (uid === "") {
     console.error("usage: index-source --uid <question_id> [--dataset s|oracle] [--tenant default]")
     return yield* Effect.sync(() => process.exit(2))

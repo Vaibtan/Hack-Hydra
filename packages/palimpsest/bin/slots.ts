@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
-import { LlmLive, loadDotEnv } from "@palimpsest/llm"
+import { LlmLive, loadDotEnv, verifyModelsAtStartup } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { prepareDerivedIndexAssertions, Reader, sourceLinkedChainEvidence, Supersede } from "../src/index.js"
 
@@ -32,6 +32,11 @@ const AppLive = Supersede.Default.pipe(
 )
 
 const program = Effect.gen(function* () {
+  // Before anything is spent. A typo in `PALIMPSEST_SELECT_MODEL` is otherwise a
+  // run of provider errors -- or, on a provider that silently substitutes, real
+  // numbers from a model nobody chose. Fails closed on an unknown id and only
+  // on that: an unreachable provider warns and the command proceeds.
+  yield* verifyModelsAtStartup({ quiet: true })
   const supersede = yield* Supersede
   const reader = yield* Reader
   const slots =

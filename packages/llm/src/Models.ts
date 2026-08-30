@@ -121,3 +121,53 @@ export const verifyModels = (
     if (unknown.length > 0) return yield* Effect.fail(new UnknownModelError(unknown, available))
     return available
   })
+
+/** The reader model the whole v1-vs-v2 comparison is frozen at. */
+export const DEFAULT_MODEL = "gpt-5.6-luna"
+
+/**
+ * The startup check, for a process that is about to spend money.
+ *
+ * The eval has verified its ids since #31; the server, the demo behind it and
+ * every CLI did not, which left the check protecting the one caller least
+ * likely to be run with a hand-edited `PALIMPSEST_SELECT_MODEL`. A demo in front
+ * of an audience is the caller that can least afford to discover a bad id on
+ * its first question.
+ *
+ * It **fails closed on an unknown id and only on that**. A provider that cannot
+ * be reached, or whose `/models` endpoint is missing or empty, warns and
+ * proceeds: an unrelated outage must not look like a configuration error. On an
+ * unknown id it prints `UnknownModelError`'s message — which names every unknown
+ * id, what the provider does list, and the three environment variables that fix
+ * it — and exits 2, because a process that starts anyway spends real money
+ * producing a table of provider errors.
+ *
+ * `extra` is for ids outside the read path that the process also uses, such as
+ * the eval's judge.
+ */
+export const verifyModelsAtStartup = (
+  options: {
+    readonly fallback?: string
+    readonly extra?: ReadonlyArray<string>
+    readonly quiet?: boolean
+  } = {}
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const models = readPathModels(options.fallback ?? process.env["PALIMPSEST_MODEL"] ?? DEFAULT_MODEL)
+    const verified = yield* verifyModels(models, {
+      ...(options.extra === undefined ? {} : { extra: options.extra })
+    }).pipe(
+      Effect.catchAll((error: UnknownModelError) =>
+        Effect.sync(() => {
+          console.error(error.message)
+          process.exit(2)
+        })
+      )
+    )
+    if (options.quiet !== true && verified !== null && verified !== undefined) {
+      console.error(
+        `models       reader ${models.reader}, select ${models.select}, ` +
+          `sufficiency ${models.sufficiency} — verified against the provider`
+      )
+    }
+  })

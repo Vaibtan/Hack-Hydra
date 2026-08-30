@@ -12,6 +12,7 @@ import {
   ingestGenerationConfig,
   prepareDerivedIndexAssertions,
   readUserStats,
+  warmUser,
   sourceLinkedChainEvidence
 } from "@palimpsest/palimpsest"
 import { HydraClient } from "@palimpsest/hydra"
@@ -321,6 +322,35 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
             .contestedSlots(path.uid)
             .pipe(Effect.mapError(graphError))
           return { uid: path.uid, ...stats, contested }
+        })
+      )
+      /**
+       * The demo calls this on user select, so its first question is not the
+       * one that pays for a cold read.
+       *
+       * The demo used to warm through `stats`, which is a by-id read of the
+       * `User` vertex and touches none of the blocks a convergence walk reads.
+       * `warmUser` walks what an ask walks; the counts come back so a warm that
+       * reached nothing is visible rather than silent.
+       */
+      .handle("warm", ({ path }) =>
+        Effect.gen(function* () {
+          yield* requireUser(path.uid)
+          const report = yield* warmUser(hydra, path.uid).pipe(Effect.mapError(graphError))
+          if (Option.isNone(report)) {
+            return yield* new NotFound({ what: "user", key: path.uid })
+          }
+          const it = report.value
+          return {
+            uid: path.uid,
+            entities: it.entities,
+            slots: it.slots,
+            sessions: it.sessions,
+            tokens: it.tokens,
+            slotClaims: it.slotClaims,
+            turns: it.turns,
+            ms: it.ms
+          }
         })
       )
   })

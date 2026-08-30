@@ -183,6 +183,18 @@ export interface Stats {
   readonly contested: ReadonlyArray<ContestedSlot>
 }
 
+/** What a warm reached, so a warm that touched nothing is visible. */
+export interface WarmResult {
+  readonly uid: string
+  readonly entities: number
+  readonly slots: number
+  readonly sessions: number
+  readonly tokens: number
+  readonly slotClaims: number
+  readonly turns: number
+  readonly ms: number
+}
+
 export interface IngestResult {
   readonly uid: string
   readonly sid: string
@@ -238,20 +250,30 @@ export const api = {
     request(`/users/${encodeURIComponent(uid)}/sessions`),
 
   /**
-   * Pulls one user's counts so the first real ask is not also the first page
-   * fault.
+   * Reads the blocks the next ask will read, so the demo's first question after
+   * selecting a user is not the one that pays for them.
    *
-   * HydraDB's object-store cache is cold per user, and the demo's first ask
-   * after selecting someone would otherwise pay an 11 s cold convergence walk
-   * in front of an audience. `stats` is an indexed read by id off the `User`
-   * vertex — cheap on its own, and enough to pull that user's pages in.
+   * HydraDB's object-store cache is cold per user and a cold block is an HTTP
+   * GET to the object store, not a page fault: the first ask measured 11 397 ms
+   * of `graphMs` against a warm 68 ms.
+   *
+   * **It used to call `stats`, and that was the bug.** `stats` is an indexed
+   * read by id off the `User` vertex; it touches none of the blocks a
+   * convergence walk reads, so the comment claiming it was "enough to pull that
+   * user's pages in" was wrong, and the ops note had already measured that
+   * warming made no difference to the cold number. `/warm` walks what an ask
+   * walks — the fan-out, the Tokens behind the entities, the slots' claims and
+   * the sessions' turns.
    */
-  warm: async (uid: string): Promise<void> => {
+  warm: async (uid: string): Promise<WarmResult | null> => {
     try {
-      await request(`/users/${encodeURIComponent(uid)}/stats`)
+      return await request<WarmResult>(`/users/${encodeURIComponent(uid)}/warm`, {
+        method: "POST"
+      })
     } catch {
       // Warming is an optimisation. A failure here must not stop the user
       // asking a question -- the ask will report its own error if there is one.
+      return null
     }
   },
 
