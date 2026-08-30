@@ -97,7 +97,7 @@ const read = async (
         return yield* reader.readSpans("Where do I live?", "2023/05/01 (Mon) 10:00", spans)
       }),
       layer
-    ) as Effect.Effect<
+    ) as unknown as Effect.Effect<
       {
         readonly answer: string
         readonly notInMemory: boolean
