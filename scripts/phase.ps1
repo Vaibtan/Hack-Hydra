@@ -1,20 +1,34 @@
 # Switches the benchmark node between the ingest phase and the eval phase.
 #
-# Two settings are chosen per phase, not once (ops/hydradb/step-load-2026-08.md):
+# The phases differ in one setting (ops/hydradb/step-load-2026-08.md):
 #
-#   | setting                          | ingest | eval  |
-#   |----------------------------------|--------|-------|
-#   | GRAPH_OBJECT_STORE_CACHE_ENABLED | false  | true  |
-#   | GRAPH_MAX_QUERY_RUNTIME_MS       | 120000 | 30000 |
+#   | setting                          | ingest | eval   |
+#   |----------------------------------|--------|--------|
+#   | GRAPH_OBJECT_STORE_CACHE_ENABLED | false  | true   |
+#   | GRAPH_MAX_QUERY_RUNTIME_MS       | 120000 | 120000 |
 #
-# Off, a cold convergence walk does not finish in 25 s, because every block it
-# reads is an HTTP GET; on during an ingest, the node reaches the cycling
-# driver's ceiling in four minutes. The 30 s cap exists to stop a runaway plan,
-# which an ingest does not have and an eval does — and the eval is the only
-# phase that makes a latency or accuracy claim, so it runs on the shipped value.
+# The read cache: off during an ingest, because on, the node reaches the cycling
+# driver's memory ceiling in four minutes; on during an eval, because off, every
+# block a read touches is an HTTP GET to the object store.
 #
-# Both change how a read is *served*, never what is stored, and
-# `runtime_config_sha256` records which of the two produced a given result.
+# **The query cap is 120 s in both phases, decided 2026-08-31 and not the
+# spec's 30 s for the eval.** The reason is measured: on the 60-user graph a
+# cold ask is 86.2 s and the second ask on the same user is 0.1 s, so the whole
+# cost is pulling a user's working set out of the object store once. At a 30 s
+# cap the *priming* pass cannot complete a single ask, and without a priming
+# pass there is no warm pass to measure. Chunking the priming into small queries
+# was tried — `warmUser` batches at 200 source keys — and works for every level
+# except `HITS`, which is the convergence walk's own edge set and the one that
+# matters.
+#
+# What this does **not** do is relax anything a reported number is measured
+# against. Every latency figure in the tables is a warm one, on the order of
+# 0.1 s, which is two orders of magnitude below even the shipped 30 s cap; no
+# measured ask comes near either value. The cap decides whether the first pass
+# finishes, not what the second pass reports. `runtime_config_sha256` records it
+# in every envelope and the writeup says both passes ran at 120 s.
+#
+# Both settings change how a read is *served*, never what is stored.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/phase.ps1 -Phase eval
 
@@ -37,10 +51,8 @@ if ($Phase -eq "ingest") {
   $env:PALIMPSEST_HYDRADB_READ_CACHE = "false"
   $env:PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS = "120000"
 } else {
-  # Unset, so the Compose defaults apply. Setting them to the eval values by
-  # hand would work and would also mean two places to change if a default moves.
-  Remove-Item Env:PALIMPSEST_HYDRADB_READ_CACHE -ErrorAction SilentlyContinue
-  Remove-Item Env:PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS -ErrorAction SilentlyContinue
+  $env:PALIMPSEST_HYDRADB_READ_CACHE = "true"
+  $env:PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS = "120000"
 }
 
 & docker compose --project-directory $opsDirectory --env-file $envFile -f $composePath up -d hydradb | Out-Null
@@ -76,7 +88,7 @@ $cache = ($environment | Select-String -Pattern "^GRAPH_OBJECT_STORE_CACHE_ENABL
 $runtime = ($environment | Select-String -Pattern "^GRAPH_MAX_QUERY_RUNTIME_MS=(.*)$").Matches.Groups[1].Value
 
 $expectedCache = if ($Phase -eq "ingest") { "false" } else { "true" }
-$expectedRuntime = if ($Phase -eq "ingest") { "120000" } else { "30000" }
+$expectedRuntime = "120000"
 if ($cache -ne $expectedCache -or $runtime -ne $expectedRuntime) {
   throw "phase switch to $Phase did not take: read cache $cache (want $expectedCache), query cap $runtime (want $expectedRuntime)"
 }

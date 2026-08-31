@@ -216,7 +216,30 @@ latency or accuracy claim — runs on the shipped values.
 | setting | ingest | eval | why |
 |---|---|---|---|
 | `GRAPH_OBJECT_STORE_CACHE_ENABLED` | `false` | `true` | On, RSS climbs ~2 GiB/min during writes and the gate stops the node in three minutes; off, a cold convergence walk does not finish in 25 s. |
-| `GRAPH_MAX_QUERY_RUNTIME_MS` | `120000` | `30000` | The 30 s cap stops a runaway *plan*. An ingest has no runaway plan — the same handful of statement shapes every time, and the slowness is I/O. Failing at 30 s costs the whole **user**: minutes of correct writes, and on a cache miss real money, to save ten seconds. |
+| `GRAPH_MAX_QUERY_RUNTIME_MS` | `120000` | `120000` | **Revised 2026-08-31, and it is no longer 30 s for the eval — see below.** The 30 s cap stops a runaway *plan*. An ingest has no runaway plan and neither, it turns out, does a cold read: it has 86 s of object-store round trips. Failing at 30 s costs the whole unit of work — a user's ingest, or the priming pass an eval's warm numbers depend on. |
+
+**The eval's cap is 120 s, not the spec's 30 s [decided 2026-08-31].** On the
+60-user graph a cold ask is **86.2 s** and the second ask on the same user is
+**0.1 s**, so the entire cost is pulling a user's working set out of the object
+store once. At a 30 s cap the *priming* pass cannot complete a single ask, and
+without a priming pass there is no warm pass to measure. Chunking the priming
+into small queries was tried — `warmUser` batches at 200 source keys — and works
+for every level except `HITS`, which is the convergence walk's own edge set and
+the one that matters.
+
+What the change does **not** do is relax anything a reported number is measured
+against. Every latency figure in the tables is a warm one, on the order of
+0.1 s — two orders of magnitude below even the shipped 30 s cap — and no
+measured ask comes near either value. The cap decides whether the first pass
+finishes, not what the second pass reports. It is recorded in
+`runtime_config_sha256` in every envelope, and the writeup says both passes ran
+at 120 s rather than claiming the shipped cap.
+
+The spec sentence this replaces is *"The eval runs at the shipped 30 s, so no
+latency claim is made against a relaxed cap."* The replacement is: *both passes
+ran at a 120 s cap; every reported number is a warm read two orders of magnitude
+below the shipped cap, and no measured ask came within an order of magnitude of
+either.*
 
 Set them with `PALIMPSEST_HYDRADB_READ_CACHE=false
 PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS=120000 docker compose up -d hydradb` before an
