@@ -38,7 +38,11 @@ param(
   # suffix `eval` builds from the flags, or the merge finds nothing.
   [string] $Variant = "",
   [ValidateRange(1, 200)]
-  [int] $FromBatch = 1
+  [int] $FromBatch = 1,
+  # Stops early. For validating the flow on one batch before committing hours
+  # to twelve of them, and for resuming a run that died half way.
+  [ValidateRange(0, 200)]
+  [int] $ToBatch = 0
 )
 
 Set-StrictMode -Version Latest
@@ -109,12 +113,23 @@ function Invoke-EvalPass {
   } else {
     Remove-Item Env:PALIMPSEST_READ_TIMEOUT_MS -ErrorAction SilentlyContinue
   }
-  & npx @arguments *>&1 | Out-File -FilePath $Log -Encoding utf8
-  return $LASTEXITCODE
+
+  # `Start-Process` with explicit redirects rather than `& npx ... *>&1`.
+  # Node writes an `ExperimentalWarning` about SQLite to stderr on every start,
+  # and under `$ErrorActionPreference = "Stop"` PowerShell turns a native
+  # command's stderr into a terminating `NativeCommandError` -- so the first run
+  # of this script killed itself on a warning, *after* the eval had succeeded
+  # and written its results file. Redirecting to files keeps stderr as text.
+  $process = Start-Process -FilePath "npx.cmd" -ArgumentList $arguments `
+    -WorkingDirectory $repositoryRoot -RedirectStandardOutput $Log `
+    -RedirectStandardError "$Log.err" -WindowStyle Hidden -PassThru -Wait
+  return $process.ExitCode
 }
 
+$lastBatch = if ($ToBatch -eq 0) { $Batches } else { [Math]::Min($ToBatch, $Batches) }
+
 $startedAt = Get-Date
-for ($batch = $FromBatch; $batch -le $Batches; $batch++) {
+for ($batch = $FromBatch; $batch -le $lastBatch; $batch++) {
   if (-not (Restart-NodeForEval)) {
     Write-Output "batch $batch : node did not become ready; stopping"
     exit 1
@@ -143,6 +158,11 @@ for ($batch = $FromBatch; $batch -le $Batches; $batch++) {
   $elapsed = ((Get-Date) - $startedAt).TotalMinutes
   Write-Output ("batch {0}/{1} : done, {2:n1} min elapsed" -f $batch, $Batches, $elapsed)
   Get-Content $warmLog -Tail 3 | Where-Object { $_ -match "wrote|accuracy" } | ForEach-Object { Write-Output "  | $_" }
+}
+
+if ($lastBatch -ne $Batches -or $FromBatch -ne 1) {
+  Write-Output ("batches {0}-{1} of {2} done; run the rest, then merge" -f $FromBatch, $lastBatch, $Batches)
+  exit 0
 }
 
 $mergeArgs = @("tsx", "packages/eval/bin/merge-batches.ts", "--system", $System, "--split", $Split)
