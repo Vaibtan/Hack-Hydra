@@ -166,6 +166,13 @@ services:
       # and parallel flushes mean fewer, larger objects and less blocking. This
       # spends RAM the step-load curve says we have; tier B would spend latency
       # we do not.
+      # Server-side result cursors, parameterised so the eval phase can bound
+      # them. The engine's defaults are 64 MiB per cursor buffer, 1 024 open
+      # cursors and a 60 s TTL — up to 64 GiB of buffers held for a minute after
+      # use — and every read on this path pages through a cursor. Unset, these
+      # are the engine's own values and nothing changes.
+      GRAPH_MAX_CURSOR_BUFFER_BYTES: "${PALIMPSEST_HYDRADB_CURSOR_BUFFER_BYTES:-67108864}"
+      GRAPH_CURSOR_TTL_MS: "${PALIMPSEST_HYDRADB_CURSOR_TTL_MS:-60000}"
       GRAPH_MAX_UNFLUSHED_BYTES: "268435456"
       GRAPH_L0_SST_SIZE_BYTES: "67108864"
       GRAPH_L0_FLUSH_PARALLELISM: "4"

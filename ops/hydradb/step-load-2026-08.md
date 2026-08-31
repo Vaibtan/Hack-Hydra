@@ -515,6 +515,74 @@ after both stops. The ingest path: it ran for hours at the ingest settings
 without a single node failure, and the two failures here are both read-side and
 both with the read cache on.
 
+### What a read actually costs: ~750 MiB of RSS per user, and it does not bound
+
+This is the number that decides how the eval phase can be run at all, so it was
+measured directly: restart the node, then ask one question of each of four
+different dev users in turn, sampling the container between each.
+
+| ask | RSS before | `graphMs` |
+|---|---:|---:|
+| 1st user | 4.9 MiB | **85.7 s** |
+| 2nd user | 1.232 GiB | 74.2 s |
+| 3rd user | 2.007 GiB | 65.4 s |
+| 4th user | 2.758 GiB | — |
+
+**~750 MiB of resident memory per distinct user read, with no plateau**, and a
+cold ask of 65–86 s that amortises only slightly. A second ask of a user already
+read in the same node lifetime is **0.1 s**. So the read path is not slow; it is
+that a user's working set has to come out of the object store once, and that the
+node then holds three quarters of a gigabyte to show for it.
+
+At that rate the 5.5 GiB limit holds about **seven users**. The dev split is 60.
+The full population is 200. Sixty users would need roughly 45 GiB.
+
+**Nothing exposed as a knob bounds it.** Two candidates were tested and both
+ruled out:
+
+| tried | result |
+|---|---|
+| `GRAPH_DATA_CACHE_BYTES` 512 MiB → 4 GiB | Convergence stopped failing at 25 s and the ask failed one stage later instead. Growth unchanged. The evictor's drop rate got **worse** (1 → 4 700 skips per 30 s) and the node died. |
+| `GRAPH_MAX_CURSOR_BUFFER_BYTES` 64 MiB → 8 MiB, `GRAPH_CURSOR_TTL_MS` 60 s → 10 s | Byte for byte identical: 4.371 MiB → 1.233 GiB after one user, 86.0 s. Not cursors. |
+
+And it is not any cache the engine reports: at a 5.06 GiB peak,
+`graph_cache_resident_bytes` totalled **430 KB** across every cache on
+`/metrics`. The memory is SlateDB's own — block cache, SST index and filter
+blocks — for blocks scattered across a store that interleaves 60 users in one
+`default` graph keyspace.
+
+**The disk cache does not carry priming across a restart.** After ~15 minutes of
+heavy reading, `/var/cache/slatedb/data` held **480 MB of its 4 GiB**, and the
+first ask after a `docker start` of the *same container* was 85.7 s again — the
+same as a cold one. The evictor is dropping the cache writes, so the only cache
+that works is the in-memory one, and it lives and dies with the node.
+
+Both cursor settings are now parameterised in the Compose file
+(`PALIMPSEST_HYDRADB_CURSOR_BUFFER_BYTES`, `PALIMPSEST_HYDRADB_CURSOR_TTL_MS`)
+and default to the engine's own values, so the experiment can be repeated in one
+command and nothing is changed by leaving them alone.
+
+### What this means for the eval, in wall clock
+
+An eval run is one read per question. With ~7 users per node lifetime the dev
+split needs the node restarted about every five questions, and each batch pays
+its own priming because nothing survives the restart:
+
+- ~5 cold asks per batch at ~70 s ≈ 6 min, plus a warm pass of seconds, plus a
+  ~30 s restart → **~7 min per batch, ~12 batches, ~80 min per graph-touching
+  system run**.
+- Graph-touching runs in the dev programme: `palimpsest`, `palimpsest-v2` (full
+  and fast), `palimpsest-premise`, and eight ablations — **twelve runs, ~16 h**.
+  `bm25`, `fullctx` and `oracle-session` read the dataset rather than the graph
+  and are not affected.
+- The test half then needs its 140-user ingest (~11 h) and a single test read
+  across four graph-touching systems (~5 h).
+
+That is the honest figure: **roughly 32 hours of wall clock**, none of which is
+LLM spend and none of which concurrency or caching can buy back. It is a
+property of a 12 GB host holding a graph whose per-user read working set is
+750 MiB.
+
 ### One stray vertex
 
 A single `WriteCheck` vertex (`writecheck|after-gate-stop`) was written by hand
