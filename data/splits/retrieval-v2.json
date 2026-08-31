@@ -233,5 +233,37 @@
     "gpt4_c27434e8_abs",
     "gpt4_fe651585_abs"
   ],
-  "gate": null
+  "gate": {
+    "readAt": "2026-08-31T20:29:00.443Z",
+    "passed": true,
+    "numbers": {
+      "v1Answerable": 54,
+      "v2Answerable": 54,
+      "v1Correct": 43,
+      "v2Correct": 49,
+      "gain": 6,
+      "worstTypeRegressed": "none",
+      "worstTypeDelta": 0,
+      "falseAbstentions": 3,
+      "falseAbstentionPct": 5.6,
+      "v1AbsCorrect": 4,
+      "v2AbsCorrect": 4,
+      "absTotal": 6,
+      "graphMsP50": 246,
+      "readerTokensP50": 890,
+      "criterion:correct gain on answerable": true,
+      "criterion:worst per-type regression": true,
+      "criterion:false abstention on answerable (%)": true,
+      "criterion:_abs questions answered correctly": true,
+      "criterion:graphMs p50 warm (ms)": true,
+      "criterion:reader input tokens p50": true,
+      "v1File": "results/palimpsest-dev.json",
+      "v2File": "results/palimpsest-v2-dev.json",
+      "runtimeConfigSha256": "58bab098b96b8e4523856bd05a9330c65fb75a988b843ce28ce58f2de4b9b087",
+      "readerModel": "gpt-5.6-luna",
+      "selectModel": "gpt-5.6-luna",
+      "sufficiencyModel": "gpt-5.6-luna",
+      "extractionGeneration": "extract-v1-fffef7bb23a92938adeba1bd1b781a016b019a7bfac75708368dc719fd4de6e4"
+    }
+  }
 }
