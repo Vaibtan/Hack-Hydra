@@ -809,14 +809,51 @@ const make = Effect.gen(function* () {
       // 120 slots would let one broad slot decide the selector's whole table.
       const reachedArms = [...reaching, discovery]
       const secondPass = unionArms(reachedArms, unionOptions)
-      const found = yield* timed(
-        "slotKeys",
-        withReadTimeout("slotKeys", candidateSlots(secondPass.candidates.slice(0, topK)))
+      // ---- slot expansion, and why it is optional in v2 -------------------
+      //
+      // #27's rule is that an *optional* arm which trips its ceiling is
+      // reported rather than thrown, and that the convergence walk is not
+      // optional because without it the ask has no floor. The slot-mate
+      // expansion is optional by exactly that test: it adds a Slot's other
+      // values to evidence the convergence walk already found, so losing it
+      // makes an answer thinner, not unfounded.
+      //
+      // It was not treated that way, and on the dev split that cost whole
+      // rows: `slotClaims` exceeded the product's 25 s ceiling on one batch of
+      // four users, twice in a row on a warm node, and took the run down with
+      // it. Both pipelines cap Query 2 at the top 25 candidates, so this is not
+      // a missing bound — v2's union is drawn from several arms, so its top 25
+      // fill more *distinct* Slots than v1's single walk does, and Query 2
+      // reads more as a result. That is a real cost of the wider union and it
+      // belongs in the receipt, not in a stack trace.
+      //
+      // v1 is untouched: its slot expansion still throws, because v1's evidence
+      // *is* Query 1 plus Query 2 and there is no third arm to fall back on.
+      const slotExpansion = yield* Effect.either(
+        Effect.gen(function* () {
+          const keys = yield* timed(
+            "slotKeys",
+            withReadTimeout("slotKeys", candidateSlots(secondPass.candidates.slice(0, topK)))
+          )
+          return yield* timed(
+            "slotClaims",
+            withReadTimeout("slotClaims", readCandidateSlots(uid, keys.skeys, total))
+          )
+        }).pipe(Effect.catchTag("HydraLimitError", (error) => Effect.fail(error)))
       )
-      const slotClaims = yield* timed(
-        "slotClaims",
-        withReadTimeout("slotClaims", readCandidateSlots(uid, found.skeys, total))
-      )
+      if (slotExpansion._tag === "Left") {
+        if (slotExpansion.left._tag !== "HydraLimitError") return yield* Effect.fail(slotExpansion.left)
+        timedOut.add("slotMate")
+      }
+      const slotClaims: {
+        readonly claims: ReadonlyArray<ReachedClaim>
+        readonly query: string | null
+        readonly paths: number
+        readonly slotOf: ReadonlyMap<string, string>
+      } =
+        slotExpansion._tag === "Right"
+          ? slotExpansion.right
+          : { claims: [], query: null, paths: 0, slotOf: new Map<string, string>() }
       // Grouped, not a flat forty. v1 took the forty newest slot-mates across
       // every slot, so one slot with a long history - `(me, weight)` on a user
       // who logs it weekly - took the whole allowance and the other slots the
@@ -841,7 +878,12 @@ const make = Effect.gen(function* () {
       ]
 
       const union = unionArms(arms, unionOptions)
-      const slotOf = new Map([...found.slotOf, ...slotClaims.slotOf])
+      // `found` no longer exists as a separate binding: the slot-key walk and
+      // the slot-claim read are one optional unit now, and `readCandidateSlots`
+      // returns the claim->Slot mapping for everything it read. On a timed-out
+      // expansion this is empty, which is exactly right — there are no
+      // slot-mates to adjudicate.
+      const slotOf: ReadonlyMap<string, string> = slotClaims.slotOf
 
       // Supersession for the whole union, before the selector rather than after
       // it. Reading 120 keys and reading 30 is the same round trip, and doing it
