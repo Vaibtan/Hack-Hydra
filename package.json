@@ -29,6 +29,7 @@
     "eval": "pnpm --filter @palimpsest/eval run eval",
     "splits": "pnpm --filter @palimpsest/eval run splits",
     "table": "pnpm --filter @palimpsest/eval run table",
+    "merge-batches": "pnpm --filter @palimpsest/eval run merge-batches",
     "risk-coverage": "pnpm --filter @palimpsest/eval run risk-coverage",
     "reader-ab": "pnpm --filter @palimpsest/eval run reader-ab",
     "gate": "pnpm --filter @palimpsest/eval run gate",

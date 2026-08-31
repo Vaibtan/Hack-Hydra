@@ -41,6 +41,7 @@ import {
 /**
  * `eval --system palimpsest,palimpsest-v2,bm25,fullctx,oracle-session|all`
  * `     [--split dev|test | --slice 100] [--prefix g3] [--profile full|fast]`
+ * `     [--batch 3/12]`
  *
  * Answer accuracy, end to end: ask -> reader -> the official LongMemEval judge,
  * for Palimpsest and the baselines, on one population, with one judge.
@@ -92,6 +93,42 @@ const judgeModel = arg("judge", JUDGE_MODEL)
  * every file it produces.
  */
 const skipMissing = process.argv.includes("--skip-missing")
+/**
+ * `--batch 3/12` — run the third contiguous twelfth of the population.
+ *
+ * The node holds about seven users before the capacity gate stops it: a read
+ * costs ~750 MiB of resident memory per distinct user and does not bound
+ * (`ops/hydradb/step-load-2026-08.md`). A 60-question run therefore cannot
+ * happen in one node lifetime, and the way to get one is to restart the node
+ * between batches — which is also the only way to get *warm* numbers, because
+ * nothing survives the restart and a batch must be read cold and then warm
+ * inside a single lifetime.
+ *
+ * Contiguous rather than strided, and by position in the already-sorted split
+ * rather than by hash, so which questions are in which batch is obvious from
+ * the file name and stable across runs.
+ *
+ * A batch writes its own results file and `pnpm merge-batches` joins them. It
+ * does not write the whole-population file, because a partial file under the
+ * whole-population name is exactly the confusion that makes a results directory
+ * untrustworthy.
+ */
+const batchArg = arg("batch", "")
+const batch = (() => {
+  if (batchArg === "") return null
+  const match = /^(\d+)\/(\d+)$/.exec(batchArg.trim())
+  if (match === null) {
+    console.error(`--batch must look like 3/12, not ${JSON.stringify(batchArg)}`)
+    process.exit(2)
+  }
+  const index = Number(match[1])
+  const count = Number(match[2])
+  if (index < 1 || count < 1 || index > count) {
+    console.error(`--batch ${batchArg}: the index must be between 1 and the count`)
+    process.exit(2)
+  }
+  return { index, count }
+})()
 /**
  * v2 ablations. Each switches off exactly one stage, and the set is written
  * into every row and into the envelope — a results file must never be
@@ -282,6 +319,23 @@ const program = Effect.gen(function* () {
   // The size the population *should* be, kept before `--skip-missing` can
   // shrink it, so a partial run cannot describe itself as a whole one.
   const requestedCount = slice.length
+
+  // Taken after `requestedCount`, so a batch reports the population it belongs
+  // to rather than its own size.
+  const populationIds = slice.map((question) => question.questionId)
+  if (batch !== null) {
+    const size = Math.ceil(slice.length / batch.count)
+    const from = (batch.index - 1) * size
+    slice = slice.slice(from, from + size)
+    console.log(
+      `batch        ${batch.index} of ${batch.count}: questions ${from + 1}-${from + slice.length} ` +
+        `of ${requestedCount}`
+    )
+    if (slice.length === 0) {
+      console.error(`batch ${batchArg} is empty; the population has ${requestedCount} questions`)
+      return yield* Effect.sync(() => process.exit(2))
+    }
+  }
 
   // `--slice` never loads the split file, and `benchmarkSlice(100)` contains 40
   // of the 140 test questions — so the *default* invocation used to answer,
@@ -641,7 +695,8 @@ const program = Effect.gen(function* () {
     ].join('-')
     const path = resolve(
       outDir,
-      `${system}-${split === "" ? slice.length : split}${variant === '' ? '' : `-${variant}`}.json`
+      `${system}-${split === "" ? slice.length : split}${variant === '' ? '' : `-${variant}`}` +
+        `${batch === null ? "" : `.batch-${String(batch.index).padStart(2, "0")}-of-${batch.count}`}.json`
     )
     yield* Effect.promise(() =>
       writeFile(
@@ -655,7 +710,14 @@ const program = Effect.gen(function* () {
             profile,
             slice: slice.length,
             requestedSlice: split === "" ? sliceSize : requestedCount,
-            partial: slice.length !== (split === "" ? sliceSize : requestedCount),
+            partial:
+              batch === null && slice.length !== (split === "" ? sliceSize : requestedCount),
+            // Present only on a batch, and carrying the whole population's id
+            // list, so `merge-batches` can refuse a set that does not add up to
+            // it rather than quietly joining whatever files it finds.
+            ...(batch === null
+              ? {}
+              : { batch: { index: batch.index, count: batch.count, population: populationIds } }),
             // All three verified against the provider before the run started.
             readerModel: models.reader,
             selectModel: models.select,
