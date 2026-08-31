@@ -373,7 +373,7 @@ change that would move it; it is **not** made here, because it requires a WSL
 restart and `docs/run-log.md` records what a wedged WSL costs, and a graph that
 cannot be written to is a worse outcome than a slow one.
 
-### The eval phase does not currently complete a cold ask — two node failures
+### The eval phase does not currently complete a cold ask — three node failures
 
 Stopped here under the run rule, and recorded rather than worked around.
 
@@ -418,17 +418,74 @@ That warning is the same evictor the P0 profile disabled this cache for, and the
 same one the previous session cleared on the grounds that its telemetry exists.
 The telemetry does exist. The evictor still falls over.
 
-**The likely cause, untested:** `GRAPH_DATA_CACHE_BYTES` is **512 MiB** against
-an object store holding **~3.5 GB**. The disk read cache is roughly a seventh of
-the working set, so it thrashes; the evictor queue fills, its bookkeeping grows,
-and RSS climbs with churn rather than with data. It is a *disk* cache, so
-raising it costs disk and not RAM, and it is exactly the knob that would make a
-second read cheap without holding the graph in memory.
+**Raising the disk cache was tried, and it is not the fix.**
+`GRAPH_DATA_CACHE_BYTES` went from 512 MiB to 4 GiB — a *disk* cache, so it
+costs disk and not RAM — against an object store holding ~3.5 GB. It moved one
+thing and not the others: the convergence stage went from failing at 25 s to
+passing, and the ask then failed one stage later, at `slotClaims`, and kept
+failing there on every repeat.
 
-That change is not made here. Two node failures in one run is the point at which
-this project stops and reports (`docs/run-log.md`), and a runtime change made
-while standing on a node that has just died twice is how a benchmark acquires a
-number nobody can explain.
+**The numbers, measured under a relaxed cap so they are numbers rather than
+timeouts.** With the read cache on and the query cap at 120 s:
+
+| ask | `graphMs` |
+|---|---:|
+| first, on a cold user | **86.2 s** |
+| second, same user, same node | **0.1 s** |
+
+So nothing is hung and nothing is pathological. The whole problem is **priming**:
+a user's working set has to come out of the object store once, over HTTP, and
+that costs 86 s. Every stage of the read path is slow on its first touch and
+instant afterwards. `graphMs <= 1.5 s p50 warm` is not in doubt; getting to warm
+is.
+
+**And priming does not fit inside the shipped 30 s cap.** A single ask is one
+big query per stage, and the big ones exceed 30 s. `warmUser` chunks its walks
+at 200 source keys precisely so each query is small, and that works for the
+`NAMES`, `FILLS` and `HAS_TURN` levels — but the `HITS` level, which is the
+convergence walk's own edge set and the one that matters, is thousands of claim
+paths per 200-token batch and **all 13 batches failed at the cap**.
+
+**Three node failures, and the same line before each one.**
+
+| # | what happened | last log line before it |
+|---|---|---|
+| 1 | capacity gate stopped it at **90.45 %** of 5.5 GiB (graceful; graph verified intact and writable) | `evictor queue skipped cache write/access event because it was full 1 times in the last 30s` |
+| 2 | process died on one cold ask — `RestartCount 1`, **not** an OOM kill, no error logged | the same warning |
+| 3 | process died during `warm --deep` | `… full **4700 times** in the last 30s` |
+
+The drop count scales with read volume and the death follows it. This is the
+SlateDB object-store cache evictor, and it is exactly the component the P0
+profile disabled this cache for — a decision #23 overturned on the grounds that
+the evictor's telemetry exists. The telemetry does exist and is on `/metrics`.
+The evictor still falls over, and raising the cache made the drop rate worse
+rather than better.
+
+**What is known to be stable.** The ingest phase — read cache **off** — ran for
+hours with zero node failures. Every failure here is read-side and every one is
+with the cache on.
+
+**The decision this needs**, because it is a benchmark-validity trade and not an
+engineering detail:
+
+- *Cache on, 120 s cap.* The only configuration measured end to end: a cold ask
+  completes in 86 s and the next is 0.1 s. Every **reported** number would still
+  be a warm one, an order of magnitude below even the shipped cap — the cap
+  decides whether the priming pass finishes, not what any latency claim says.
+  Costs the sentence "the eval runs at the shipped 30 s, so no latency claim is
+  made against a relaxed cap".
+- *Cache off.* Known stable, and the phase that never failed. Unmeasured for
+  reads at this graph size, and the ops note's own 20-user reading says a cold
+  walk did not finish in 25 s with the cache off.
+- *Persist the disk cache across a recreate* (a named volume on
+  `GRAPH_DATA_CACHE_DIR`). Would allow priming at 120 s and then measuring at
+  the shipped 30 s with the cache still warm — keeping both the letter and the
+  point of the rule. Untested, and it does not address the evictor deaths.
+
+No further runtime change is made here. Three node failures is well past the
+point at which this project stops and reports (`docs/run-log.md`), and a runtime
+change made while standing on a node that has died three times is how a
+benchmark acquires a number nobody can explain.
 
 **What is unaffected.** The graph: 60/60 dev users complete, 0 failures, verified
 after both stops. The ingest path: it ran for hours at the ingest settings

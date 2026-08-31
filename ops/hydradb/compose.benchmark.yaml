@@ -78,7 +78,22 @@ services:
       GRAPH_BOLT_NODE_ADDRESSES: node-p0=hydradb:7687
       GRAPH_ADVERTISED_BOLT_ADDR: hydradb:7687
       GRAPH_DATA_CACHE_DIR: /var/cache/slatedb/data
-      GRAPH_DATA_CACHE_BYTES: "536870912"
+      # 4 GiB, raised from 512 MiB on 2026-08-31.
+      #
+      # This is a **disk** cache, so it costs disk and not RAM, and 512 MiB was
+      # about a seventh of the ~3.5 GB of objects the 60-user graph holds. A
+      # read cache that small against a working set that large does not miss
+      # gracefully, it thrashes: the node logged
+      # `evictor queue skipped cache write/access event because it was full`
+      # immediately before dying twice — once stopped by the capacity gate at
+      # 90.45 % of its memory limit, once killed outright with no error and no
+      # OOM — while a cold convergence walk went from the 15 979 ms measured on
+      # the 20-user graph to past the 25 s client ceiling and the 30 s engine
+      # cap.
+      #
+      # The eviction churn, not the cached data, is what grew: every engine
+      # cache on /metrics totalled 430 KB at a 5.06 GiB RSS peak.
+      GRAPH_DATA_CACHE_BYTES: "4294967296"
       # **Chosen per phase**: `false` while ingesting, `true` while evaluating.
       # `PALIMPSEST_HYDRADB_READ_CACHE=false docker compose up -d hydradb` before
       # a bulk ingest; unset it before an eval. This is a runtime setting, not

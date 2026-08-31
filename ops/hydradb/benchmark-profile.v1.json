@@ -8,7 +8,7 @@
       "memory_swap_bytes": 5905580032,
       "cpu_limit": 4,
       "restart_policy": "on-failure:3",
-      "cache_bytes": 536870912,
+      "cache_bytes": 4294967296,
       "minimum_host_headroom_bytes": 805306368
     },
     "object_store": {
