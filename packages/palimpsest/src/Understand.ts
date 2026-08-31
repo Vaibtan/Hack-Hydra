@@ -148,7 +148,21 @@ Return an empty list when the question names no attribute from the vocabulary.`
  * its own kind in words — "how many" is a count, full stop — because every cue
  * is a rule that fires on questions nobody looked at.
  */
-const COUNT_PHRASE = /\b(how many|how much|how often|how numerous)\b/
+/**
+ * **Narrowed on 2026-08-31, from evidence.** It was
+ * `/\b(how many|how much|how often|how numerous)\b/`, and on the first v2 dev
+ * run that put **21 of 36 questions on the `count` route** — 9 multi-session, 7
+ * knowledge-update and 4 temporal-reasoning, none of which is a count. "How
+ * much did I pay" is a fact and "how often do I go" is a frequency; neither is
+ * a list to enumerate, which is what the route's reader rule asks for.
+ *
+ * The spec names exactly one phrase for this cue, `how many`, and the widening
+ * was not in it. Three of the four wrong `count`-routed answers were
+ * `INSUFFICIENT_EVIDENCE` abstentions, which is the compounding cost: the
+ * sufficiency check judges a count PARTIAL whenever an item might be missing,
+ * runs its second pass, and abstains — on a question that was never a count.
+ */
+const COUNT_PHRASE = /\bhow many\b/
 const CURRENT_WORD = /\b(current|currently|now|nowadays|still|these days|at the moment)\b/
 const DID_I_WITH = /\bdid i\b[^?]*\bwith\b/
 
@@ -169,7 +183,15 @@ export const applyRouteCues = (
   timeRef: string | null
 ): { readonly route: Route; readonly reason: string } => {
   const text = question.toLowerCase()
-  if (COUNT_PHRASE.test(text)) return { route: "count", reason: "cue:how_many" }
+  // Not over `temporal`. "How many years older is my grandma than me" says
+  // "how many" and is date arithmetic, not an enumeration — it is #27's own
+  // example question, and the count route would tell the reader to list items
+  // and total them when what it needs is to subtract two dates. A model that
+  // has already called a question temporal has resolved something a regex
+  // cannot, so the cue defers to it.
+  if (COUNT_PHRASE.test(text) && modelRoute !== "temporal") {
+    return { route: "count", reason: "cue:how_many" }
+  }
   if (DID_I_WITH.test(text) && timeRef !== null) {
     return { route: "temporal", reason: "cue:did_i_with_time" }
   }

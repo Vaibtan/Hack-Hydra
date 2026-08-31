@@ -36,7 +36,31 @@ describe("deterministic route cues", () => {
       route: "count",
       reason: "cue:how_many"
     })
-    expect(applyRouteCues("How much did I pay?", "fact", null).route).toBe("count")
+    // And only "how many". The cue was widened to `how much|how often|how
+    // numerous` at some point, and the first v2 dev run showed what that cost:
+    // 21 of 36 questions on the count route, 9 of them multi-session and 4
+    // temporal-reasoning. "How much did I pay" is a fact and "how often do I
+    // go" is a frequency; neither is a list to enumerate, which is what the
+    // count route's reader rule asks for.
+    expect(applyRouteCues("How much did I pay?", "fact", null).route).toBe("fact")
+    expect(applyRouteCues("How often do I go to the gym?", "fact", null).route).toBe("fact")
+    expect(applyRouteCues("How numerous are my plants?", "fact", null).reason).toBe("model")
+  })
+
+  it("does not turn a date-arithmetic question into an enumeration", () => {
+    // "How many years older is my grandma than me" says "how many" and is
+    // subtraction, not a list -- and it is the two-fact comparison question
+    // #27 exists for. A model that has already called a question temporal has
+    // resolved something a regex cannot, so the cue defers to it.
+    expect(
+      applyRouteCues("How many years older is my grandma than me?", "temporal", null)
+    ).toEqual({ route: "temporal", reason: "model" })
+    // The cue still fires over every other route, including on a question that
+    // happens to mention time.
+    expect(
+      applyRouteCues("How many items do I need to pick up this week?", "multi_fact", "this week")
+        .route
+    ).toBe("count")
   })
 
   it("calls a did-I-with question temporal only when it also carries a time phrase", () => {
