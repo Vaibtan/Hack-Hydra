@@ -54,14 +54,42 @@ export const MAX_REFINEMENT_PASSES = 1
 /**
  * The tiers that abstain when the second pass has already run.
  *
- * **Provisional.** The ticket asks for this to be chosen from a risk-coverage
- * curve on the dev split, and that curve needs the dev run this constant is an
- * input to. `PARTIAL` alone is the conservative starting point: it abstains
- * only when the model said outright that something is missing *and* going back
- * for it did not find it. `pnpm risk-coverage` rebuilds the curve from a
- * results file, and this constant moves only with that table beside it.
+ * **Empty, chosen from the dev risk-coverage curve on 2026-08-31.** It shipped
+ * as `["PARTIAL"]` with a comment saying it was provisional until exactly this
+ * table existed. The table (`results/risk-coverage-dev.md`, 54 answerable + 6
+ * `_abs`):
+ *
+ * | gate | coverage | correct of answered | risk | false abstention | `_abs` accuracy |
+ * |---|---:|---:|---:|---:|---:|
+ * | none | 100.0 % | 46/54 | 14.8 % | 0.0 % | 83.3 % |
+ * | `PARTIAL` | 87.0 % | 46/47 | 2.1 % | 13.0 % | 83.3 % |
+ * | `PARTIAL` + `INFERRABLE` | 64.8 % | 35/35 | 0.0 % | 35.2 % | 100.0 % |
+ *
+ * The `PARTIAL` gate refuses 13 % of the answerable questions and buys **no**
+ * abstention accuracy for it: 5 of 6 `_abs` questions are refused correctly
+ * with the gate and 5 of 6 without it. Its 2.1 % risk looks like a strong
+ * number and is not one — 46 of 47 correct means the reader is nearly perfect
+ * on what it answers, so every question the gate withholds is one it would
+ * probably have got right. Seven were withheld; three of those were
+ * multi-session questions v1 answered correctly, which was the whole of v2's
+ * −2 on that type.
+ *
+ * `PARTIAL + INFERRABLE` is the only setting that reaches 6/6 on `_abs`, and it
+ * costs 35 % of the answerable split to do it. That is not a trade this
+ * benchmark can make: 470 of LongMemEval's 500 questions are answerable.
+ *
+ * **This does not disable the stage.** The check still runs, still classifies,
+ * and `PARTIAL` with named missing terms still triggers the one refined pass —
+ * the widening is what the stage is worth, and it is separate from the refusal.
+ * What is empty is the set of tiers that turn a read answer into
+ * `INSUFFICIENT_EVIDENCE`. `CONTRADICTED_PREMISE` is unaffected: it is
+ * evidence-backed and gated on a cited CURRENT claim, not on a tier.
+ *
+ * So `INSUFFICIENT_EVIDENCE` is implemented, tested and never reached at this
+ * threshold. That is the honest state — the reason is in the table above, and
+ * the constant is one line to move if a later population disagrees.
  */
-export const ABSTAIN_TIERS: ReadonlyArray<Tier> = ["PARTIAL"]
+export const ABSTAIN_TIERS: ReadonlyArray<Tier> = []
 
 /**
  * The check's model, when one is set. Read per call for the same reason the

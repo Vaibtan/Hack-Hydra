@@ -2,6 +2,7 @@ import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { answerV2, type AnswerOptions } from "../../src/Answer.js"
+import { ABSTAIN_TIERS } from "../../src/Sufficiency.js"
 import type { HydratedSpan, ReadAnswer, Reader } from "../../src/Reader.js"
 import type { AskOptions, AskResult, RetrievalPlan, Retrieve } from "../../src/Retrieve.js"
 
@@ -327,8 +328,32 @@ describe("the second pass runs at most once", () => {
 
     expect(askedWith).toHaveLength(2)
     expect(llmCalls).toEqual(["sufficiency", "sufficiency"])
-    expect(result.verdict).toBe("ABSENT")
-    expect(result.reason).toBe("INSUFFICIENT_EVIDENCE")
+    // Two passes and then it stops, whatever the second one said. Whether a
+    // still-PARTIAL verdict *abstains* is `ABSTAIN_TIERS`, which the dev
+    // risk-coverage curve set to empty -- so at the shipped threshold this
+    // answers rather than refusing, and the loop is what is under test here.
+    expect(result.verdict).toBe(ABSTAIN_TIERS.includes("PARTIAL") ? "ABSENT" : "ANSWER")
+    expect(result.reason).toBe(
+      ABSTAIN_TIERS.includes("PARTIAL") ? "INSUFFICIENT_EVIDENCE" : null
+    )
+  })
+
+  it("still widens on PARTIAL even though it no longer refuses", async () => {
+    // The stage's value is the second pass, and that is triggered by PARTIAL
+    // with named terms, independently of whether the tier abstains. Emptying
+    // `ABSTAIN_TIERS` drops the refusal and keeps the widening.
+    const { askedWith, result } = await run({
+      asks: [ask(), ask()],
+      reads: [readAnswer(), readAnswer({ answer: "Osaka, previously Kyoto" })],
+      judgements: [
+        { tier: "PARTIAL", missing: "the old value", missing_terms: ["kyoto"] },
+        { tier: "PARTIAL", missing: "the old value", missing_terms: ["kyoto"] }
+      ]
+    })
+
+    expect(askedWith).toHaveLength(2)
+    expect(askedWith[1]!.extraTerms).toEqual(["kyoto"])
+    expect(result.secondPass).toBe(true)
   })
 
   it("answers when the second pass found what the first was missing", async () => {

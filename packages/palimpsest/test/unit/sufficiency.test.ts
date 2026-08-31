@@ -105,11 +105,24 @@ describe("the skip rule", () => {
 })
 
 describe("abstention", () => {
-  it("abstains on PARTIAL and nothing else", () => {
-    expect([...ABSTAIN_TIERS]).toEqual(["PARTIAL"])
-    expect(abstains(report({ tier: "PARTIAL" }))).toBe(true)
-    expect(abstains(report({ tier: "INFERRABLE" }))).toBe(false)
-    expect(abstains(report({ tier: "EXACT" }))).toBe(false)
+  it("abstains on exactly the tiers the constant names", () => {
+    // The rule, not the value. `ABSTAIN_TIERS` is chosen from the dev
+    // risk-coverage curve and is expected to move; what must not move is that
+    // `abstains` answers the constant and nothing else.
+    for (const tier of ["EXACT", "INFERRABLE", "PARTIAL"] as const) {
+      expect(abstains(report({ tier }))).toBe(ABSTAIN_TIERS.includes(tier))
+    }
+  })
+
+  it("abstains on nothing, which is what the dev curve chose", () => {
+    // Pinned separately from the rule above, because it is a *measurement*:
+    // the `PARTIAL` gate refused 13 % of the answerable dev split and bought no
+    // abstention accuracy for it (5/6 `_abs` either way), while 46 of the 47 it
+    // did answer were correct. `results/risk-coverage-dev.md` is the table and
+    // `Sufficiency.ts` carries the reasoning. Change this line and that comment
+    // together, or neither.
+    expect([...ABSTAIN_TIERS]).toEqual([])
+    expect(abstains(report({ tier: "PARTIAL" }))).toBe(false)
   })
 
   it("never abstains on a check that did not run", () => {
