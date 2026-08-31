@@ -32,3 +32,4 @@ ops/hydradb/secrets/*
 .ingest-logs/
 .ingest-logs-*/
 .eval-logs/
+results/*.batch-*.json
