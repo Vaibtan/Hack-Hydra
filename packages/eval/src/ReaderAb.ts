@@ -60,6 +60,11 @@ export interface ReaderAbFile {
   readonly extractionGeneration: string
   readonly runtimeConfig?: unknown
   readonly questionTypes: ReadonlyArray<string>
+  /**
+   * Present only on a batch file. The A/B reads the graph, and the node holds
+   * about seven users, so twenty-five questions is five node lifetimes.
+   */
+  readonly batch?: { readonly index: number; readonly count: number }
   readonly rows: ReadonlyArray<ReaderAbRow>
 }
 

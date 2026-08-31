@@ -4,7 +4,7 @@ import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv, readPathModels, verifyModels } from "@palimpsest/llm"
 import { ClaimGraph, Reader, Retrieve, Supersede } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import {
@@ -23,7 +23,7 @@ import {
 
 /**
  * `reader-ab [--split dev] [--types single-session-preference,knowledge-update]`
- * `          [--profile full|fast] [--concurrency 6]`
+ * `          [--profile full|fast] [--concurrency 6] [--batch 2/5 | --merge]`
  *
  * #30's last box: the route-specific reader rules, measured against v1's single
  * prompt **on identical packed evidence**.
@@ -62,6 +62,35 @@ const types = arg("types", "single-session-preference,knowledge-update")
   .split(",")
   .map((one) => one.trim())
   .filter((one) => one !== "")
+/**
+ * `--batch 2/5`, and `--merge` to join the pieces.
+ *
+ * Same reason as the eval's: this reads the graph, a read costs ~750 MiB of
+ * resident memory per distinct user and does not bound, and the node holds
+ * about seven users (`ops/hydradb/step-load-2026-08.md`). Twenty-five questions
+ * is twenty-five users.
+ *
+ * Unlike the eval there is no warm pass to protect — the A/B compares two
+ * *answers* on identical evidence and reports no latency — so a batch is read
+ * once, and the only thing batching buys here is that the run finishes.
+ */
+const batchArg = arg("batch", "")
+const merge = process.argv.includes("--merge")
+const batch = (() => {
+  if (batchArg === "") return null
+  const match = /^(\d+)\/(\d+)$/.exec(batchArg.trim())
+  if (match === null) {
+    console.error(`--batch must look like 2/5, not ${JSON.stringify(batchArg)}`)
+    process.exit(2)
+  }
+  const index = Number(match[1])
+  const count = Number(match[2])
+  if (index < 1 || count < 1 || index > count) {
+    console.error(`--batch ${batchArg}: the index must be between 1 and the count`)
+    process.exit(2)
+  }
+  return { index, count }
+})()
 
 const workspaceRoot = (): string => {
   let dir = process.cwd()
@@ -108,6 +137,70 @@ const prefix = arg("prefix", splitFile.prefix)
 const uidFor = (questionId: string): string =>
   prefix === "" ? questionId : `${prefix}-${questionId}`
 
+const batchPath = (index: number, count: number): string =>
+  resolve(outDir, `reader-ab-${split}.batch-${String(index).padStart(2, "0")}-of-${count}.json`)
+
+const mergedPath = resolve(outDir, `reader-ab-${split}.json`)
+
+/**
+ * Joins the batch files, refusing rather than repairing.
+ *
+ * The same standard as `merge-batches`: a missing or duplicated batch, batches
+ * that disagree about what was measured, or a question answered twice, are all
+ * ways a results file becomes wrong in a way no number in it would reveal.
+ */
+if (merge) {
+  const files = readdirSync(outDir)
+    .filter((name) => name.startsWith(`reader-ab-${split}.batch-`) && name.endsWith(".json"))
+    .sort()
+  if (files.length === 0) {
+    console.error(`no batch files matching reader-ab-${split}.batch-*.json in ${outDir}`)
+    process.exit(2)
+  }
+  const parts = files.map(
+    (name) =>
+      JSON.parse(readFileSync(resolve(outDir, name), "utf8")) as ReaderAbFile & {
+        readonly batch?: { readonly index: number; readonly count: number }
+      }
+  )
+  const refusals: Array<string> = []
+  const count = parts[0]?.batch?.count
+  if (count === undefined) refusals.push(`${files[0]} carries no batch record`)
+  if (parts.some((one) => one.batch?.count !== count)) {
+    refusals.push("the files disagree about how many batches there are")
+  }
+  const seen = new Set(parts.map((one) => one.batch?.index))
+  for (let index = 1; index <= (count ?? 0); index++) {
+    if (!seen.has(index)) refusals.push(`batch ${index} of ${count} is missing`)
+  }
+  for (const field of ["split", "prefix", "profile", "readerModel", "judgeModel", "extractionGeneration"] as const) {
+    const values = [...new Set(parts.map((one) => JSON.stringify(one[field])))]
+    if (values.length > 1) refusals.push(`the batches disagree on \`${field}\`: ${values.join(" vs ")}`)
+  }
+  const rows = parts.flatMap((one) => one.rows)
+  const ids = new Set<string>()
+  for (const row of rows) {
+    if (ids.has(row.questionId)) refusals.push(`${row.questionId} appears in more than one batch`)
+    ids.add(row.questionId)
+  }
+  if (refusals.length > 0) {
+    console.error(`refusing to merge ${files.length} file(s):`)
+    for (const refusal of refusals) console.error(`  ${refusal}`)
+    process.exit(2)
+  }
+  const mergedFile: ReaderAbFile = {
+    ...parts[0]!,
+    rows: [...rows].sort((a, b) => a.questionId.localeCompare(b.questionId))
+  }
+  delete (mergedFile as { batch?: unknown }).batch
+  writeFileSync(mergedPath, `${JSON.stringify(mergedFile, null, 2)}
+`, "utf8")
+  console.log(renderReaderAb(mergedFile))
+  console.log("")
+  console.log(`merged ${files.length} batches (${mergedFile.rows.length} rows) into ${mergedPath}`)
+  process.exit(0)
+}
+
 const AppLive = Retrieve.Default.pipe(
   Layer.provideMerge(Reader.Default),
   Layer.provideMerge(Supersede.Default),
@@ -131,14 +224,28 @@ const program = Effect.gen(function* () {
 
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const wanted = new Set(split === "dev" ? splitFile.dev : splitFile.test)
-  const population = questions
+  let population = questions
     .filter((question) => wanted.has(question.questionId))
     .filter((question) => types.includes(question.questionType))
     .sort((a, b) => a.questionId.localeCompare(b.questionId))
 
+  const wholePopulation = population.length
+  if (batch !== null) {
+    const size = Math.ceil(population.length / batch.count)
+    const from = (batch.index - 1) * size
+    population = population.slice(from, from + size)
+    if (population.length === 0) {
+      console.error(`batch ${batchArg} is empty; the population has ${wholePopulation} questions`)
+      return yield* Effect.sync(() => process.exit(2))
+    }
+  }
+
   console.log(`split        ${split}`)
   console.log(`types        ${types.join(", ")}`)
-  console.log(`questions    ${population.length}`)
+  console.log(
+    `questions    ${population.length}` +
+      (batch === null ? "" : ` (batch ${batch.index} of ${batch.count}, of ${wholePopulation})`)
+  )
   console.log(`reader       ${llm.model}   judge ${judgeModel}   profile ${profile}`)
   const runtimeConfig = readRuntimeConfig()
   console.log(
@@ -285,11 +392,12 @@ const program = Effect.gen(function* () {
     extractionGeneration: liveExtractionGeneration().id,
     runtimeConfig,
     questionTypes: types,
+    ...(batch === null ? {} : { batch: { index: batch.index, count: batch.count } }),
     rows: kept
   }
 
   yield* Effect.promise(() => mkdir(outDir, { recursive: true }))
-  const jsonPath = resolve(outDir, `reader-ab-${split}.json`)
+  const jsonPath = batch === null ? mergedPath : batchPath(batch.index, batch.count)
   yield* Effect.promise(() => writeFile(jsonPath, JSON.stringify(file, null, 2), "utf8"))
 
   const table = renderReaderAb(file)
