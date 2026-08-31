@@ -835,16 +835,20 @@ const make = Effect.gen(function* () {
             "slotKeys",
             withReadTimeout("slotKeys", candidateSlots(secondPass.candidates.slice(0, topK)))
           )
-          return yield* timed(
+          const claims = yield* timed(
             "slotClaims",
             withReadTimeout("slotClaims", readCandidateSlots(uid, keys.skeys, total))
           )
-        }).pipe(Effect.catchTag("HydraLimitError", (error) => Effect.fail(error)))
+          return { keys, claims }
+        })
       )
-      if (slotExpansion._tag === "Left") {
-        if (slotExpansion.left._tag !== "HydraLimitError") return yield* Effect.fail(slotExpansion.left)
-        timedOut.add("slotMate")
+      if (slotExpansion._tag === "Left" && slotExpansion.left._tag !== "HydraLimitError") {
+        // Only a *limit* degrades. An unavailable node or a parse error is not
+        // a slow read, and swallowing it would turn a broken runtime into a
+        // slightly thinner answer.
+        return yield* Effect.fail(slotExpansion.left)
       }
+      if (slotExpansion._tag === "Left") timedOut.add("slotMate")
       const slotClaims: {
         readonly claims: ReadonlyArray<ReachedClaim>
         readonly query: string | null
@@ -852,8 +856,16 @@ const make = Effect.gen(function* () {
         readonly slotOf: ReadonlyMap<string, string>
       } =
         slotExpansion._tag === "Right"
-          ? slotExpansion.right
+          ? slotExpansion.right.claims
           : { claims: [], query: null, paths: 0, slotOf: new Map<string, string>() }
+      // Both maps, as before. `candidateSlots` knows which Slot each *candidate*
+      // fills and `readCandidateSlots` knows it for every claim it read; a
+      // candidate whose Slot returned more claims than the read's cap would be
+      // missing from the second. `plan.slots` feeds the pack's CURRENT /
+      // EARLIER STATEMENT adjudication, so a gap here is a label the reader
+      // does not get.
+      const candidateSlotOf: ReadonlyMap<string, string> =
+        slotExpansion._tag === "Right" ? slotExpansion.right.keys.slotOf : new Map<string, string>()
       // Grouped, not a flat forty. v1 took the forty newest slot-mates across
       // every slot, so one slot with a long history - `(me, weight)` on a user
       // who logs it weekly - took the whole allowance and the other slots the
@@ -878,12 +890,10 @@ const make = Effect.gen(function* () {
       ]
 
       const union = unionArms(arms, unionOptions)
-      // `found` no longer exists as a separate binding: the slot-key walk and
-      // the slot-claim read are one optional unit now, and `readCandidateSlots`
-      // returns the claim->Slot mapping for everything it read. On a timed-out
-      // expansion this is empty, which is exactly right — there are no
-      // slot-mates to adjudicate.
-      const slotOf: ReadonlyMap<string, string> = slotClaims.slotOf
+      const slotOf: ReadonlyMap<string, string> = new Map([
+        ...candidateSlotOf,
+        ...slotClaims.slotOf
+      ])
 
       // Supersession for the whole union, before the selector rather than after
       // it. Reading 120 keys and reading 30 is the same round trip, and doing it
