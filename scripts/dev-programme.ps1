@@ -22,8 +22,15 @@
 param(
   [ValidateRange(1, 99)]
   [int] $From = 1,
+  # Fifteen, not twelve: measured. `palimpsest` peaked at 3.7 GiB per five-user
+  # batch and `palimpsest-v2` at **5.19 GiB of 5.5**, because v2 reads more per
+  # user — convergence, sub-question walks, Slot probes, a discovery hop and the
+  # slot expansion, where v1 reads one walk. Four users a batch keeps a v2 batch
+  # near 4 GiB, and the extra three restarts cost about ninety seconds across a
+  # run. The cold time is per question and does not change with the batch size;
+  # only the restart count does.
   [ValidateRange(1, 99)]
-  [int] $Batches = 12,
+  [int] $Batches = 15,
   [ValidateRange(1, 16)]
   [int] $Concurrency = 2,
   [switch] $List
