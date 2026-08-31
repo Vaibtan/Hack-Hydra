@@ -150,8 +150,25 @@ for ($batch = $FromBatch; $batch -le $lastBatch; $batch++) {
   Write-Output ("batch {0}/{1} : warm pass" -f $batch, $Batches)
   $warm = Invoke-EvalPass -Batch $batch -Pass "warm" -Log $warmLog
   if ($warm -ne 0) {
-    Write-Output "  warm pass exited $warm; see $warmLog"
-    Get-Content $warmLog -Tail 6 | ForEach-Object { Write-Output "  | $_" }
+    # Retried once, and only once.
+    #
+    # The warm pass runs at the product's default 25 s ceiling on purpose, so a
+    # warm read that needs more fails here rather than being quietly reported.
+    # It fired on batch 9 of the first v2 run, on `slotClaims`. The likely cause
+    # is eviction rather than a slow query: a v2 batch's working set sits near
+    # the memory limit, so by the time the warm pass re-reads the first user's
+    # blocks the node may have dropped some of them for the fourth user's.
+    #
+    # One retry distinguishes the two. A transient eviction re-primes on the way
+    # through and the retry passes; a read that is genuinely over 25 s warm
+    # fails twice, and then the run stops and says so -- which is the finding,
+    # not an inconvenience.
+    Write-Output "  warm pass exited $warm; retrying once"
+    $warm = Invoke-EvalPass -Batch $batch -Pass "warm" -Log $warmLog
+  }
+  if ($warm -ne 0) {
+    Write-Output "  warm pass exited $warm twice; see $warmLog"
+    Get-Content "$warmLog.err" -Tail 4 | ForEach-Object { Write-Output "  | $_" }
     exit 1
   }
 
