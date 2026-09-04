@@ -103,7 +103,7 @@ Applied to both pipelines because it changes no evidence bytes:
 2. After Query 1: slot-key walk ∥ supersession edges for the top-K ∥ hydration of the top-K spans.
 3. Query 2 ∥ hydration of returned slot-mates; a second supersession read only for slot-mates not in the first batch.
 4. v2 arms in one `Effect.all(..., { concurrency: 6 })`.
-5. `Effect.timeout` per HydraDB call, ceiling below the node's 30 s runtime; a timed-out arm is reported in the receipt as `armTimeout`, not thrown.
+5. `Effect.timeout` per HydraDB call, ceiling below the node's 30 s runtime; a timed-out arm is reported in the receipt as `armTimeout`, not thrown. [Both benchmark phases run the node at 120 s (agreed on #22, `ops/hydradb/step-load-2026-08.md`); the product ceiling stays 25 s (`DEFAULT_READ_TIMEOUT_MS`).]
 6. The `User` stats read (idf denominator, whole-history by design) memoised per uid for the process lifetime.
 7. `pnpm warm --uid` touches the User root and its Token/Slot fan-out so the demo's first ask is not a page-cache fault.
 All concurrent reads pass the same causal token (as `ask` does today) so a mid-ingest user is never read half-written. Target: 7 sequential round trips → 3 dependency levels. Evidence bytes and `hash` for v1 must be byte-identical before and after (pinned by the live probe suite on the dev users).

@@ -216,7 +216,7 @@ latency or accuracy claim — runs on the shipped values.
 | setting | ingest | eval | why |
 |---|---|---|---|
 | `GRAPH_OBJECT_STORE_CACHE_ENABLED` | `false` | `true` | On, RSS climbs ~2 GiB/min during writes and the gate stops the node in three minutes; off, a cold convergence walk does not finish in 25 s. |
-| `GRAPH_MAX_QUERY_RUNTIME_MS` | `120000` | `120000` | **Revised 2026-08-31, and it is no longer 30 s for the eval — see below.** The 30 s cap stops a runaway *plan*. An ingest has no runaway plan and neither, it turns out, does a cold read: it has 86 s of object-store round trips. Failing at 30 s costs the whole unit of work — a user's ingest, or the priming pass an eval's warm numbers depend on. |
+| `GRAPH_MAX_QUERY_RUNTIME_MS` | `120000` | `120000` | The same in both phases since 2026-08-31 (agreed on #22); the shipped default is 30 s and the product's per-call ceiling stays 25 s. The 30 s cap stops a runaway *plan*. An ingest has no runaway plan and neither does a cold read: it has 86 s of object-store round trips. Failing at 30 s costs the whole unit of work — a user's ingest, or the priming pass an eval's warm numbers depend on. |
 
 **The eval's cap is 120 s, not the spec's 30 s [decided 2026-08-31].** On the
 60-user graph a cold ask is **86.2 s** and the second ask on the same user is
@@ -591,6 +591,86 @@ was, which also shows the writer lease releases cleanly on a graceful stop, the
 failure mode CONTEXT.md records for an *unclean* one. Deletes are impractical on
 this engine, nothing scans labels, and it belongs to no user prefix, so it is
 left in place and named here rather than quietly ignored.
+
+## Driver scripts: what `scripts/*.ps1` rely on
+
+The facts the drivers are built on, so a change to one of them can be checked
+against the measurement it came from. `scripts/lib/hydra.psm1` holds the shared
+pieces (`Set-HydraPhase`, `Invoke-EvalProcess`).
+
+**Phase switch is verified by reading the container's env back**
+(`Set-HydraPhase`). `docker compose up -d` on a service whose configuration
+has not changed is a **no-op**, so a phase switch that silently did not happen
+is the failure `scripts/phase.ps1` exists to make impossible: it reads
+`GRAPH_OBJECT_STORE_CACHE_ENABLED` and `GRAPH_MAX_QUERY_RUNTIME_MS` off the
+running container and reports them.
+
+**`docker restart --time 30`, never a recreate.** Both are correct; a recreate
+is slower, gives the container a **new id** — which the capacity gate resolved
+once at startup — and reapplies the Compose `mem_limit` over any live
+`docker update`. `--time 30` is SIGTERM-and-wait: the writer lease is released
+only on a graceful stop (CONTEXT.md, writer lease). The ingest process is
+killed before the node for the same reason.
+
+**Cycling** (`scripts/ingest-cycling.ps1`). The first cycle takes the node as
+it finds it; every later one restarts, because it is a cycle *because* the
+previous one hit the ceiling. Completion is detected by `ingest-slice`'s last
+line, `wall clock`; an exit without it is reported as "exited without a
+summary". `-Split dev` runs first: the dev half is scattered through
+`benchmarkSlice` order rather than a prefix of it, and ingesting it first turns
+an eleven-hour wait for the first number into about ninety minutes.
+
+**Batched eval** (`scripts/eval-batched.ps1`). Per batch: switch to the eval
+phase with a restart, a **cold pass at `PALIMPSEST_READ_TIMEOUT_MS=115000`**
+(above the product's 25 s so priming can finish, below the engine's 120 s cap;
+`eval` records `pass: "cold"` from the override), then a **warm pass at the
+shipped 25 s**, which is the results file — a warm read that needs more fails
+here rather than being quietly reported. The warm pass is **retried once**: it
+fired on batch 9 of the first v2 run, on `slotClaims`, and the likely cause is
+eviction rather than a slow query — a v2 batch's working set sits near the
+memory limit, so by the time the warm pass re-reads the first user's blocks the
+node may have dropped them for the fourth user's. A transient eviction re-primes
+and passes; a read genuinely over 25 s warm fails twice, and that is the
+finding. `reader-ab-batched.ps1` runs at 115 s throughout (no latency claim, no
+warm pass). `merge-batches` runs only when every batch is done.
+
+**Fifteen batches of four users, not twelve of five** (`scripts/dev-programme.ps1`).
+Measured: `palimpsest` peaked at 3.7 GiB per five-user batch and `palimpsest-v2`
+at **5.19 GiB of 5.5** — v2 reads more per user (convergence, sub-question
+walks, Slot probes, a discovery hop, the slot expansion) where v1 reads one
+walk. Four users a batch keeps v2 near 4 GiB; the three extra restarts cost
+about ninety seconds per run. Cold time is per question and does not change
+with the batch size; only the restart count does. The test split runs at
+`-Batches 35`.
+
+**Run order.** `palimpsest` and `palimpsest-v2` first, because the adoption gate
+is read from exactly those two and should fail before eight ablations have run
+against it. The dataset-only baselines (`bm25`, `fullctx`, `oracle-session`)
+need no node and no batching but still run **twice**: the second run replays
+every LLM call from cache and is where their latency column comes from. The
+v1 systems no longer exist in this checkout; `-V1Worktree` points the driver at
+a checkout of tag `pre-cleanup-v1` and writes its results into this repo's
+`results/`.
+
+**Variant names must match what `eval` derives** or the merge finds no files.
+`eval` inserts a hyphen after the leading `no` and lower-cases:
+
+| flag | variant |
+|---|---|
+| `--profile fast` | `profile-fast` |
+| `--no-select` | `no-select` |
+| `--no-sufficiency` | `no-sufficiency` |
+| `--no-time-scope` | `no-timescope` |
+| `--no-decompose` | `no-decompose` |
+| `--no-discovery` | `no-discovery` |
+| `--reader-route off` | `no-readerroute` |
+| `--granularity span\|turn` | `granularity-span`, `granularity-turn` |
+
+**Node's stderr is redirected to a file** (`Invoke-EvalProcess`). Node prints
+an `ExperimentalWarning` about SQLite on every start, and under
+`$ErrorActionPreference = "Stop"` PowerShell turns native stderr into a
+terminating `NativeCommandError` — the first run of the driver killed itself on
+that warning *after* the eval had written its file.
 
 ## Final profile
 

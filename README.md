@@ -12,8 +12,12 @@ verdict backed by the exact query and its empty result.
 Design documents:
 
 - [`docs/spec-palimpsest.md`](docs/spec-palimpsest.md) — thesis, glossary, schema, ingest, retrieval, eval
-- [`docs/archive/review-2026-08-17-palimpsest-plan.md`](docs/archive/review-2026-08-17-palimpsest-plan.md) — the review that corrected the plan, plus the live-node probe table
-- [`CONTEXT.md`](CONTEXT.md) — the domain vocabulary used in code, tests and UI
+- [`docs/spec-retrieval-v2.md`](docs/spec-retrieval-v2.md) — the v2 read path (understand → arms → scope → select → pack → sufficiency → read) and its adoption gate
+- [`CONTEXT.md`](CONTEXT.md) — the domain vocabulary, and the table of measured HydraDB facts the design is shaped by
+- [`docs/design-rationale.md`](docs/design-rationale.md) — why each constant has its value and each invariant exists, by package
+- [`ops/hydradb/step-load-2026-08.md`](ops/hydradb/step-load-2026-08.md) — the benchmark runtime: memory curve, per-phase settings, cold/warm, node cycling, the driver scripts
+- [`docs/adr/`](docs/adr/) — architecture decisions (transactional ingest manifest, immutable canonical views)
+- [`docs/archive/`](docs/archive/) — the 2026-08-17 plan review with the live-node probe table, and the 08-19/08-20 audits and remediation dossiers, kept for the record
 - [`docs/writeup.md`](docs/writeup.md) — the submission writeup: thesis, HydraDB findings, results, positioning, limitations
 - [`docs/run-log.md`](docs/run-log.md) — what each expensive run projected and what it actually cost
 - [`docs/video-script.md`](docs/video-script.md) — the sub-5-minute demo run-through
@@ -78,15 +82,46 @@ pnpm ask --uid 852ce960 --date "2023/05/20 (Sat) 02:21" --question "..." [--as-o
 pnpm trajectory --uid 852ce960 --question "..." --date "2023/12/20 (Wed) 12:00"
 
 # the day-3 gate over a stratified slice of real haystacks
-pnpm ingest-slice --slice 20 --dataset s --users 4 --prefix g2
-pnpm retrieval-metrics --slice 20 --prefix g2 [--misses]
+pnpm retrieval-metrics --slice 20 --prefix g3 [--misses]
 
 # give users ingested before the User vertex existed their counts and HAS_* edges
-pnpm backfill-user --prefix g2 --slice 20 --uid 852ce960,37d43f65
+pnpm backfill-user --prefix g3 --slice 20 --uid 852ce960,37d43f65
 
-# answer accuracy: ask -> reader -> the official LongMemEval judge, per system
-PALIMPSEST_LLM_CONCURRENCY=48 pnpm ingest-slice --slice 100 --dataset s --users 3 --prefix g2
-pnpm eval --slice 100 --system palimpsest|palimpsest-premise|bm25|fullctx|all --prefix g2
+# the 200-question population (prefix g3): predeclared dev/test split, then the ingest,
+# cycled because HydraDB's RSS grows with write work (ops/hydradb/step-load-2026-08.md)
+pnpm splits --slice 200 --prefix g3 [--check]
+powershell -File scripts/ingest-cycling.ps1 -Split dev      # then -Split test
+pnpm step-load --slice 60 --prefix g3 [--asks 5]            # the memory curve, per step
+
+# answer accuracy: ask -> reader -> the official LongMemEval judge, per system.
+# Graph systems ONLY through the batched driver: it restarts the node per batch and
+# reads each batch cold (115 s read ceiling) then warm (the shipped 25 s); the warm
+# pass is the results file. 4 questions a batch: -Batches 15 for dev, -Batches 35 for test.
+powershell -File scripts/eval-batched.ps1 -System palimpsest-v2 -Split dev -Batches 15
+powershell -File scripts/eval-batched.ps1 -System palimpsest-v2 -Split dev -Batches 15 `
+  -ExtraArgs "--no-select" -Variant no-select                # ablations, one flag each
+powershell -File scripts/eval-batched.ps1 -System palimpsest-v2 -Split dev -Batches 15 `
+  -ExtraArgs "--profile","fast" -Variant profile-fast
+pnpm merge-batches --system palimpsest-v2 --split dev [--variant no-select]   # the driver runs it
+
+# dataset-only baselines need no node and no batching; run twice, the second pass is the latency
+pnpm eval --system bm25,fullctx,oracle-session --split dev
+
+# the whole dev programme in ticket order (v2, baselines, fast profile, eight ablations)
+powershell -File scripts/dev-programme.ps1 [-From 4] [-List]
+
+# v1 (palimpsest, palimpsest-premise) was retired from this checkout; run it from the tag
+git worktree add ..\palimpsest-v1 pre-cleanup-v1
+powershell -File scripts/dev-programme.ps1 -V1Worktree ..\palimpsest-v1
+
+# tables, the risk-coverage curve, the reader A/B, and the adoption gate (reads once, records once)
+pnpm table --split dev
+pnpm risk-coverage --file results/palimpsest-v2-dev.json
+pnpm reader-ab --split dev [--batch 2/5 | --merge]           # via scripts/reader-ab-batched.ps1
+pnpm gate [--write]
+
+# switch the node between phases by hand (read cache off for ingest, on for eval; 120 s cap in both)
+powershell -File scripts/phase.ps1 -Phase eval
 
 # the API, and a smoke run of ingest -> ask -> slots on a fresh user
 pnpm serve                       # :8787
@@ -100,6 +135,15 @@ pnpm demo                        # http://localhost:5173
 Below 30 it is the stratified slice the day-1/day-3 gates were measured with, unchanged; at 30 and
 above it is all thirty `_abs` questions plus a stratified remainder, because abstention is what this
 benchmark is for and a stratified 100 picks up only whichever `_abs` ids sort early.
+
+`--split dev|test` reads the committed split file instead (`pnpm splits`; dev is the 60 questions
+whose LLM calls were already cached, test the other 140). `eval` refuses `--slice` once the split
+file exists without a gate record (a 100-slice holds 40 test questions), refuses `--skip-missing`
+on test, and refuses the retired v1 systems. Results are named `<system>-<split>[-<variant>].json`,
+where the variant is derived from the flags (`profile-fast`, `no-select`, `no-timescope`,
+`no-readerroute`, `granularity-turn`, …) and the `-Variant` given to the driver must match it or
+the merge finds nothing. Every envelope records `runtime_config_sha256` read off the running node
+and `pass: cold|warm`.
 
 `pnpm probe` needs the Docker node running; `pnpm test:unit` does not. The live suites and
 `pnpm extract` read `OPENAI_API_KEY` from the gitignored `.env` at the workspace root.
@@ -468,7 +512,12 @@ supersession, chronology, or being asked what was true in March.
 
 Palimpsest's 15.2 s median latency here is HydraDB's cold page cache — this run followed a node
 restart. On a warm node the same retrieval measures **0.12 s** (see the day-3 gate above); the
-reader call is the rest and is common to all systems.
+reader call is the rest and is common to all systems. Since the v2 work every graph-touching eval is
+batched (`scripts/eval-batched.ps1`): **both benchmark phases ran the node at a 120 s query cap**
+(the shipped default is 30 s, the product's per-call ceiling 25 s), and **every reported latency is
+the warm second pass** of a batch — two orders of magnitude below either cap. The cap decides whether
+the cold priming pass finishes; it changes nothing a number is measured against. The dev results for
+v2 and the adoption gate are in `results/gate-dev.md`; the test read has not run.
 
 ## `packages/server`
 
@@ -478,7 +527,7 @@ the demo shares the types rather than re-declaring them:
 | Endpoint | What it does |
 |---|---|
 | `POST /users/:uid/sessions` | ingest one session — claims written, supersessions, bookmark |
-| `POST /users/:uid/ask` | `{question, questionDate?, asOf?, historical?, premiseCheck?}` → verdict, answer, evidence with spans, receipt, hash |
+| `POST /users/:uid/ask` | `{question, bookmark?, questionDate?, asOf?, historical?, retrieveOnly?, profile?}` → verdict, answer, evidence with spans, plan, receipt, hash. v2 is the only path; `profile` defaults to `fast` (no sufficiency check or second pass). `Receipt.models` names the reader, selector and sufficiency model ids so a receipt replays on its own. |
 | `GET /users/:uid/sessions` | the session list the as-of scrubber runs over |
 | `GET /users/:uid/slots/:skey` | one slot's supersession chain, optionally as of session *k* |
 | `GET /users/:uid/stats` | the counts, and the slots holding ≥ 2 claims |

@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
-import { loadDotEnv } from "@palimpsest/llm"
+import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { ClaimGraph } from "../src/ClaimGraph.js"
 import { Supersede } from "../src/Supersede.js"
@@ -19,6 +19,7 @@ const showTokens = process.argv.includes("--tokens")
 const AppLive = ClaimGraph.Default.pipe(
   Layer.provideMerge(Supersede.Default),
   Layer.provideMerge(HydraClient.Default),
+  Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
