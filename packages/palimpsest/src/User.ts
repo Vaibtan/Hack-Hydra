@@ -25,7 +25,6 @@ export const EMPTY_STATS: UserStats = {
   contestedSlots: 0
 }
 
-/** The `User` vertex properties, in the order `getById` projects them. */
 const COUNT_PROPERTIES = [
   "n_claims",
   "n_entities",
@@ -39,7 +38,6 @@ const COUNT_PROPERTIES = [
 
 const ensured = new Set<string>()
 
-/** Merges the root vertex so the `HAS_*` edges have something to point from. */
 export const ensureUser = (
   hydra: HydraClient,
   uid: string
@@ -191,7 +189,6 @@ export const WARM_SOURCES_PER_WALK = 200
 
 export const WARM_BUDGET_MS = 15_000
 
-/** Every key at the far end of a one-hop walk, in bounded batches. */
 const warmHop = (
   hydra: HydraClient,
   source: {

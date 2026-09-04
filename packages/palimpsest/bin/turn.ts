@@ -3,12 +3,6 @@ import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { Transcript } from "../src/Transcript.js"
 
-/**
- * `turn --uid <question_id> --sid <session_id> --idx <turn_idx>`
- *
- * Reads one Turn's verbatim text back out of HydraDB, reassembling it if it was
- * chunked. This is what evidence hydration does, in one command.
- */
 const arg = (name: string): string | undefined => {
   const index = process.argv.indexOf(`--${name}`)
   return index === -1 ? undefined : process.argv[index + 1]

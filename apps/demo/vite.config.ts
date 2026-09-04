@@ -1,10 +1,6 @@
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
-/**
- * The demo talks to `packages/server` on 8787. Proxying `/api` keeps the app's
- * fetches same-origin, so there is no CORS story to explain in the video.
- */
 export default defineConfig({
   plugins: [react()],
   server: {

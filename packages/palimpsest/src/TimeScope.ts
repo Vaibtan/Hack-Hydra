@@ -69,7 +69,6 @@ const addDays = (dateInt: number, days: number): number => {
   return toInt(date)
 }
 
-/** First day of the month `offset` months from `dateInt`'s month. */
 const monthStart = (dateInt: number, offset = 0): number => {
   const year = Math.floor(dateInt / 10000)
   const month = Math.floor(dateInt / 100) % 100
@@ -98,7 +97,6 @@ const singleDay = (dateInt: number, phrase: string): DayInterval => ({
   phrase
 })
 
-/** Monday of the week containing `dateInt`. ISO weeks: Monday starts one. */
 const weekStart = (dateInt: number): number => {
   const day = toDate(dateInt).getUTCDay()
   return addDays(dateInt, day === 0 ? -6 : 1 - day)
@@ -275,7 +273,6 @@ export const intervalSentence = (interval: DayInterval): string => {
   )
 }
 
-/** What the scope filter needs off a candidate claim. */
 export interface TimeScopable {
   /** `YYYYMMDD`, with `YYYYMM00` for month precision and `YYYY0000` for year. `0` when unknown. */
   readonly tEvent: number
@@ -299,7 +296,6 @@ export const claimSpan = (claim: TimeScopable): { readonly start: number; readon
   return { start: claim.tEvent, end: addDays(claim.tEvent, 1) }
 }
 
-/** Closed-open overlap, in `YYYYMMDD` integers. */
 const overlaps = (
   a: { readonly start: number; readonly end: number },
   b: { readonly start: number; readonly end: number }

@@ -7,15 +7,9 @@ import {
   readGate,
   renderGate,
   worstTypeRegression,
-  type EvalRow
+  type EvalRow,
+  type GateEnvelope
 } from "../../src/index.js"
-
-/**
- * A gate chosen after seeing the numbers is not a gate, it is a description of
- * the numbers. These tests are about the *shape* of the decision — that it is a
- * conjunction, that an unmeasured bound fails, that an aggregate cannot hide a
- * broken type — not about any particular result.
- */
 
 const row = (overrides: Partial<EvalRow> = {}): EvalRow => ({
   system: "palimpsest-v2",
@@ -60,8 +54,6 @@ describe("the gate is a conjunction", () => {
   })
 
   it("fails the whole gate on one failing criterion, and names it", () => {
-    // Five of six clear. A gate that reported "mostly passed" would be a
-    // description of the numbers rather than a decision about them.
     const v1 = many(54, { judged: false })
     const v2 = many(54, { judged: true, readerInputTokens: 20_000 })
     const report = readGate(v1, v2)
@@ -72,9 +64,6 @@ describe("the gate is a conjunction", () => {
   })
 
   it("fails a bound it could not measure rather than skipping it", () => {
-    // A results file with no `graphMs` -- an older file, or one written by a
-    // run that crashed before timings landed -- must not pass the latency
-    // criterion by default. An unmeasured bound is not a satisfied one.
     const v1 = many(54, { judged: false })
     const v2 = many(54, { judged: true }).map((r) => {
       const { graphMs: _dropped, ...rest } = r
@@ -89,9 +78,6 @@ describe("the gate is a conjunction", () => {
 
 describe("what the aggregate must not hide", () => {
   it("catches a type that got worse even when the total improved", () => {
-    // +4 on multi-session, -3 on knowledge-update is +1 overall and a broken
-    // feature: knowledge-update is the question type the supersession graph
-    // exists for.
     const v1 = [
       ...many(6, { questionType: "multi-session", judged: false }),
       ...many(6, { questionType: "knowledge-update", judged: true })
@@ -121,9 +107,6 @@ describe("what the aggregate must not hide", () => {
 
 describe("false abstention", () => {
   it("counts a structural ABSENT and a reader refusal the same", () => {
-    // From the asker's side they are one event: the system declined. A gate
-    // that counted only one could be passed by moving refusals between the two
-    // mechanisms.
     const rows = [
       row({ verdict: "ABSENT", reason: "A2_no_convergence" }),
       row({ notInMemory: true }),
@@ -141,7 +124,6 @@ describe("abstention accuracy", () => {
   it("refuses a v2 that bought coverage with the `_abs` questions", () => {
     const abs = (judged: boolean) => row({ isAbstention: true, judged })
     const v1 = [...many(54, { judged: false }), abs(true), abs(true), abs(true)]
-    // v2 answers three more of the answerable questions and loses two `_abs`.
     const v2 = [...many(54, { judged: true }), abs(true), abs(false), abs(false)]
     const report = readGate(v1, v2)
     expect(report.passed).toBe(false)
@@ -151,15 +133,18 @@ describe("abstention accuracy", () => {
 })
 
 describe("the refusals that stand in front of the gate", () => {
-  const dev = { split: "dev", prefix: "g3", dataset: "s", extractionGeneration: "extract-v1-abc" }
+  const dev: GateEnvelope = {
+    split: "dev",
+    prefix: "g3",
+    dataset: "s",
+    extractionGeneration: "extract-v1-abc"
+  }
 
   it("accepts two files that describe one measurement", () => {
     expect(gateRefusals(dev, dev)).toEqual([])
   })
 
   it("refuses two files from different graphs", () => {
-    // The failure this exists for: two plausible tables, one number, and
-    // nothing in the output to say the halves came from different graphs.
     const [refusal] = gateRefusals({ ...dev, prefix: "g2" }, dev)
     expect(refusal).toContain("prefix")
     expect(refusal).toContain("not a comparison")
@@ -177,15 +162,23 @@ describe("the refusals that stand in front of the gate", () => {
   })
 
   it("refuses to gate on an ablation run", () => {
-    // An ablation is a different pipeline wearing the same system name, so the
-    // gate would be adopting something nobody is proposing to ship.
     const refusals = gateRefusals(dev, { ...dev, ablations: ["noSelect", "noDiscovery"] })
-    expect(refusals.some((line) => line.includes("noSelect, noDiscovery"))).toBe(true)
+    expect(refusals.some((line) => line.includes("no-discovery, no-select"))).toBe(true)
     expect(refusals.some((line) => line.includes("full pipeline"))).toBe(true)
   })
 
+  it("refuses a file that declares a non-default profile or granularity as its variant", () => {
+    expect(gateRefusals(dev, { ...dev, variant: ["profile-fast"] })[0]).toContain("profile-fast")
+    expect(gateRefusals(dev, { ...dev, granularity: "turn" })[0]).toContain("granularity-turn")
+  })
+
+  it("refuses a cold pass, and accepts a file that predates the field", () => {
+    expect(gateRefusals(dev, { ...dev, pass: "cold" })[0]).toContain("cold")
+    expect(gateRefusals(dev, { ...dev, pass: "warm" })).toEqual([])
+    expect(gateRefusals(dev, dev)).toEqual([])
+  })
+
   it("reports every reason at once, not the first", () => {
-    // An operator who has to re-run to find the second problem re-runs.
     const refusals = gateRefusals(
       { ...dev, prefix: "g2", dataset: "m" },
       { ...dev, ablations: ["noSelect"] }
@@ -200,9 +193,6 @@ describe("the gate is read once", () => {
   })
 
   it("refuses a second, and names when the first happened", () => {
-    // A gate that can be re-read until it passes is not a gate. Overwriting is
-    // possible -- by deleting the record by hand, in a commit that says why --
-    // and that is deliberately not a flag.
     const refusal = overwriteRefusal({ readAt: "2026-08-31T04:00:00.000Z" })
     expect(refusal).toContain("2026-08-31T04:00:00.000Z")
     expect(refusal).toContain("read once")

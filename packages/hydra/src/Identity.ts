@@ -24,7 +24,6 @@ const storedFullKey = (properties: Readonly<Record<string, unknown>>): string | 
 
 export interface Identity {
   readonly registry: GraphIdentityRegistry
-  /** Claims the numeric id for a vertex key in the process-local registry. */
   readonly claimVertexId: (key: string) => Either.Either<number, HydraIdentityIntegrityError>
   readonly claimRelationshipId: (key: string) => Either.Either<number, HydraIdentityIntegrityError>
   readonly verifyPath: (path: HydraPath) => IdentityOutcome
@@ -35,7 +34,6 @@ export interface Identity {
   ) => IdentityOutcome
 }
 
-/** The write-path guard is process-local; the persisted full key is verified on every read. */
 export const makeIdentity = (registry: GraphIdentityRegistry = createGraphIdentityRegistry()): Identity => {
   const claimVertexId = (key: string) =>
     Either.map(registry.claimVertex(key), (identity) => identity.numericId)

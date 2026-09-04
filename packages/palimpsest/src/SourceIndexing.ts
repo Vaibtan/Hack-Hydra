@@ -12,13 +12,11 @@ import {
   type SourceIndexStageError
 } from "./TransactionalSourceIndex.js"
 
-/** Immutable request planned for the shared bounded source/index operation. */
 export interface SourceIndexSessionPlan {
   readonly sourceRevision: ReturnType<typeof sourceRevisionInputForSession>
   readonly indexGeneration: IngestGenerationConfig["indexGeneration"]
 }
 
-/** Input accepted by batch and HTTP adapters before they perform source indexing. */
 export interface PlanSourceIndexSession {
   readonly tenant: string
   readonly uid: string
@@ -26,11 +24,6 @@ export interface PlanSourceIndexSession {
   readonly generation: IngestGenerationConfig
 }
 
-/**
- * Binds one caller's source bytes to the configured immutable generations.
- * This deliberately contains no graph or provider effect, keeping both
- * adapters on the same source/index operation instead of copying its setup.
- */
 export const planSourceIndexSession = (input: PlanSourceIndexSession): SourceIndexSessionPlan => ({
   sourceRevision: sourceRevisionInputForSession(
     input.tenant,
@@ -61,10 +54,6 @@ const classifyFailure = (input: {
   }
 }
 
-/**
- * Durably writes one source revision and its isolated index generation through
- * `INDEXED`. It is not a retrieval activation or terminal ingest success.
- */
 export const indexSourceSession = (input: PlanSourceIndexSession) => {
   const plan = planSourceIndexSession(input)
   return runTransactionalSourceIndex({
@@ -76,10 +65,6 @@ export const indexSourceSession = (input: PlanSourceIndexSession) => {
   })
 }
 
-/**
- * Reusable production assembly for the bounded source/index application
- * operation. Entry points still provide the shared HydraDB and LLM adapters.
- */
 const make = Effect.gen(function* () {
   const sourceTranscript = yield* SourceTranscript
   const indexGraph = yield* IndexGraph
@@ -97,13 +82,8 @@ const make = Effect.gen(function* () {
   return { indexSession } as const
 })
 
-/**
- * Cohesive bounded source/index application service reused by batch and HTTP
- * adapters. Its remaining LLM requirement deliberately reaches composition.
- */
 export class SourceIndex extends Effect.Service<SourceIndex>()("palimpsest/SourceIndex", { effect: make }) {}
 
-/** Production assembly that consumes the caller's shared HydraDB client. */
 export const SourceIndexLive = SourceIndex.Default.pipe(
   Layer.provide(
     Layer.mergeAll(

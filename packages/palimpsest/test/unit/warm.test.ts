@@ -3,26 +3,12 @@ import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import { WARM_SOURCES_PER_WALK, warmUser } from "../../src/User.js"
 
-/**
- * The warm's two bounds, and the bug that made both necessary.
- *
- * The first version walked from every entity key in one call. Measured against
- * a 51-session user: 5 keys returned 12 paths in 573 ms, 50 returned 112 in
- * 5.8 s, and **2 292 returned nothing at all** — the walk exceeded a limit and
- * failed. The failure was caught and reported as an empty result, so a warm
- * that touched no Token at all was indistinguishable from a user who has none.
- *
- * So: chunk the sources, stop at a deadline, and never turn a failure into a
- * zero. Those are the three things asserted here.
- */
-
 const node = (property: string, key: string) => ({
   id: 1,
   labels: [],
   properties: { [property]: key }
 })
 
-/** A path from `source` to `target`, in the shape `MSpaths` returns. */
 const path = (
   sourceProperty: string,
   source: string,
@@ -39,10 +25,6 @@ interface Call {
   readonly sources: number
 }
 
-/**
- * A HydraDB that answers the user root's fan-out from a fixture and every other
- * walk from `answer`, recording what it was asked.
- */
 const stubHydra = (
   options: {
     readonly entities: number
@@ -144,7 +126,6 @@ declare const describeReport: () => Promise<{
 
 describe("source keys are chunked", () => {
   it("never sends more than one walk's worth of keys", async () => {
-    // 2 292 keys in one call is the case that failed outright.
     const calls: Array<Call> = []
     await warm({
       entities: 2292,
@@ -177,8 +158,6 @@ describe("source keys are chunked", () => {
 
 describe("a failed walk is counted, never swallowed", () => {
   it("reports the failure rather than an empty result", async () => {
-    // The bug: `catchAll(() => [])` made a walk that failed look exactly like a
-    // user with no Tokens, and a warm that touched nothing looked like success.
     const report = await warm({
       entities: 10,
       slots: 0,
@@ -195,8 +174,6 @@ describe("a failed walk is counted, never swallowed", () => {
   })
 
   it("carries on to the other levels after one fails", async () => {
-    // A warm exists to make the next read faster; one refused walk must not
-    // take the rest of it down.
     const report = Option.getOrThrow(
       await warm({
         entities: 10,
@@ -216,8 +193,6 @@ describe("a failed walk is counted, never swallowed", () => {
 
 describe("the budget", () => {
   it("stops and says it stopped", async () => {
-    // A warm is an optimisation with a deadline: its whole value is in being
-    // finished before the first question.
     const now = { value: 0 }
     const report = Option.getOrThrow(
       await warm(

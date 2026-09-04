@@ -4,14 +4,12 @@ export const NOT_IN_MEMORY = "NOT_IN_MEMORY"
 
 export type Granularity = "span" | "turn"
 
-/** What one route decides downstream of retrieval: hydration, adjudication, the sufficiency call and the reader's rules. */
 export interface RouteRules {
   readonly granularity: Granularity
   /** Whether the latest CURRENT claim of a Slot is singled out as `CURRENT` and the rest `EARLIER STATEMENT`. */
   readonly adjudicate: boolean
   /** Whether the sufficiency check runs on this route at all. */
   readonly sufficiency: boolean
-  /** The block appended to the reader's system prompt. */
   readonly rules: string
 }
 

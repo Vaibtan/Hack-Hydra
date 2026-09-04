@@ -8,12 +8,6 @@ import {
   type Route
 } from "../../src/Understand.js"
 
-/**
- * The route is a reader prompt and a hydration granularity, and getting it
- * wrong is silent — the answer comes back plausible and short. So the cues that
- * override the model are a table here rather than something an eval run
- * discovers.
- */
 const QUESTION_DATE = 20230520
 
 const model = (over: Partial<Parameters<typeof shapeUnderstanding>[2]> = {}) => ({
@@ -36,27 +30,15 @@ describe("deterministic route cues", () => {
       route: "count",
       reason: "cue:how_many"
     })
-    // And only "how many". The cue was widened to `how much|how often|how
-    // numerous` at some point, and the first v2 dev run showed what that cost:
-    // 21 of 36 questions on the count route, 9 of them multi-session and 4
-    // temporal-reasoning. "How much did I pay" is a fact and "how often do I
-    // go" is a frequency; neither is a list to enumerate, which is what the
-    // count route's reader rule asks for.
     expect(applyRouteCues("How much did I pay?", "fact", null).route).toBe("fact")
     expect(applyRouteCues("How often do I go to the gym?", "fact", null).route).toBe("fact")
     expect(applyRouteCues("How numerous are my plants?", "fact", null).reason).toBe("model")
   })
 
   it("does not turn a date-arithmetic question into an enumeration", () => {
-    // "How many years older is my grandma than me" says "how many" and is
-    // subtraction, not a list -- and it is the two-fact comparison question
-    // #27 exists for. A model that has already called a question temporal has
-    // resolved something a regex cannot, so the cue defers to it.
     expect(
       applyRouteCues("How many years older is my grandma than me?", "temporal", null)
     ).toEqual({ route: "temporal", reason: "model" })
-    // The cue still fires over every other route, including on a question that
-    // happens to mention time.
     expect(
       applyRouteCues("How many items do I need to pick up this week?", "multi_fact", "this week")
         .route
@@ -76,11 +58,7 @@ describe("deterministic route cues", () => {
       route: "update",
       reason: "cue:currently"
     })
-    // It also fires when the model called it a fact and the question does not
-    // use a vocabulary word: "live" is `residence`, and resolving that is the
-    // model's job, not a regex's.
     expect(applyRouteCues("What is my current employer?", "preference", null).route).toBe("update")
-    // But not on a route that is not about a value.
     expect(applyRouteCues("What should I still try?", "preference", null).reason).toBe("model")
   })
 
@@ -149,7 +127,6 @@ describe("sub-questions and probes", () => {
     expect(understood.subQuestions).toHaveLength(2)
     expect(understood.subQuestions[0]!.terms).toContain("grandma")
     expect(understood.subQuestions[0]!.terms).toContain("birthday")
-    // Sorted and de-duplicated, exactly as the primary anchors are.
     expect([...understood.subQuestions[0]!.terms]).toEqual(
       [...understood.subQuestions[0]!.terms].sort()
     )
@@ -193,8 +170,6 @@ describe("anchor stems", () => {
   })
 
   it("answers a one-word question rather than producing nothing", () => {
-    // "Nibbles?" must still reach its claims — routing may not make a simple
-    // question worse.
     expect(anchorStems("Nibbles?", []).length).toBeGreaterThan(0)
   })
 })

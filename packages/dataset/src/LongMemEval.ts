@@ -1,18 +1,4 @@
-/**
- * LongMemEval loader.
- *
- * Two files, one shape: `longmemeval_oracle.json` keeps only the answer-bearing
- * sessions and tags every turn with `has_answer`; `longmemeval_s_cleaned.json`
- * adds ~40-60 distractor sessions per question and carries `has_answer` only on
- * the turns where it is true. Both are read the same way here.
- *
- * The one trap: `haystack_dates` is not sorted. 211 of the 500 S questions and
- * 34 of the 500 oracle questions present their sessions out of chronological
- * order, so `session_ord` must come from the timestamp.
- */
-
 export interface HaystackDate {
-  /** The original string, kept so evidence can be shown as the dataset wrote it. */
   readonly raw: string
   /** Epoch seconds, UTC — the dataset carries no zone, so UTC keeps it deterministic. */
   readonly ts: number
@@ -32,12 +18,7 @@ export interface DatasetTurn {
 
 export interface DatasetSession {
   readonly sid: string
-  /**
-   * Unique within the question, unlike `sid`. 13 of the 500 `_s_cleaned`
-   * haystacks list the same session id twice — identical content inserted at
-   * two different dates — so `sid` alone cannot key a vertex. Repeats get a
-   * `#n` suffix; `sid` stays raw so `answer_session_ids` still matches.
-   */
+  /** Unique within the question, unlike `sid`: a repeated session id gets a `#n` suffix. */
   readonly key: string
   /** 1-based rank by timestamp within the question; ties keep input order. */
   readonly sessionOrd: number
@@ -51,7 +32,6 @@ export interface DatasetQuestion {
   readonly question: string
   readonly answer: string
   readonly questionDate: HaystackDate
-  /** Ordered by `sessionOrd`. */
   readonly sessions: ReadonlyArray<DatasetSession>
   readonly answerSessionIds: ReadonlyArray<string>
   /** The 30 questions whose correct answer is a refusal. */
@@ -100,8 +80,6 @@ export const parseQuestion = (raw: RawQuestion): DatasetQuestion => {
     }))
   }))
 
-  // Sort by timestamp, falling back to file position so ties are stable and
-  // reproducible regardless of the engine's sort implementation.
   const ordered = [...unordered].sort((a, b) => a.date.ts - b.date.ts || a.index - b.index)
 
   const seen = new Map<string, number>()

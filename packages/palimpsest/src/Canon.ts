@@ -1,31 +1,6 @@
 import { stems } from "./Tokenize.js"
 import type { ExtractedEntity } from "./Extract.js"
 
-/**
- * Canon reconciliation.
- *
- * Extraction runs on a session alone, with no knowledge of the user, so the
- * same call can be cached and shared across every user whose haystack contains
- * that session. The cost of that is that two sessions can name the same thing
- * differently — "hamster" and "pet hamster", "MoMA" and "the moma". Reconciling
- * them happens here, deterministically and for free, rather than by paying for
- * a bigger prompt.
- *
- * The match key is an entity's stems, sorted and joined: it survives
- * pluralisation, articles, possessives and word order. Aliases produce keys
- * too, so "moma" and "museum of modern art" collapse if either side declared
- * the other.
- *
- * **This has to be a fixpoint.** A re-ingest reconciles the same claims against
- * the entities the previous ingest wrote, and if that produced a different
- * answer the slot count would move on every run. A sequential "first canon to
- * claim a key wins" pass is not a fixpoint: an entity registered late can
- * introduce a key that an entity processed earlier would have matched, so the
- * output can contain one entity's alias as another entity's canon — and the
- * next run then merges them. Grouping by connected component removes the order
- * dependence entirely.
- */
-
 export const matchKeys = (entity: ExtractedEntity): ReadonlyArray<string> => {
   const keys = new Set<string>()
   for (const name of [entity.canon, ...entity.aliases]) {
@@ -41,7 +16,6 @@ export interface Reconciled {
   readonly rename: ReadonlyMap<string, string>
 }
 
-/** Union-find over entity indices, keyed by shared match keys. */
 class Groups {
   private readonly parent: Array<number> = []
 
@@ -84,9 +58,6 @@ export const reconcile = (
   existing: ReadonlyArray<ExtractedEntity>,
   incoming: ReadonlyArray<ExtractedEntity>
 ): Reconciled => {
-  // One member per distinct canon on each side. `existing` members are marked,
-  // because a canon already in the graph must win — otherwise a re-ingest
-  // renames vertices that are already written.
   const members: Array<{ canon: string; etype: ExtractedEntity["etype"]; aliases: Set<string>; existing: boolean }> = []
   const byCanon = new Map<string, number>()
 
@@ -138,8 +109,6 @@ export const reconcile = (
 
   for (const indices of components.values()) {
     const group = indices.map((index) => members[index]!)
-    // An already-written canon wins; ties break alphabetically so the choice is
-    // the same on every run.
     const pool = group.some((member) => member.existing)
       ? group.filter((member) => member.existing)
       : group

@@ -24,7 +24,6 @@ import {
 } from "./Sufficiency.js"
 import type { Route } from "./Understand.js"
 
-/** An ask whose plan has been through the pack and the sufficiency check. */
 export interface AnsweredAsk extends AskResult {
   readonly plan: AnsweredPlan
 }
@@ -123,7 +122,6 @@ const assemble = (outcome: Outcome): V2Answer => ({
   hash: outcome.read === null ? outcome.ask.hash : outcome.read.spanHash
 })
 
-/** An ask that was never read: the plan completed with a skipped check and an empty budget. */
 export const unreadAnswer = (ask: AskResult): V2Answer =>
   assemble({
     ask,
@@ -134,7 +132,6 @@ export const unreadAnswer = (ask: AskResult): V2Answer =>
     reason: ask.reason
   })
 
-/** The whole read path: retrieve, pack, check, at most one refined pass, read. */
 export const answerV2 = (
   retrieve: Retrieve,
   reader: Reader,

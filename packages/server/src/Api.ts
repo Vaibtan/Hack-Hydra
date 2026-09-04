@@ -138,7 +138,6 @@ export const Route = Schema.Literal(
   "multi_fact"
 )
 
-/** What each stage decided, with its wall time. */
 export const RetrievalPlan = Schema.Struct({
   route: Route,
   routeReason: Schema.String,
@@ -153,7 +152,6 @@ export const RetrievalPlan = Schema.Struct({
   sufficiency: PlanSufficiency,
   budget: PlanBudget,
   intervalSentence: Schema.NullOr(Schema.String),
-  /** Per-stage wall time; concurrent stages overlap, so these do not sum. */
   stages: Schema.Record({ key: Schema.String, value: Schema.Number }),
   askMs: Schema.Number,
   /** The HydraDB stages alone. */

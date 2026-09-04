@@ -4,12 +4,6 @@ import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { Transcript } from "../src/Transcript.js"
 
-/**
- * `ingest-transcript --uid <question_id> [--dataset oracle|s] [--reset]`
- *
- * Writes one benchmark user's verbatim transcript — Sessions, Turns, HAS_TURN —
- * under that user's key prefix. Re-running is a no-op.
- */
 const arg = (name: string): string | undefined => {
   const index = process.argv.indexOf(`--${name}`)
   return index === -1 ? undefined : process.argv[index + 1]

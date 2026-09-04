@@ -45,7 +45,6 @@ export interface Generated<A> {
   readonly outputTokens: number
 }
 
-/** The free-text form. `Generated<string>` with the text as the value. */
 export interface GenerateTextOptions {
   readonly kind: string
   readonly system?: string

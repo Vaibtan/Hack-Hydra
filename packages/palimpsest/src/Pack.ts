@@ -94,7 +94,6 @@ export interface BudgetReport<A> {
   readonly overBudget: boolean
 }
 
-/** Cuts from the tail of the selector's ranking, never a protected row. */
 export const applyBudget = <A extends { readonly ckey: string; readonly excerpt: string }>(
   spans: ReadonlyArray<A>,
   options: {

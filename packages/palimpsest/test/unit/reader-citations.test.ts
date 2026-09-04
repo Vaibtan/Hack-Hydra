@@ -6,19 +6,6 @@ import { describe, expect, it } from "vitest"
 import { Reader, type HydratedSpan } from "../../src/Reader.js"
 import { NOT_IN_MEMORY } from "../../src/Routes.js"
 
-/**
- * Citation validation and the one re-ask.
- *
- * A cited id that is not in the pack is a fabricated citation, and an answer
- * with no valid citation is one the receipt cannot support. This is the only
- * place in the read path where the reader is asked a second time, and it is a
- * path that can turn a plausible answer into a refusal — so it is worth pinning
- * that it fires exactly when it should and never twice.
- *
- * `readSpans` is the seam: the spans are already in hand, so nothing here needs
- * a graph.
- */
-
 const span = (id: string): HydratedSpan => ({
   ckey: `u|c|${id}`,
   id,
@@ -45,7 +32,6 @@ interface Reply {
   readonly premise_note?: string
 }
 
-/** Serves the replies in order, and records every prompt it was sent. */
 const stubLlm = (replies: ReadonlyArray<Reply>, prompts: Array<string>) => {
   let next = 0
   return Layer.succeed(Llm, {
@@ -126,8 +112,6 @@ describe("an answer that cites what exists", () => {
   })
 
   it("keeps only the ids that are in the pack", async () => {
-    // A receipt that repeated a fabricated id would be asserting evidence that
-    // does not exist.
     const result = await read(
       [span("aaaa1111")],
       [{ answer: "Osaka", cited_ids: ["aaaa1111", "ffff9999"] }]
@@ -172,8 +156,6 @@ describe("the one re-ask", () => {
   })
 
   it("happens at most once, and a second failure becomes not-in-memory", async () => {
-    // The honest verdict is that this evidence did not produce an answer, not
-    // that it produced an uncheckable one.
     const result = await read(
       [span("aaaa1111")],
       [
@@ -191,8 +173,6 @@ describe("the one re-ask", () => {
   })
 
   it("does not fire on an honest refusal, which has nothing to cite", async () => {
-    // Re-asking here would spend a call to be told the same thing, and could
-    // talk a correctly abstaining reader into an answer.
     const result = await read([span("aaaa1111")], [{ answer: NOT_IN_MEMORY, cited_ids: [] }])
 
     expect(result.prompts).toHaveLength(1)

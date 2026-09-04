@@ -1,4 +1,3 @@
-/** The five HydraDB property types, as plain TS. */
 export type Scalar = string | number | boolean
 
 export interface HydraNode {
@@ -30,13 +29,11 @@ export interface QueryResult {
   readonly readEpoch: number | null
 }
 
-/** One HTTP response of a paged read: a `QueryResult` plus what continuing it needs. */
 export interface QueryPage extends QueryResult {
   readonly queryId: string | null
   readonly nextCursor: string | number | null
 }
 
-/** The wire shape of one HydraDB query response, before any decoding. */
 export interface RawResponse {
   readonly columns?: ReadonlyArray<string>
   readonly rows?: ReadonlyArray<ReadonlyArray<unknown>>

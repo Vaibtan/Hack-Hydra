@@ -8,16 +8,6 @@ import { describe, expect, it } from "vitest"
 import { Retrieve } from "../../src/Retrieve.js"
 import { Supersede } from "../../src/Supersede.js"
 
-/**
- * Retrieval against the graph built by the supersession live test, so the
- * question has a known answer with a known history: `852ce960` was pre-approved
- * for $350 000 and later for $400 000.
- *
- * What is asserted here is everything the receipt promises — that the verdict
- * follows from the paths, that the evidence reaches the answer's session, that
- * as-of replays an earlier belief, and that the same question twice gives the
- * same hash.
- */
 const hasDataset = existsSync(datasetPath("s"))
 
 const AppLive = Retrieve.Default.pipe(
@@ -46,7 +36,6 @@ describe.skipIf(!hasDataset)("retrieval", () => {
     expect(result.reason).toBeNull()
     expect(result.evidence.length).toBeGreaterThan(0)
 
-    // The receipt has to be enough to explain the decision on its own.
     expect(result.receipt.query1).toContain("algo.MSpaths")
     expect(result.receipt.query1Paths).toBeGreaterThan(0)
     expect(result.receipt.convergenceThreshold).toBe(2)
@@ -55,7 +44,6 @@ describe.skipIf(!hasDataset)("retrieval", () => {
       result.receipt.convergenceThreshold
     )
 
-    // Both mortgage amounts are in the evidence, and their supersession is shown.
     const texts = result.evidence.map((claim) => claim.text).join(" ")
     expect(texts).toContain("$350,000")
     expect(texts).toContain("$400,000")
@@ -64,7 +52,6 @@ describe.skipIf(!hasDataset)("retrieval", () => {
     expect(older.status).toBe("SUPERSEDED")
     expect(newer.status).toBe("CURRENT")
 
-    // Every evidence claim carries a real span into a real turn.
     for (const claim of result.evidence) {
       expect(claim.ce).toBeGreaterThan(claim.cs)
       expect(claim.sid).not.toBe("")
@@ -93,10 +80,8 @@ describe.skipIf(!hasDataset)("retrieval", () => {
     )
     const texts = early.evidence.map((claim) => claim.text).join(" ")
     expect(texts).toContain("$350,000")
-    // The later amount had not been said yet, so it cannot be evidence.
     expect(texts).not.toContain("$400,000")
     expect(early.evidence.every((claim) => claim.sessionOrd <= 4)).toBe(true)
-    // And with the replacement invisible, the older claim reads as current.
     expect(early.evidence.find((claim) => claim.text.includes("$350,000"))!.status).toBe("CURRENT")
   })
 
@@ -110,14 +95,11 @@ describe.skipIf(!hasDataset)("retrieval", () => {
         )
       })
     )
-    // Either no anchor exists in this graph, or nothing converged — and which
-    // one it was is in the receipt, with the query that shows it.
     if (absent.verdict === "ABSENT") {
       expect(["A1_no_anchors", "A2_no_convergence"]).toContain(absent.reason)
       expect(absent.evidence).toEqual([])
       expect(absent.receipt.query1).toContain("algo.MSpaths")
     }
-    // A confident wrong answer is worse than either, so record what happened.
     expect(absent.receipt.anchorsReachingNothing.length).toBeGreaterThan(0)
   })
 })

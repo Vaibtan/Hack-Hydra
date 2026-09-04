@@ -1,73 +1,31 @@
-import type { EvalRow } from "./Results.js"
-
-/**
- * The adoption gate: whether v2 replaces v1, decided once, on dev, from numbers.
- *
- * Every criterion here was written down in #22 *before* v2 produced a single
- * result. That is the whole value of the thing — a gate chosen after seeing the
- * numbers is not a gate, it is a description of the numbers. So this module
- * takes two dev result sets and a threshold table and returns a pass or a fail
- * with every criterion's measured value beside its bound, whichever way it went.
- *
- * It is deliberately unable to be partially satisfied. `passed` is the
- * conjunction; a run that clears five of six criteria has not passed, and the
- * report says which one it did not.
- */
+import { envelopeVariant, type EvalEnvelope, type EvalRow } from "./Envelope.js"
+import { abstentions, answerable, correct, refused } from "./Results.js"
+import { median } from "./Stats.js"
 
 export interface Criterion {
   readonly name: string
-  /** What was measured, in the unit the bound is stated in. */
   readonly measured: number
   readonly bound: number
   readonly comparison: "at least" | "at most"
   readonly passed: boolean
-  /** Why this criterion exists, carried into the record so it is never lost. */
   readonly why: string
 }
 
 export interface AdoptionGateReport {
   readonly passed: boolean
   readonly criteria: ReadonlyArray<Criterion>
-  /** Every number the criteria were computed from, for the split file's record. */
   readonly numbers: Readonly<Record<string, number | string | boolean | null>>
 }
 
-/** The bounds, as #22 declared them. */
+/** The bounds as #22 declared them, before v2 produced a result. */
 export const GATE_BOUNDS = {
-  /** v2 must win by more than a coin-flip's worth on 54 answerable questions. */
   minCorrectGain: 3,
-  /** No question type may get worse by more than one question. */
   maxTypeRegression: 1,
-  /** Refusing an answerable question is the expensive failure. */
   maxFalseAbstentionPct: 10,
-  /** The index's own latency claim, warm. */
   maxGraphMsP50: 1500,
-  /** The "1/30th of full context" claim rests on this. */
   maxReaderTokensP50: 6000
 } as const
 
-const p50 = (values: ReadonlyArray<number>): number => {
-  if (values.length === 0) return 0
-  const sorted = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2
-}
-
-const answerable = (rows: ReadonlyArray<EvalRow>): ReadonlyArray<EvalRow> =>
-  rows.filter((row) => !row.isAbstention)
-
-const abstentions = (rows: ReadonlyArray<EvalRow>): ReadonlyArray<EvalRow> =>
-  rows.filter((row) => row.isAbstention)
-
-const correct = (rows: ReadonlyArray<EvalRow>): number => rows.filter((row) => row.judged).length
-
-/**
- * The worst per-type regression, as a count of questions.
- *
- * Per type and not overall, because a system that gains four on multi-session
- * and loses three on knowledge-update has gained one — and has also broken the
- * feature the graph exists for. The gate refuses to let an aggregate hide that.
- */
 export const worstTypeRegression = (
   v1: ReadonlyArray<EvalRow>,
   v2: ReadonlyArray<EvalRow>
@@ -90,16 +48,8 @@ export const worstTypeRegression = (
   return worst
 }
 
-/**
- * A refusal on a question that has an answer.
- *
- * Both structural abstention and the reader's own `NOT_IN_MEMORY` count. From
- * the asker's side they are the same event — the system declined — and a gate
- * that counted only one of them could be passed by moving refusals from one
- * mechanism to the other.
- */
 export const falseAbstentions = (rows: ReadonlyArray<EvalRow>): number =>
-  answerable(rows).filter((row) => row.verdict === "ABSENT" || row.notInMemory).length
+  answerable(rows).filter(refused).length
 
 export const readGate = (
   v1: ReadonlyArray<EvalRow>,
@@ -114,12 +64,6 @@ export const readGate = (
     v2Answerable.length === 0 ? 0 : (100 * falseAbstentions(v2)) / v2Answerable.length
   const v1AbsCorrect = correct(abstentions(v1))
   const v2AbsCorrect = correct(abstentions(v2))
-
-  // Warm rows only. A first-touch row is cold by construction -- 26.5 s versus
-  // 68 ms measured on this runtime -- and the latency claim is about a warm
-  // node, so the gate is read from a second pass. A results file with no
-  // `graphMs` at all fails this criterion rather than skipping it: an
-  // unmeasured bound is not a satisfied one.
   const graphMs = v2.flatMap((row) => (row.graphMs === undefined ? [] : [row.graphMs]))
   const readerTokens = v2.map((row) => row.readerInputTokens)
 
@@ -158,18 +102,18 @@ export const readGate = (
     },
     {
       name: "graphMs p50 warm (ms)",
-      measured: graphMs.length === 0 ? Number.POSITIVE_INFINITY : Math.round(p50(graphMs)),
+      measured: graphMs.length === 0 ? Number.POSITIVE_INFINITY : Math.round(median(graphMs)),
       bound: bounds.maxGraphMsP50,
       comparison: "at most",
-      passed: graphMs.length > 0 && p50(graphMs) <= bounds.maxGraphMsP50,
+      passed: graphMs.length > 0 && median(graphMs) <= bounds.maxGraphMsP50,
       why: "the index's own latency claim, measured on a warm node"
     },
     {
       name: "reader input tokens p50",
-      measured: Math.round(p50(readerTokens)),
+      measured: Math.round(median(readerTokens)),
       bound: bounds.maxReaderTokensP50,
       comparison: "at most",
-      passed: p50(readerTokens) <= bounds.maxReaderTokensP50,
+      passed: median(readerTokens) <= bounds.maxReaderTokensP50,
       why: "the 1/30th-of-full-context claim rests on this"
     }
   ]
@@ -190,8 +134,8 @@ export const readGate = (
       v1AbsCorrect,
       v2AbsCorrect,
       absTotal: abstentions(v2).length,
-      graphMsP50: graphMs.length === 0 ? null : Math.round(p50(graphMs)),
-      readerTokensP50: Math.round(p50(readerTokens))
+      graphMsP50: graphMs.length === 0 ? null : Math.round(median(graphMs)),
+      readerTokensP50: Math.round(median(readerTokens))
     }
   }
 }
@@ -208,8 +152,12 @@ export const renderGate = (report: AdoptionGateReport): string => {
   for (const criterion of report.criteria) {
     const bound = `${criterion.comparison === "at least" ? "≥" : "≤"} ${criterion.bound}`
     const measured = Number.isFinite(criterion.measured) ? String(criterion.measured) : "not measured"
+    const boundary =
+      criterion.name === "_abs questions answered correctly" && criterion.measured === criterion.bound
+        ? " (at the boundary)"
+        : ""
     lines.push(
-      `| ${criterion.name} | ${measured} | ${bound} | ${criterion.passed ? "✓" : "✗"} | ${criterion.why} |`
+      `| ${criterion.name} | ${measured}${boundary} | ${bound} | ${criterion.passed ? "✓" : "✗"} | ${criterion.why} |`
     )
   }
   if (!report.passed) {
@@ -219,37 +167,13 @@ export const renderGate = (report: AdoptionGateReport): string => {
   return lines.join("\n")
 }
 
-// -------------------------------------------------------- reading it safely
+export type GateEnvelope = Pick<
+  EvalEnvelope,
+  "split" | "prefix" | "dataset" | "extractionGeneration" | "ablations" | "variant" | "granularity" | "pass"
+>
 
-/**
- * The envelope fields a gate reads across two results files.
- *
- * A subset of the real envelope, because these guards are about whether two
- * files describe **one measurement**, and nothing else about them matters here.
- */
-export interface GateEnvelope {
-  readonly split?: unknown
-  readonly prefix?: unknown
-  readonly dataset?: unknown
-  readonly extractionGeneration?: unknown
-  readonly ablations?: ReadonlyArray<string>
-}
-
-/**
- * Why this pair of results files cannot be gated on, or an empty list.
- *
- * Every one of these is a way to read a gate that looks like a comparison and
- * is not, and none of them shows up in the numbers the gate prints: two files
- * from different graphs produce a perfectly plausible table. So the check is a
- * refusal rather than a warning.
- *
- * Lived inline in `bin/gate.ts` until #22's review, which is why it had no
- * tests — and the gate is the one thing in this project that is read once.
- */
-export const gateRefusals = (
-  v1: GateEnvelope,
-  v2: GateEnvelope
-): ReadonlyArray<string> => {
+/** Why this pair of results files cannot be gated on, or an empty list. */
+export const gateRefusals = (v1: GateEnvelope, v2: GateEnvelope): ReadonlyArray<string> => {
   const refusals: Array<string> = []
   for (const field of ["split", "prefix", "extractionGeneration", "dataset"] as const) {
     if (v1[field] !== v2[field]) {
@@ -266,24 +190,19 @@ export const gateRefusals = (
         "after the gate is written down"
     )
   }
-  const ablations = v2.ablations ?? []
-  if (ablations.length > 0) {
+  const variant = envelopeVariant(v2)
+  if (variant.length > 0) {
     refusals.push(
-      `the v2 results are an ablation run (${ablations.join(", ")}) — ` +
-        "the gate is read on the full pipeline"
+      `the v2 results are a variant run (${variant.join(", ")}) — the gate is read on the full pipeline`
     )
+  }
+  if (v2.pass === "cold") {
+    refusals.push("the v2 results are a cold pass — the gate reads warm latency from the second pass")
   }
   return refusals
 }
 
-/**
- * Why an existing gate record may not be overwritten, or null.
- *
- * The record is the whole of "we did not tune on test": a gate that can be
- * re-read until it passes is not a gate. Overwriting is possible — by deleting
- * the record by hand, in a commit that says why — and that is deliberately not
- * a flag.
- */
+/** Why an existing gate record may not be overwritten, or null; deleting it by hand is the only way. */
 export const overwriteRefusal = (existing: { readonly readAt: string } | null): string | null =>
   existing === null
     ? null

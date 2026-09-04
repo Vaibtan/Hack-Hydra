@@ -4,25 +4,6 @@ import { loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { PalimpsestApi } from "../src/Api.js"
 
-/**
- * `smoke [--url http://127.0.0.1:8787] [--uid smoke-<timestamp>]`
- *
- * Drives a fresh user through the whole API over real HTTP: ingest a session,
- * ask a question it can only answer from that session, ingest a second session
- * that *replaces* the first's value, ask again, and read the supersession chain
- * back.
- *
- * The point is not coverage, it is the two claims the demo makes:
- *
- *  - **read-your-writes** — the ask immediately after an ingest sees claims
- *    written milliseconds earlier, with no sleep and no retry, because one
- *    `HydraClient` threads HydraDB's bookmark into the next read;
- *  - **supersession is structural** — nothing marks the first answer stale;
- *    it becomes stale because an edge now points out of it.
- *
- * A fresh uid every run, because the graph is append-only and deletes are
- * unavailable past a million edges.
- */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -80,7 +61,6 @@ const program = Effect.gen(function* () {
   console.log(`uid    ${uid}`)
   console.log("")
 
-  // ---- 1. ingest one session into an empty history --------------------------
   const first = yield* client.users.ingestSession({
     path: { uid },
     payload: SESSION_ONE
@@ -93,9 +73,6 @@ const program = Effect.gen(function* () {
   if (first.bookmark !== null) ok("write returned a bookmark", first.bookmark.slice(0, 32) + "…")
   else fail("write returned a bookmark", "null")
 
-  // ---- 2. ask immediately, with no delay ------------------------------------
-  // If reads did not replay the write's bookmark this is where it would show:
-  // an ABSENT verdict on a fact written a moment ago.
   const asked = yield* client.users.ask({
     path: { uid },
     payload: { question: "What is my hamster called?", questionDate: "2023/04/01 (Sat) 10:00" }
@@ -128,7 +105,6 @@ const program = Effect.gen(function* () {
     fail("receipt carries the query", "no anchor terms")
   }
 
-  // ---- 3. a second session that replaces the first's value ------------------
   const second = yield* client.users.ingestSession({ path: { uid }, payload: SESSION_TWO })
   if (second.sessionOrd === 2) {
     ok("ingest session 2", `ord ${second.sessionOrd}, ${second.claims} claims, ${second.supersessions} supersessions`)
@@ -136,9 +112,6 @@ const program = Effect.gen(function* () {
     fail("ingest session 2", `ord ${second.sessionOrd}`)
   }
 
-  // Posting the identical session again must change nothing: counts are not
-  // content-addressed the way vertices are, so this is the guard that keeps
-  // `df` from inflating and quietly changing every later question's idf.
   const repeat = yield* client.users.ingestSession({ path: { uid }, payload: SESSION_TWO })
   if (repeat.alreadyPresent && repeat.stats.claims === second.stats.claims) {
     ok("re-posting a session is a no-op", `claims still ${repeat.stats.claims}`)
@@ -146,7 +119,6 @@ const program = Effect.gen(function* () {
     fail("re-posting a session is a no-op", `alreadyPresent ${repeat.alreadyPresent}, claims ${repeat.stats.claims}`)
   }
 
-  // ---- 4. ask again — the answer should have moved --------------------------
   const again = yield* client.users.ask({
     path: { uid },
     payload: { question: "What is my hamster called?", questionDate: "2023/10/01 (Sun) 10:00" }
@@ -157,7 +129,6 @@ const program = Effect.gen(function* () {
     fail("answer follows the newer claim", String(again.answer))
   }
 
-  // ---- 5. as-of replays the older belief ------------------------------------
   const asOf1 = yield* client.users.ask({
     path: { uid },
     payload: {
@@ -177,7 +148,6 @@ const program = Effect.gen(function* () {
     fail("as-of changes the evidence set", "same hash")
   }
 
-  // ---- 6. determinism -------------------------------------------------------
   const repeatAsk = yield* client.users.ask({
     path: { uid },
     payload: { question: "What is my hamster called?", questionDate: "2023/10/01 (Sun) 10:00" }
@@ -185,7 +155,6 @@ const program = Effect.gen(function* () {
   if (repeatAsk.hash === again.hash) ok("same question, same hash", again.hash.slice(0, 24) + "…")
   else fail("same question, same hash", `${again.hash} vs ${repeatAsk.hash}`)
 
-  // ---- 7. sessions, stats, and the chain ------------------------------------
   const sessions = yield* client.users.sessions({ path: { uid } })
   if (sessions.length === 2 && sessions[0]!.sessionOrd === 1) {
     ok("sessions list", sessions.map((s) => `s${s.sessionOrd} ${s.dateInt} (${s.turns} turns)`).join(", "))

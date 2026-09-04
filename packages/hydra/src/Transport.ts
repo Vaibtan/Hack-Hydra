@@ -41,7 +41,6 @@ const asPage = (result: QueryPage): Page => ({
   queryId: result.queryId
 })
 
-/** One statement, all of its rows: every read follows `next_cursor` (with its `query_id`) to exhaustion. */
 export const makeTransport = (config: TransportConfig): Send => {
   const { baseUrl, token, graph, cellId, http, bookmarkRef } = config
   const endpoint = `${baseUrl.replace(/\/$/, "")}/v1/graphs/${graph}/query`

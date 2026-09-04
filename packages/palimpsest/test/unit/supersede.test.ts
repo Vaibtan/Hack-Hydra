@@ -5,13 +5,6 @@ import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { Supersede, foldSupersessionEdges, type SlotClaim } from "../../src/Supersede.js"
 
-/**
- * The supersession pass with the model stubbed, so the *structural* rules are
- * tested on their own: a replacement must point forward in the slot's history,
- * `at_session` is the newer claim's session, and a slot with one claim never
- * asks the model anything.
- */
-
 const claim = (ckey: string, sessionOrd: number, text: string, tEvent = 0): SlotClaim => ({
   ckey,
   text,
@@ -20,7 +13,6 @@ const claim = (ckey: string, sessionOrd: number, text: string, tEvent = 0): Slot
   sid: `s${sessionOrd}`
 })
 
-/** An Llm whose structured output is fixed, and which records what it was asked. */
 const stubLlm = (
   replacements: ReadonlyArray<{ older: number; newer: number; reason: string }>,
   calls: Array<string>
@@ -80,7 +72,6 @@ describe("Supersede.detect", () => {
   })
 
   it("refuses a pair that points backwards in the slot's history", async () => {
-    // Writing this would invert the chain and make the oldest claim "current".
     const result = await detect([nyc, brooklyn], [{ older: 2, newer: 1, reason: "slip" }])
     expect(result.edges).toEqual([])
   })
@@ -116,17 +107,11 @@ describe("Supersede.detect", () => {
     expect(prompt).toContain("me | residence")
     expect(prompt.indexOf("1. (session 2)")).toBeLessThan(prompt.indexOf("2. (session 5)"))
     expect(prompt).toContain("3. (session 9)")
-    // No uid anywhere, so an identical slot history is one cache entry for
-    // every user that has it.
     expect(prompt).not.toContain("|c|")
   })
 })
 
 describe("foldSupersessionEdges", () => {
-  /**
-   * `SUPERSEDED_BY` paths as HydraDB returns them: one relationship, older
-   * first.
-   */
   const edge = (older: string, newer: string, atSession: number): HydraPath => ({
     nodes: [
       { id: 1, labels: ["Claim"], properties: { ckey: older } },
@@ -143,14 +128,9 @@ describe("foldSupersessionEdges", () => {
   })
 
   it("keeps the earliest replacement when one claim has two outgoing edges", () => {
-    // The prompt asks for a chain, never a fan-out, but nothing structural
-    // forbids the model returning 1->2 and 1->3. The earliest edge is the one
-    // that made the claim stale.
     const forward = foldSupersessionEdges([edge("c1", "c3", 30), edge("c1", "c2", 7)])
     const reversed = foldSupersessionEdges([edge("c1", "c2", 7), edge("c1", "c3", 30)])
     expect(forward.get("c1")).toEqual({ newer: "c2", atSession: 7 })
-    // The whole point: the answer cannot depend on the order paths arrived in,
-    // or the determinism hash would depend on it too.
     expect(reversed).toEqual(forward)
   })
 

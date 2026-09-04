@@ -5,7 +5,6 @@ import { Effect, Layer } from "effect"
 import { ClaimGraph } from "../src/ClaimGraph.js"
 import { Supersede } from "../src/Supersede.js"
 
-/** `stats --uid <question_id> [--slots] [--tokens]` — what a user's graph actually holds. */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -48,11 +47,6 @@ const program = Effect.gen(function* () {
     }
   }
 
-  // The only remaining store-wide scan in the repo, and it is opt-in: there is
-  // no `HAS_TOKEN` edge (a user has thousands of Tokens and they are only ever
-  // reached from the question side), so a top-df listing has to read the Token
-  // label. It cost 8.7 s at 26 users and will exceed the 30 s cap well before
-  // 500 — which is exactly why nothing on the product path does this.
   if (showTokens) {
     const df = yield* hydra.query(
       "MATCH (t:Token) WHERE t.uid = $uid RETURN t.stem AS stem, t.df AS df ORDER BY df DESC LIMIT 10",

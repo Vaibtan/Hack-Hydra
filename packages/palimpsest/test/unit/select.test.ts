@@ -33,7 +33,6 @@ const candidate = (over: Partial<Candidate> & { ckey: string }): Candidate => ({
   ...over
 })
 
-/** Distinct turns, so the turn cap is not what is being measured. */
 const spread = (ckey: string, over: Partial<Candidate> = {}, turn = 0): Candidate =>
   candidate({ ckey, turnIdx: turn, ...over })
 
@@ -75,7 +74,6 @@ describe("the guarantees the selector cannot break", () => {
 
 describe("the turn cap", () => {
   it("counts turns, not claims", () => {
-    // Forty claims from two turns is two excerpts, and must survive a cap of 2.
     const claims = Array.from({ length: 40 }, (_, i) =>
       spread(`c${String(i).padStart(11, "0")}`, { turnIdx: i % 2 })
     )
@@ -102,10 +100,6 @@ describe("the turn cap", () => {
   })
 
   it("never spends the cap on a probe hit, however low its convergence", () => {
-    // The bug this pins: `ordered` sorts by convergence and a probe hit has
-    // convergence 0 by construction, so walking `ordered` and capping as it
-    // goes discards the guaranteed row first — the `(me, age)` claim the probe
-    // arm exists for.
     const converged = Array.from({ length: 32 }, (_, i) =>
       spread(`conv${String(i).padStart(10, "0")}`, { convergence: 5 }, i)
     )
@@ -120,7 +114,6 @@ describe("the turn cap", () => {
     )
     expect(report.kept.map((c) => c.ckey)).toContain(probe.ckey)
     expect(report.dropped.find((d) => d.candidate.ckey === probe.ckey)).toBeUndefined()
-    // The cap still binds — it just spends itself on selector rows.
     expect(report.dropped.filter((d) => d.reason === "turn_cap").length).toBeGreaterThan(0)
   })
 
@@ -219,12 +212,10 @@ describe("the candidate table", () => {
     const table = renderCandidateTable(rows)
     const lines = table.split(String.fromCharCode(10))
     expect(lines).toHaveLength(2)
-    // Highest convergence first, whatever order they arrived in.
     expect(lines[0]).toContain("bbbbbb02")
     expect(lines[0]).toContain("convergence,probe:me|residence")
     expect(lines[0]).toContain("about 20230401")
     expect(lines[1]).toContain("lives in Brooklyn")
-    // No event date means no "about" clause rather than "about 0".
     expect(lines[1]).not.toContain("about")
   })
 
@@ -244,10 +235,6 @@ describe("the candidate table", () => {
 
 describe("an empty keep set is a failure, not a decision", () => {
   it("falls back to the deterministic ordering and flags it", () => {
-    // The rule the dev run's `selectorFallback` column counts. A selector that
-    // kept nothing produces an empty pack, and an empty pack reads downstream
-    // as "the memory does not contain it" -- a structural claim the selector
-    // was never asked to make.
     const candidates = [
       spread("aaaaaaaaone", { convergence: 3, score: 4 }, 1),
       spread("bbbbbbbbtwo", { convergence: 1, score: 1 }, 2)

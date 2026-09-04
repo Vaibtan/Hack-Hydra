@@ -21,7 +21,6 @@ import {
 import { applyTimeScope, intervalSentence, type DayInterval, type TimeScopeReport } from "./TimeScope.js"
 import type { Route, Understood } from "./Understand.js"
 
-/** What every stage of the read decided and on what; a judge re-derives the evidence set from this. */
 export interface RetrievalPlan {
   readonly route: Route
   /** `model`, or `cue:<name>` when a deterministic cue overrode the model. */
@@ -47,11 +46,8 @@ export interface RetrievalPlan {
     readonly fallback: boolean
   }
   readonly intervalSentence: string | null
-  /** Which Slot each surviving candidate fills. */
   readonly slots: Readonly<Record<string, string>>
-  /** Kept claims the budget may never drop: the probe hits. */
   readonly protectedKeys: ReadonlyArray<string>
-  /** Every session any arm reached, before selection. */
   readonly unionSessions: ReadonlyArray<string>
   readonly ablations: Ablations
 }
@@ -65,7 +61,6 @@ export interface PlanArm {
   readonly timedOut: boolean
 }
 
-/** A plan that has been through the pack and the sufficiency check; only `answerV2` produces one. */
 export type AnsweredPlan = RetrievalPlan & {
   readonly sufficiency: PlanSufficiency
   readonly budget: PlanBudget
@@ -89,12 +84,10 @@ export interface PlanSufficiency {
   readonly tier: "EXACT" | "INFERRABLE" | "PARTIAL" | "skipped"
   readonly missing: string
   readonly premise: string
-  /** Excerpt ids the check cited, after the CURRENT-and-in-pack verification. */
   readonly premiseContradictedBy: ReadonlyArray<string>
   readonly secondPass: boolean
 }
 
-/** Everything a judge needs to re-run the read by hand and get the same paths. */
 export interface Receipt {
   readonly question: string
   readonly uid: string
@@ -155,11 +148,9 @@ export interface AskOptions {
   readonly maxLen?: number
   readonly profile?: AskProfile
   readonly ablations?: Ablations
-  /** Extra anchor terms for the refined second pass. */
   readonly extraTerms?: ReadonlyArray<string>
 }
 
-/** Each switches off exactly one stage; off means skipped, not run and ignored. */
 export interface Ablations {
   readonly noDecompose?: boolean
   readonly noDiscovery?: boolean
@@ -181,7 +172,6 @@ export const determinismHash = (ckeys: ReadonlyArray<string>): string =>
 export const unionOptionsFor = (asOf: number | undefined): { readonly asOf?: number } =>
   asOf === undefined ? {} : { asOf }
 
-/** The pure half of an ask: what the arms returned, unioned, scoped and judged for a verdict. */
 export interface Planned {
   readonly arms: ReadonlyArray<LiveArm>
   readonly union: UnionReport
@@ -195,7 +185,6 @@ export interface Planned {
   readonly plan: Omit<RetrievalPlan, "protectedKeys" | "selection">
 }
 
-/** What `planFromArms` needs of a gather; `Gathered` satisfies it. */
 export type PlanInput = Pick<
   Gathered,
   | "uid"

@@ -3,7 +3,6 @@ import type { HydratedSpan } from "./Reader.js"
 import type { AsOfLabelled } from "./Scoring.js"
 import type { ChainClaim } from "./Supersede.js"
 
-/** The verbatim source slice that makes a generated index assertion inspectable. */
 export interface DerivedAssertionSourceSpan {
   readonly sourceDigest: string
   readonly logicalSessionId: string
@@ -42,7 +41,6 @@ export class DerivedAssertionSourceUnavailable extends Data.TaggedError(
 const hasSourceRevisionWitness = (claim: ChainClaim): boolean =>
   /^[a-f0-9]{64}$/.test(claim.sourceDigest) && claim.sourceLogicalSessionId !== ""
 
-/** Shapes chain records as source-hydration input without treating their text as evidence. */
 export const sourceLinkedChainEvidence = (
   claims: ReadonlyArray<ChainClaim>
 ): ReadonlyArray<AsOfLabelled> =>
@@ -56,8 +54,6 @@ export const sourceLinkedChainEvidence = (
     tEvent: claim.tEvent,
     tPrec: claim.tPrec,
     sid: claim.sid,
-    // The chain records carry the logical session id as their source witness,
-    // which is the same value `Claim.source_session_id` holds.
     sessionKey: claim.sourceLogicalSessionId,
     turnIdx: claim.turnIdx,
     cs: claim.cs,
@@ -71,11 +67,6 @@ export const sourceLinkedChainEvidence = (
     atSession: claim.atSession
   }))
 
-/**
- * Projects slot-chain records only when each model-generated assertion has a
- * linked verbatim source span. This is a pure policy seam shared by HTTP and
- * CLI adapters, so neither can relabel generated text as evidence by accident.
- */
 export const prepareDerivedIndexAssertions = (
   claims: ReadonlyArray<ChainClaim>,
   sourceSpans: ReadonlyArray<HydratedSpan>

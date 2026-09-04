@@ -34,10 +34,6 @@ export interface WriteChunkedOptions<E> {
   readonly halveOn?: (error: E) => boolean
 }
 
-/**
- * Sends one `UNWIND` write in chunks; on a failure `halveOn` accepts, halves the chunk size and
- * keeps the smaller size for the rest of the write. Returns the row count written.
- */
 export const writeChunked = <E>(
   send: (rows: ReadonlyArray<Readonly<Record<string, unknown>>>) => Effect.Effect<unknown, E>,
   payload: ReadonlyArray<Readonly<Record<string, unknown>>>,

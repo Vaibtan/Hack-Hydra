@@ -6,17 +6,12 @@ import {
   type VersionedDependency
 } from "./SourceIdentity.js"
 
-/** Dependencies that change the derived graph even when extraction output is unchanged. */
 export interface IndexGenerationInput {
-  /** Immutable extraction definition whose output this index represents. */
   readonly extractionGeneration: ExtractionGeneration
-  /** Revision of the code that shapes extracted data into graph records. */
   readonly graphWriter: VersionedDependency
-  /** Revision of the graph labels, keys, properties, and relation contract. */
   readonly graphSchema: VersionedDependency
 }
 
-/** Immutable, content-addressed contract for one isolated derived graph build. */
 export interface IndexGeneration {
   readonly id: string
   readonly extractionGenerationId: string
@@ -26,7 +21,6 @@ export interface IndexGeneration {
   readonly canonicalJson: string
 }
 
-/** A persisted index-generation descriptor failed its immutable contract checks. */
 export class InvalidIndexGeneration extends Data.TaggedError("InvalidIndexGeneration")<{
   readonly reason: "invalidEncoding" | "identifierMismatch"
 }> {
@@ -58,11 +52,6 @@ const descriptorFor = (input: IndexGenerationInput): IndexGenerationDescriptor =
   }
 })
 
-/**
- * Pins every graph-shaping dependency. A prompt/schema/model change is already
- * represented by the referenced extraction generation; a writer or graph
- * schema change produces a distinct index generation here.
- */
 export const createIndexGeneration = (input: IndexGenerationInput): IndexGeneration => {
   return generationFromDescriptor(descriptorFor(input))
 }
@@ -86,10 +75,6 @@ const dependencyFrom = (value: unknown): VersionedDependency | undefined => {
   return { id: record["id"], revision: record["revision"] }
 }
 
-/**
- * Verifies a persisted descriptor before it is selected for retrieval. The
- * manifest separately verifies that its extraction-generation reference exists.
- */
 export const parseIndexGeneration = (
   id: string,
   serialized: string

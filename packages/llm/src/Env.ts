@@ -1,14 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 
-/**
- * Reads the workspace's gitignored `.env` into `process.env`, which is where
- * Effect's default `ConfigProvider` looks. Called explicitly by CLIs and by the
- * test setup — never as an import side effect, so a library consumer keeps
- * control of its own configuration.
- *
- * Existing environment variables win, so `OPENAI_API_KEY=… pnpm …` still works.
- */
 export const loadDotEnv = (startDir = process.cwd()): void => {
   let dir = resolve(startDir)
   for (let depth = 0; depth < 8; depth++) {

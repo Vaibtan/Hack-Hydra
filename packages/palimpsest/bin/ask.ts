@@ -7,10 +7,6 @@ import { Reader } from "../src/Reader.js"
 import { Retrieve } from "../src/Retrieve.js"
 import { Supersede } from "../src/Supersede.js"
 
-/**
- * `ask --uid <id> --question "..." [--date "2023/05/20 (Sat) 02:21"] [--as-of k]
- *      [--max-len 2] [--profile full|fast] [--full]`
- */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {

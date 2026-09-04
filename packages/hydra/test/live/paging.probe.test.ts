@@ -3,19 +3,6 @@ import { Effect, Layer } from "effect"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { HydraClient } from "../../src/index.js"
 
-/**
- * The 1024-row wall.
- *
- * HydraDB returns at most 1024 rows per response and hands back a
- * `next_cursor` when there are more. Ignoring it does not fail — it silently
- * truncates, which for a retrieval system means recall quietly capped with no
- * error anywhere. `algo.MSpaths` is subject to the same wall and cannot take
- * `SKIP`/`LIMIT`, so following the cursor is the only way to see all of it.
- *
- * Continuing a result needs **both** the cursor and the originating `query_id`:
- * the cursor alone answers `result cursor does not belong to this query
- * request` or returns nothing at all.
- */
 const UID = "probe-paging"
 const ROWS = 2_600
 
@@ -30,8 +17,6 @@ beforeAll(() =>
   run(
     Effect.gen(function* () {
       const hydra = yield* HydraClient
-      // Fixed keys, so a re-run overwrites rather than accumulates and the
-      // suite never has to pay for a delete.
       yield* hydra.batchMerge("ProbePage", [
         { key: `${UID}|hub`, properties: { pkey: `${UID}|hub`, uid: UID, n: -1 } },
         ...keys.map((key, i) => ({ key, properties: { pkey: key, uid: UID, n: i } }))
@@ -64,7 +49,6 @@ describe("result paging", () => {
       })
     )
     expect(rows).toHaveLength(ROWS)
-    // No duplicates: pages must not overlap.
     expect(new Set(rows.map((row) => String(row["pkey"]))).size).toBe(ROWS)
   })
 
@@ -86,7 +70,6 @@ describe("result paging", () => {
         })
       })
     )
-    // Without cursor following this would stop at exactly 1024.
     expect(paths.length).toBeGreaterThan(1024)
     expect(paths.length).toBe(ROWS)
   })

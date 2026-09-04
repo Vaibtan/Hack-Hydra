@@ -46,7 +46,6 @@ export interface UnionReport {
 
 const priorityOf = (kind: ArmKind): number => ARM_PRIORITY.indexOf(kind)
 
-/** Unions the arms by claim key: as-of cut, then the arm cap, then the union cap. */
 export const unionArms = (
   arms: ReadonlyArray<ArmResult>,
   options: { readonly asOf?: number; readonly cap?: number; readonly armCap?: number } = {}
@@ -122,7 +121,6 @@ export const convergenceConfig = (
   maxLen
 })
 
-/** The `Slot <-FILLS- Claim` walk every Slot read shares: probes, slot-mates and the warm. */
 export const SLOT_CLAIMS_WALK = {
   sourceLabel: "Slot",
   sourceProperty: "skey",

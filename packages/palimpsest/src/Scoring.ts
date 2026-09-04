@@ -1,9 +1,7 @@
 import type { ClaimFields, ReachedRow } from "./Rows.js"
 
 export interface ReachedClaim extends ClaimFields {
-  /** The distinct question anchors that reached this claim. */
   readonly anchors: ReadonlyArray<string>
-  /** How many of them — the convergence score. */
   readonly convergence: number
   /** Σ idf over those anchors. */
   readonly score: number
@@ -14,7 +12,6 @@ export interface ReachedClaim extends ClaimFields {
 export const idf = (df: number, totalClaims: number): number =>
   Math.log(1 + totalClaims / Math.max(1, df))
 
-/** Folds the decoded paths of one walk into one row per Claim; convergence is the count of distinct anchors. */
 export const scoreReached = (
   rows: ReadonlyArray<ReachedRow>,
   totalClaims: number
@@ -47,7 +44,6 @@ export const scoreReached = (
   }))
 }
 
-/** The as-of cut, before the verdict: claims from sessions after `k` do not exist yet. */
 export const beforeAsOf = <A extends { readonly sessionOrd: number }>(
   claims: ReadonlyArray<A>,
   asOf?: number
@@ -106,7 +102,6 @@ export interface AsOfLabelled extends ReachedClaim {
   readonly atSession: number | null
 }
 
-/** As-of is a data-level filter: later claims are dropped and later supersession edges are invisible. */
 export const applyAsOf = (
   claims: ReadonlyArray<ReachedClaim>,
   edges: ReadonlyMap<string, { readonly newer: string; readonly atSession: number }>,

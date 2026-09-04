@@ -9,20 +9,7 @@ import { claimTokens } from "./Tokenize.js"
 import { canonicalSessionSource } from "./SourceIdentity.js"
 import { EMPTY_STATS, linkToUser, readUserStats, readUserVertices, type UserStats } from "./User.js"
 
-/**
- * Writing the claim graph.
- *
- * Every vertex is keyed by content, so the whole write is idempotent: re-running
- * a session's ingest is `MERGE` by the same ids and `SET` the same values. That
- * is what lets ingest be retried, resumed, or re-run after a prompt change
- * without a reset step.
- */
-
-/**
- * HydraDB properties are scalars — there is no list type — so an entity's
- * aliases are stored as one string joined by the ASCII unit separator, which
- * cannot occur in the dataset's text.
- */
+// HydraDB has no list type; aliases are one string joined by the ASCII unit separator.
 const ALIAS_SEPARATOR = "\u001f"
 
 /** A Claim's identity is its text plus the exact Span it points at. */
@@ -42,12 +29,9 @@ export interface WrittenClaim {
 export interface SessionWrite {
   readonly claims: ReadonlyArray<WrittenClaim>
   readonly entities: ReadonlyArray<ExtractedEntity>
-  /** Slots this session put a claim into — the input to the supersession pass. */
   readonly touchedSlots: ReadonlyArray<string>
   readonly tokens: number
-  /** One entry per (claim, token) pair written — summed into `Token.df`. */
   readonly tokenHits: ReadonlyArray<string>
-  /** One entry per claim that filled a slot — summed into `Slot.n_claims`. */
   readonly slotFills: ReadonlyArray<string>
 }
 
@@ -56,16 +40,6 @@ export type { UserStats } from "./User.js"
 const make = Effect.gen(function* () {
   const hydra = yield* HydraClient
 
-  /**
-   * The user's entities, as the graph currently holds them — walked from the
-   * `User` root over `HAS_ENTITY`.
-   *
-   * `MATCH (e:Entity) WHERE e.uid = $uid` measured **4.9 s** at 26 users and is
-   * proportional to every Entity in the store, so at the 500-user scale it
-   * exceeds the engine's 30 s cap — on the read that opens *every* ingest.
-   * `MSpaths` is driven from one indexed source value and does not care how
-   * big the store is.
-   */
   const readEntities = (uid: string): Effect.Effect<ReadonlyArray<ExtractedEntity>, HydraError> =>
     readUserVertices(hydra, uid, "HAS_ENTITY").pipe(
       Effect.map((rows) =>
@@ -73,7 +47,6 @@ const make = Effect.gen(function* () {
           .map((row) => ({
             canon: String(row["name"] ?? ""),
             etype: String(row["etype"] ?? "topic") as ExtractedEntity["etype"],
-            // HydraDB has no list type, so aliases travel as a delimited string.
             aliases: String(row["aliases"] ?? "")
               .split(ALIAS_SEPARATOR)
               .filter((alias) => alias !== "")
@@ -83,15 +56,6 @@ const make = Effect.gen(function* () {
       )
     )
 
-  /**
-   * The canon decisions for a whole ingest, made once.
-   *
-   * Reconciling per session as the graph grows is *not* idempotent: on a first
-   * pass session 1 only sees the entities of sessions before it, and on a
-   * re-ingest it sees all of them, so a canon can merge on the second run that
-   * did not merge on the first, and a re-run changes the slot count. Deciding
-   * every canon up front from the same input makes a re-ingest a genuine no-op.
-   */
   const reconcileAll = (
     knownEntities: ReadonlyArray<ExtractedEntity>,
     claims: ReadonlyArray<ExtractedClaim>
@@ -108,15 +72,10 @@ const make = Effect.gen(function* () {
       const { rename } = reconciled
       const canonOf = (canon: string): string => rename.get(canon) ?? canon
 
-      // The reconciled list covers the whole ingest; this session only writes
-      // the entities its own claims mention, so a 48-session haystack does not
-      // rewrite all 2 200 entity vertices 48 times.
       const mentioned = new Set(
         claims.flatMap((claim) => claim.entities.map((entity) => canonOf(entity.canon)))
       )
       const entities = reconciled.entities.filter((entity) => mentioned.has(entity.canon))
-
-      // ---- vertices -------------------------------------------------------
 
       yield* hydra.batchMerge(
         "Entity",
@@ -149,9 +108,6 @@ const make = Effect.gen(function* () {
           key: ckey,
           properties: {
             ckey,
-            // Constant per user: the MSpaths target selector. With a constant
-            // target property every source→claim pair is returned, instead of
-            // one path per source (the pathCount trap).
             kind: claimKind(uid),
             uid,
             text: claim.text,
@@ -164,10 +120,6 @@ const make = Effect.gen(function* () {
             turn_idx: claim.span.turnIdx,
             cs: claim.span.cs,
             ce: claim.span.ce,
-            // The legacy projection is not a manifest-backed source plane,
-            // but every derived assertion still names the exact canonical
-            // source bytes it was extracted from. Public derived-assertion
-            // surfaces fail closed when this witness is absent.
             source_digest: source.sourceDigest,
             source_session_id: session.key,
             session_date: session.date.dateInt,
@@ -195,8 +147,6 @@ const make = Effect.gen(function* () {
           }
         }))
       )
-
-      // ---- tokens ---------------------------------------------------------
 
       const tokensByClaim = claimRows.map(({ claim, ckey }) => ({
         ckey,
@@ -226,8 +176,6 @@ const make = Effect.gen(function* () {
           properties: { tkey: tokenKey(uid, stem), uid, stem, df: 0 }
         }))
       )
-
-      // ---- edges ----------------------------------------------------------
 
       yield* hydra.batchRel(
         "EVIDENCE",
@@ -298,8 +246,6 @@ const make = Effect.gen(function* () {
         )
       )
 
-      // The user root, so `readEntities`, `contestedSlots` and `stats` never
-      // have to scan a label. Same content-addressed MERGE as everything else.
       yield* linkToUser(hydra, uid, "HAS_ENTITY", "Entity", entities.map((entity) => entityKey(uid, entity.canon)))
       yield* linkToUser(hydra, uid, "HAS_SLOT", "Slot", [...slots.keys()])
 
@@ -313,18 +259,6 @@ const make = Effect.gen(function* () {
       }
     })
 
-  /**
-   * Writes the two derived counts an ingest produces: `Token.df` (how many
-   * Claims each anchor hits, the input to idf at query time) and
-   * `Slot.n_claims` (how many Claims contest each slot).
-   *
-   * Both are counted while writing rather than read back with an aggregate
-   * join. `MATCH (t:Token)-[:HITS]->(c:Claim) … count(*)` blows the engine's
-   * 30 s runtime cap once a handful of users share the graph — and it has to,
-   * since it joins every token against every claim in the store. Counting
-   * during the write is O(1) queries and, because a full ingest writes all of a
-   * user's claims, gives the same answer.
-   */
   const writeCounts = (
     uid: string,
     counts: {
@@ -360,18 +294,6 @@ const make = Effect.gen(function* () {
       )
     })
 
-  /**
-   * The current `df` of the given tokens, in one round trip.
-   *
-   * A whole-user ingest counts `df` while writing and never reads it back. A
-   * *single-session* ingest cannot: the session adds to counts the rest of the
-   * history already contributed to, so it has to know what they are.
-   *
-   * There is no batched read by id on this engine, so this leans on the
-   * `MSpaths` per-source path cap instead of fighting it: `pathCount: 1` asks
-   * for one path per token, and the path's source node carries `df`. A token
-   * with no `HITS` edge returns no path and is 0, which is exactly right.
-   */
   const readTokenDf = (
     uid: string,
     stems: ReadonlyArray<string>
@@ -397,7 +319,6 @@ const make = Effect.gen(function* () {
       return df
     })
 
-  /** The same trick for `Slot.n_claims`, read off the slot each path starts at. */
   const readSlotClaimCounts = (
     skeys: ReadonlyArray<string>
   ): Effect.Effect<ReadonlyMap<string, number>, HydraError> =>
@@ -422,43 +343,16 @@ const make = Effect.gen(function* () {
       return counts
     })
 
-  /**
-   * Just the claim count, off the `User` vertex in one ~100 ms read by id.
-   *
-   * Zero means "this user was never indexed" — either never ingested, or
-   * ingested before the `User` vertex existed, which `pnpm backfill-user`
-   * repairs.
-   */
   const claimCount = (uid: string): Effect.Effect<number, HydraError> =>
     readUserStats(hydra, uid).pipe(
       Effect.map((stats) => (stats._tag === "Some" ? stats.value.claims : 0))
     )
 
-  /**
-   * Everything `stats` used to count, read off the `User` vertex.
-   *
-   * The old shape was six `MATCH (n:Label) WHERE n.uid = $uid RETURN count(*)`
-   * scans plus two Slot scans, at the *end of every ingest*: 4.4 s for Claims
-   * and 8.7 s for Tokens at 26 users, and past the 30 s cap at 100 — so a
-   * fully written user would have been reported FAILED by the timeout of the
-   * read that was only there to describe it. Every one of these numbers was
-   * already known in memory when the ingest wrote them.
-   */
   const stats = (uid: string): Effect.Effect<UserStats, HydraError> =>
     readUserStats(hydra, uid).pipe(
       Effect.map((stats) => (stats._tag === "Some" ? stats.value : EMPTY_STATS))
     )
 
-  /**
-   * Counts the supersession edges a user holds, by walking out of the claims of
-   * its contested slots. Every supersession edge is inside a slot with ≥ 2
-   * claims by construction, so the walk is exhaustive — and unlike
-   * `MATCH (a:Claim)-[:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid`, which
-   * measured **24.7 s**, it is driven from indexed source values.
-   *
-   * An ingest knows this number without asking; this exists for `backfill-user`,
-   * which has to recover it from a graph written before the `User` vertex did.
-   */
   const countSupersessions = (
     uid: string,
     contestedSkeys: ReadonlyArray<string>
@@ -498,7 +392,6 @@ const make = Effect.gen(function* () {
       return paths.filter((path) => path.relationships.length === 1).length
     })
 
-  /** Drops a user's claim graph (not their transcript). */
   const remove = (uid: string): Effect.Effect<void, HydraError> =>
     Effect.gen(function* () {
       const keys: Array<string> = []

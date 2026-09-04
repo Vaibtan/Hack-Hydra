@@ -3,15 +3,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { existsSync } from "node:fs"
 
-/**
- * Content-addressed disk cache for LLM calls.
- *
- * Extraction is not deterministic; caching is what makes a *run* deterministic
- * and what makes re-running the benchmark free. The key covers everything that
- * can change the answer — model, system prompt, prompt, and the JSON schema the
- * provider is constrained to — so a prompt edit is a cache miss by construction.
- */
-
 export const cacheKey = (parts: {
   readonly model: string
   readonly system: string
@@ -51,19 +42,6 @@ export interface CachedCall {
   readonly value: unknown
   readonly inputTokens: number
   readonly outputTokens: number
-  /**
-   * What the model was actually shown, stored beside what it answered.
-   *
-   * The cache key is a hash of these, which proves two runs sent the same
-   * prompt and shows nobody what it was. A replay has to be able to open one
-   * file and read the question that produced an answer -- otherwise "here is
-   * the receipt" stops at the boundary of the LLM call, which is exactly where
-   * a reader of a benchmark result wants to look hardest.
-   *
-   * Optional so that every entry written before this field existed still loads:
-   * an old entry replays its value and says nothing about its prompt, rather
-   * than being a cache miss and a fresh charge.
-   */
   readonly system?: string
   readonly prompt?: string
 }
@@ -81,7 +59,6 @@ export const readCache = async (
   try {
     return JSON.parse(await readFile(path, "utf8")) as CachedCall
   } catch {
-    // A truncated cache entry is a miss, not a failure.
     return undefined
   }
 }

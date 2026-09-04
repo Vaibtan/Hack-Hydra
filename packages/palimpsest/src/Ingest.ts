@@ -12,21 +12,6 @@ import { Supersede } from "./Supersede.js"
 import { Transcript } from "./Transcript.js"
 import { EMPTY_STATS, readUserStats, writeUserStats, type UserStats } from "./User.js"
 
-/**
- * Ingest for one user, end to end.
- *
- * Sessions are *written* in `session_ord` order, but every canon decision is
- * made once up front over all of them, so a re-ingest reproduces the same graph
- * exactly rather than converging to it over two passes.
- *
- * **Extraction itself is order-independent**: a session is extracted knowing
- * nothing about the user, so the LLM call is keyed purely by the session's own
- * content and is shared by every user whose haystack contains it. LongMemEval_S
- * references 23 867 sessions of which 19 195 are distinct, so that sharing is
- * worth ~20 % of the extraction bill and, more importantly, makes a re-ingest
- * under a different uid free.
- */
-
 export interface SessionProgress {
   readonly sid: string
   readonly sessionOrd: number
@@ -36,7 +21,6 @@ export interface SessionProgress {
   readonly cached: boolean
 }
 
-/** One session added to a history that already exists. */
 export interface SessionIngestReport {
   readonly uid: string
   readonly sid: string
@@ -46,7 +30,6 @@ export interface SessionIngestReport {
   readonly touchedSlots: ReadonlyArray<string>
   readonly supersessions: SupersedeReport
   readonly stats: UserStats
-  /** True when this exact session was already in the graph and nothing was added. */
   readonly alreadyPresent: boolean
   readonly bookmark: Option.Option<string>
 }
@@ -73,21 +56,12 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* transcript.ingest(uid, question.sessions)
 
-      // Extraction is order-independent, so all sessions go out at once and the
-      // Llm service's own semaphore decides how many are in flight. A
-      // 48-session haystack is otherwise 48 serial round trips to the model,
-      // which is the difference between three minutes and half an hour.
       const extractions = yield* Effect.forEach(
         question.sessions,
         (session) => extractSession(session),
         { concurrency: "unbounded" }
       )
 
-      // Canons are decided once, for the whole ingest, against whatever the
-      // graph already holds. Doing it per session as the graph grows makes the
-      // first pass and a re-ingest disagree — session 1 would see only the
-      // sessions before it the first time and all of them the second — and the
-      // slot count would change on a re-run.
       const reconciled = claimGraph.reconcileAll(
         yield* claimGraph.readEntities(uid),
         extractions.flatMap((extraction) => extraction.claims)
@@ -126,8 +100,6 @@ const make = Effect.gen(function* () {
         options?.onSession?.(step)
       }
 
-      // Tokens that only NAME an entity hit no claim, but still need a df so
-      // idf has a number for every anchor at query time.
       for (const stem of reconciled.entities.flatMap((entity) =>
         [entity.canon, ...entity.aliases].flatMap((name) => stems(name))
       )) {
@@ -136,9 +108,6 @@ const make = Effect.gen(function* () {
 
       yield* claimGraph.writeCounts(uid, { tokenDf, slotClaims, slotEntities })
 
-      // Supersession runs last, over the slots that ended up holding more than
-      // one claim: whether a claim replaces another is only decidable against
-      // the slot's whole ordered history.
       const contested = [...slotClaims]
         .filter(([, n]) => n >= 2)
         .map(([skey]) => {
@@ -148,11 +117,6 @@ const make = Effect.gen(function* () {
         .sort((a, b) => a.skey.localeCompare(b.skey))
       const supersessions = yield* supersede.run(uid, contested)
 
-      // Every number `stats` used to read back with a store-wide label scan was
-      // already in hand here — the write is what produced them. Recording them
-      // on the `User` vertex is the whole of §2.1: an ingest that ends by
-      // *counting* the graph it just wrote costs 30 s at scale and can fail a
-      // user that was written perfectly.
       const stats: UserStats = {
         claims: extractions.reduce((n, extraction) => n + extraction.claims.length, 0),
         entities: reconciled.entities.length,
@@ -174,30 +138,6 @@ const make = Effect.gen(function* () {
       }
     })
 
-  /**
-   * Adds **one** session to a history that already exists.
-   *
-   * `ingestUser` can get away with a lot that this cannot. It extracts every
-   * session, decides every canon at once, and then *overwrites* `Token.df` and
-   * `Slot.n_claims` with the counts of its own run — which is right precisely
-   * because its run is the whole history. One session arriving later has to add
-   * to counts the rest of the history already contributed to, so it reads them
-   * first (one `MSpaths` round trip each, not a scan) and writes them back.
-   *
-   * **Append-only.** `session_ord` is `User.n_sessions + 1`, so a session dated
-   * before an existing one still sorts last. Inserting into the middle would
-   * renumber every later session and invalidate every `at_session` on every
-   * supersession edge — and edges here are only ever added. For the live demo,
-   * where sessions arrive in the order they happen, append-only is the truth
-   * rather than a compromise; a backdated import would need a re-ingest under a
-   * fresh prefix.
-   *
-   * **Idempotent by session.** Re-posting the same session is a no-op: the
-   * writes are content-addressed and would be, but the *counts* are not, so the
-   * session vertex is checked by id first. Without that, posting twice would
-   * inflate every `df` it touched and quietly change the idf of every later
-   * question.
-   */
   const ingestSession = (
     uid: string,
     session: Omit<DatasetSession, "sessionOrd">
@@ -230,16 +170,11 @@ const make = Effect.gen(function* () {
       yield* transcript.ingest(uid, [placed])
 
       const extraction = yield* extractSession(placed)
-      // Reconciled against what the graph already holds, exactly as a whole-user
-      // ingest is — an existing canon always wins, so a session that says
-      // "the moma" joins the entity a previous session wrote.
       const reconciled = claimGraph.reconcileAll(
         yield* claimGraph.readEntities(uid),
         extraction.claims
       )
       const write = yield* claimGraph.writeSession(uid, placed, extraction.claims, reconciled)
-
-      // ---- derived counts, read then added to ------------------------------
 
       const addedDf = new Map<string, number>()
       for (const stem of write.tokenHits) addedDf.set(stem, (addedDf.get(stem) ?? 0) + 1)
@@ -268,8 +203,6 @@ const make = Effect.gen(function* () {
 
       yield* claimGraph.writeCounts(uid, { tokenDf, slotClaims, slotEntities })
 
-      // ---- supersession, over the slots this session touched ---------------
-
       const contested = [...slotClaims]
         .filter(([, n]) => n >= 2)
         .map(([skey]) => {
@@ -279,10 +212,6 @@ const make = Effect.gen(function* () {
         .sort((a, b) => a.skey.localeCompare(b.skey))
       const supersessions = yield* supersede.run(uid, contested)
 
-      // ---- the User vertex -------------------------------------------------
-      // Newly-created entities and slots only: a session that mentions an
-      // entity the history already has adds no vertex, so counting its
-      // mentions would drift the totals upward on every ingest.
       const newEntities = reconciled.entities.length - before.entities
       const newSlots = [...slotClaims.keys()].filter(
         (skey) => (currentSlot.get(skey) ?? 0) === 0

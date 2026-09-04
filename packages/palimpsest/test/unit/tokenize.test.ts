@@ -31,8 +31,6 @@ describe("stem", () => {
 
 describe("stems", () => {
   it("keeps content words and drops stopwords", () => {
-    // "serviced" and "time" keep their stems; "just", "got", "my", "for",
-    // "the" are function words and disappear.
     expect(stems("I just got my car serviced for the first time")).toEqual([
       "car",
       "servic",
@@ -90,13 +88,6 @@ describe("claimTokens", () => {
 })
 
 describe("stem, on words that collide with Object.prototype", () => {
-  /**
-   * `IRREGULAR` is a plain object literal, so `IRREGULAR["constructor"]` used to
-   * return the Object constructor function and `stem` threw
-   * `base.endsWith is not a function`. `stems` lowercases before looking up, so
-   * "constructor" is the only word that can reach it — and it reaches it in any
-   * conversation about code, which is how it crashed the BM25 baseline.
-   */
   it("stems 'constructor' instead of throwing", () => {
     expect(() => stem("constructor")).not.toThrow()
     expect(stem("constructor")).toBe("constructor")
@@ -110,8 +101,6 @@ describe("stem, on words that collide with Object.prototype", () => {
 
   it("still applies the irregular plurals it actually owns", () => {
     expect(stem("children")).toBe("child")
-    // "knives" -> "knife" from the table, then the trailing `e` comes off like
-    // every other form, so it meets "knife" and "knifes" on the same key.
     expect(stem("knives")).toBe("knif")
     expect(stem("knife")).toBe("knif")
   })

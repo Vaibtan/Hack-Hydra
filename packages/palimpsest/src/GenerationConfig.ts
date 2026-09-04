@@ -6,7 +6,6 @@ import {
 import { createIndexGeneration, type IndexGeneration } from "./IndexGeneration.js"
 import type { ExtractionGeneration, VersionedDependency } from "./SourceIdentity.js"
 
-/** Stable names for the local implementations whose revisions are configured at deployment. */
 export const LOCAL_GENERATION_COMPONENTS = {
   extractor: "palimpsest.extract-session",
   graphSchema: "palimpsest.generation-index-schema",
@@ -14,7 +13,6 @@ export const LOCAL_GENERATION_COMPONENTS = {
   tokenizer: "palimpsest.claim-tokens"
 } as const
 
-/** Raw deployment inputs needed to bind an ingest to immutable implementation revisions. */
 export interface IngestGenerationConfigInput {
   readonly modelId: string
   readonly modelRevision: string
@@ -24,13 +22,11 @@ export interface IngestGenerationConfigInput {
   readonly graphSchemaRevision: string
 }
 
-/** Parsed immutable definitions shared by every transactional source/index caller. */
 export interface IngestGenerationConfig {
   readonly extractionGeneration: ExtractionGeneration
   readonly indexGeneration: IndexGeneration
 }
 
-/** A generation configuration input did not name a concrete immutable value. */
 export class InvalidIngestGenerationConfig extends Data.TaggedError("InvalidIngestGenerationConfig")<{
   readonly field: keyof IngestGenerationConfigInput
 }> {
@@ -50,7 +46,6 @@ const dependency = (
   return Either.right({ id, revision })
 }
 
-/** Parses configured revisions into exact extraction and index generation descriptors. */
 export const makeIngestGenerationConfig = (
   input: IngestGenerationConfigInput
 ): Either.Either<IngestGenerationConfig, InvalidIngestGenerationConfig> => {
@@ -100,10 +95,6 @@ export const makeIngestGenerationConfig = (
   })
 }
 
-/**
- * Reads the deployment configuration at a composition root. No value defaults:
- * a transactional caller cannot silently use an unpinned model or local build.
- */
 export const ingestGenerationConfig = Effect.gen(function* () {
   const parsed = makeIngestGenerationConfig({
     modelId: yield* Config.string("PALIMPSEST_MODEL"),

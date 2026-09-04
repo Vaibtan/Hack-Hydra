@@ -14,7 +14,6 @@ describe("locateSpan", () => {
   })
 
   it("recovers a quote whose whitespace the model normalised", () => {
-    // The model collapsed the newline and indentation into a single space.
     const span = locateSpan(TURN, "I just got my car serviced for the first time on March 15th")
     expect(span).not.toBeNull()
     expect(span!.located).toBe("normalised")
@@ -24,13 +23,11 @@ describe("locateSpan", () => {
   })
 
   it("recovers a quote the model stripped markdown emphasis from", () => {
-    // Models reliably drop ** and * when asked to copy a bulleted, bolded line.
     const turn =
       "Here are some options:\n\n1. **Zillow**: Filter by price, location, and amenities.\n2. **Trulia**: Similar."
     const span = locateSpan(turn, "Zillow: Filter by price, location, and amenities.")
     expect(span).not.toBeNull()
     expect(span!.located).toBe("markdown")
-    // The span covers the real characters; only the emphasis markers differ.
     const covered = turn.slice(span!.cs, span!.ce)
     expect(covered.replace(/[*_`#~]/g, "")).toBe("Zillow: Filter by price, location, and amenities.")
   })
@@ -63,8 +60,6 @@ describe("parseEventDate", () => {
   })
 
   it("orders correctly against day-precision dates in the same month", () => {
-    // A month-precision March sorts before every day in March, which is what
-    // "unknown day" should mean when evidence is ordered by t_event.
     expect(parseEventDate("2023-03").tEvent).toBeLessThan(parseEventDate("2023-03-01").tEvent)
   })
 })

@@ -50,7 +50,6 @@ otherwise.`
 export interface SufficiencyReport {
   readonly tier: Tier
   readonly missing: string
-  /** Stemmed, de-duplicated, capped — ready to be arm sources. */
   readonly missingTerms: ReadonlyArray<string>
   readonly premise: string
   /** The excerpt ids the model cited, unverified; `premiseContradiction` is the only verified reading. */
@@ -100,7 +99,6 @@ export const renderPack = (spans: ReadonlyArray<HydratedSpan>): string =>
     })
     .join("\n\n")
 
-/** One cached call in its own family; a failed call is `skipped`, never `PARTIAL`. */
 export const judgeSufficiency = (
   question: string,
   questionDate: string,

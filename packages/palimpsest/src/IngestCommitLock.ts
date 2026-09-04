@@ -4,13 +4,11 @@ import { DatabaseSync } from "node:sqlite"
 import { basename, dirname, join } from "node:path"
 import { Config, Context, Data, Effect, Layer, Option } from "effect"
 
-/** The only scope a durable ingest commit may serialize. */
 export interface IngestCommitScope {
   readonly tenant: string
   readonly uid: string
 }
 
-/** A different request currently owns this user's commit serialization slot. */
 export class IngestCommitLockUnavailable extends Data.TaggedError("IngestCommitLockUnavailable")<{
   readonly tenant: string
   readonly uid: string
@@ -26,15 +24,6 @@ export class IngestCommitLock extends Context.Tag("palimpsest/IngestCommitLock")
   IngestCommitLockService
 >() {}
 
-/**
- * Cross-process serialization for one user's source-revision commit.
- *
- * The production implementation holds an exclusive transaction on a dedicated
- * per-user SQLite lock file while caller-supplied stage effects run. Process
- * termination releases the operating-system lock; the manifest then resumes
- * the same commit id. A contender receives a typed conflict instead of racing
- * graph projections or blocking the Node event loop on SQLite's busy timeout.
- */
 export interface IngestCommitLockService {
   readonly withUserLock: <A, Error, Requirements>(
     scope: IngestCommitScope,
@@ -103,8 +92,6 @@ const openProductionLock = (lockDirectory: string) => (scope: IngestCommitScope)
   mkdirSync(lockDirectory, { recursive: true })
   const database = new DatabaseSync(join(lockDirectory, `${keyFor(scope)}.sqlite`), { timeout: 0 })
   try {
-    // The lock database is distinct from the manifest database, so holding this
-    // transaction does not nest SQLite transactions used by manifest updates.
     database.exec(`
       PRAGMA journal_mode = DELETE;
       PRAGMA busy_timeout = 0;
@@ -118,7 +105,6 @@ const openProductionLock = (lockDirectory: string) => (scope: IngestCommitScope)
   }
 }
 
-/** Production layer: dedicated per-user SQLite files beside the manifest. */
 export const IngestCommitLockLive = Layer.effect(
   IngestCommitLock,
   Config.string("PALIMPSEST_INGEST_MANIFEST_PATH").pipe(
@@ -129,7 +115,6 @@ export const IngestCommitLockLive = Layer.effect(
   )
 )
 
-/** Hermetic layer with the same non-blocking same-user serialization contract. */
 export const IngestCommitLockMemory = Layer.succeed(
   IngestCommitLock,
   makeService(() => {

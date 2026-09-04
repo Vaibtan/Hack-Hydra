@@ -5,20 +5,6 @@ import { Effect, Schema } from "effect"
 import { claimKind } from "./Keys.js"
 import { readUserVertices } from "./User.js"
 
-/**
- * Supersession as structure.
- *
- * "Current" is not a flag anyone sets — it is the absence of an outgoing
- * `SUPERSEDED_BY` edge as of session *k*. Detection runs per Slot over the
- * *ordered* claim list rather than pairwise as claims arrive, because whether a
- * claim replaces another is only visible against the slot's whole history: two
- * hobbies in one slot are additive, two addresses are not.
- *
- * Edges are only ever added. Nothing is deleted or rewritten, so the as-of
- * scrubber can walk backwards through the chain, and a re-run writes the same
- * content-addressed edges over themselves.
- */
-
 export interface SlotClaim {
   readonly ckey: string
   readonly text: string
@@ -60,12 +46,6 @@ export interface SupersedeReport {
   readonly cachedDecisions: number
 }
 
-/**
- * The model works with 1-based positions in the ordered list, not with claim
- * keys. That keeps the prompt short and — because the prompt then contains no
- * `uid` — makes the decision cacheable across every user whose slot has the
- * same history.
- */
 const Replacements = Schema.Struct({
   replacements: Schema.Array(
     Schema.Struct({
@@ -118,17 +98,6 @@ const renderPrompt = (
     })
   ].join("\n")
 
-/**
- * Folds `SUPERSEDED_BY` paths into "what replaced this claim, and when".
- *
- * A slot's history is meant to be a chain (1->2, 2->3) and the prompt asks for
- * exactly that, but nothing structural forbids the model returning 1->2 *and*
- * 1->3. With two edges out of one claim the label would otherwise depend on
- * the order HydraDB happened to return the paths in, which would make the
- * determinism claim false in a way no test would catch. The **earliest**
- * replacement is the one that made the claim stale, so it wins; the claim key
- * breaks a tie so the answer never depends on path order at all.
- */
 export const foldSupersessionEdges = (
   paths: ReadonlyArray<HydraPath>,
   asOf?: number
@@ -140,8 +109,6 @@ export const foldSupersessionEdges = (
     const edge = path.relationships[0]
     if (older === undefined || newer === undefined || edge === undefined) continue
     const atSession = Number(edge.properties["at_session"] ?? 0)
-    // As-of is data-level: an edge written at a later session simply is not
-    // visible yet. No snapshot, no bookmark — one integer comparison.
     if (asOf !== undefined && atSession > asOf) continue
     const olderCkey = String(older.properties["ckey"] ?? "")
     const newerCkey = String(newer.properties["ckey"] ?? "")
@@ -163,14 +130,6 @@ const make = Effect.gen(function* () {
   const hydra = yield* HydraClient
   const llm = yield* Llm
 
-  /**
-   * Every claim in each of the given slots, in one round trip.
-   *
-   * `MATCH (c:Claim)-[:FILLS]->(s:Slot) WHERE s.uid = $uid` is evaluated against
-   * the whole store and exceeds the engine's 30 s cap once several users share
-   * the graph; `MSpaths` is driven from the source values and takes all the
-   * slots at once.
-   */
   const readSlotClaims = (
     uid: string,
     skeys: ReadonlyArray<string>
@@ -216,8 +175,6 @@ const make = Effect.gen(function* () {
         bySlot.set(skey, bucket)
       }
 
-      // Chronological, with a stable tie-break so the prompt — and therefore
-      // the cache key and the decision — is the same on every run.
       for (const [skey, claims] of bySlot) {
         bySlot.set(
           skey,
@@ -259,8 +216,6 @@ const make = Effect.gen(function* () {
       for (const pair of generated.value.replacements) {
         const older = claims[pair.older - 1]
         const newer = claims[pair.newer - 1]
-        // A replacement must point forward in the slot's history. Anything else
-        // is a model slip, and writing it would invert a chain.
         if (older === undefined || newer === undefined) continue
         if (older.ckey === newer.ckey) continue
         if (newer.sessionOrd < older.sessionOrd) continue
@@ -276,11 +231,6 @@ const make = Effect.gen(function* () {
       return { edges, cached: generated.cached }
     })
 
-  /**
-   * Runs the pass over the given slots. During a full ingest that is every slot
-   * holding ≥ 2 claims; when one new session arrives it is only the slots that
-   * session touched, which is what keeps live ingestion cheap.
-   */
   const run = (
     uid: string,
     slots: ReadonlyArray<{ readonly skey: string; readonly entityName: string; readonly attr: string }>
@@ -315,13 +265,6 @@ const make = Effect.gen(function* () {
       }
     })
 
-  /**
-   * The slots of a user that could hold a chain.
-   *
-   * Walked from the `User` root over `HAS_SLOT` and filtered client-side, not
-   * `MATCH (s:Slot) WHERE s.uid = $uid AND s.n_claims >= 2` — that reads every
-   * Slot in the store, and `n_claims` is already on the vertex.
-   */
   const contestedSlots = (
     uid: string
   ): Effect.Effect<
@@ -347,14 +290,6 @@ const make = Effect.gen(function* () {
       )
     )
 
-  /**
-   * The supersession edges leaving the given claims.
-   *
-   * Read with `MSpaths` from the claims themselves rather than
-   * `MATCH (a:Claim)-[:SUPERSEDED_BY]->(b:Claim) WHERE a.uid = $uid`, which is
-   * evaluated against the whole store and costs the same whether the user has
-   * four edges or four thousand.
-   */
   const readEdges = (
     uid: string,
     ckeys: ReadonlyArray<string>,
@@ -380,11 +315,6 @@ const make = Effect.gen(function* () {
       return foldSupersessionEdges(paths, asOf)
     })
 
-  /**
-   * The chains for a set of slots as of session `k`: every claim labelled
-   * CURRENT, or superseded by whichever claim replaced it at or before `k`.
-   * Two round trips for any number of slots.
-   */
   const chains = (
     uid: string,
     skeys: ReadonlyArray<string>,

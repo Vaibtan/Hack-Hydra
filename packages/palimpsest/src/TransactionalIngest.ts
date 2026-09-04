@@ -9,7 +9,6 @@ import {
 } from "./IngestManifest.js"
 import { IngestCommitLock, type IngestCommitLockUnavailable } from "./IngestCommitLock.js"
 
-/** The durable stages that execute a caller-supplied, idempotent write. */
 export const INGEST_EXECUTION_STAGES = [
   "SOURCE_DURABLE",
   "INDEXED",
@@ -18,7 +17,6 @@ export const INGEST_EXECUTION_STAGES = [
   "COMMITTED"
 ] as const
 
-/** A state reached only after the corresponding stage work succeeds. */
 export type IngestExecutionStage = (typeof INGEST_EXECUTION_STAGES)[number]
 
 type StageTransition = Readonly<{
@@ -34,23 +32,19 @@ const STAGE_TRANSITIONS: ReadonlyArray<StageTransition> = [
   { from: "CONSOLIDATED", to: "COMMITTED" }
 ]
 
-/** A stable, safe classification for a failed idempotent stage. */
 export interface IngestFailure {
   readonly code: string
   readonly retryable: boolean
 }
 
-/** An idempotent data-plane action for one revision state transition. */
 export type TransactionalIngestStage<Error, Requirements> = (
   revision: SourceRevision
 ) => Effect.Effect<void, Error, Requirements>
 
-/** All actions needed to bring a revision from any incomplete state to COMMITTED. */
 export type TransactionalIngestStages<Error, Requirements> = Readonly<{
   [Stage in IngestExecutionStage]: TransactionalIngestStage<Error, Requirements>
 }>
 
-/** Explicit request boundary: callers must supply the generation-bound source revision. */
 export interface RunTransactionalIngest<Error, Requirements> {
   readonly sourceRevision: BeginSourceRevision
   readonly stages: TransactionalIngestStages<Error, Requirements>
@@ -83,21 +77,18 @@ export class IngestRetryBlocked extends Data.TaggedError("IngestRetryBlocked")<{
   }
 }
 
-/** A successful ingest result, including the only terminal success state. */
 export interface TransactionalIngestResult {
   readonly revision: SourceRevision
   /** True when this request found a prior, already committed source revision. */
   readonly alreadyCommitted: boolean
 }
 
-/** A bounded transaction request that intentionally stops at one durable stage. */
 export interface RunTransactionalIngestToStage<Error, Requirements>
   extends RunTransactionalIngest<Error, Requirements> {
   /** No later stage callback may run during this request. */
   readonly target: IngestExecutionStage
 }
 
-/** A bounded transaction result that distinguishes a prior reached stage from new work. */
 export interface TransactionalIngestStageResult {
   readonly revision: SourceRevision
   /** True when the revision was already at or beyond the requested durable stage. */
@@ -106,12 +97,6 @@ export interface TransactionalIngestStageResult {
 
 const statePosition = (state: IngestState): number => INGEST_STATES.indexOf(state)
 
-/**
- * Drives the manifest state machine without making graph source existence a
- * success marker. Stage callbacks receive the durable commit id and must be
- * idempotent for it: a failure after a write boundary is retried from that
- * same state until the corresponding manifest advance succeeds.
- */
 export const runTransactionalIngestToStage = <Error, Requirements>(
   input: RunTransactionalIngestToStage<Error, Requirements>
 ): Effect.Effect<
@@ -176,7 +161,6 @@ export const runTransactionalIngestToStage = <Error, Requirements>(
     )
   })
 
-/** Drives all stages through the only terminal success state, `COMMITTED`. */
 export const runTransactionalIngest = <Error, Requirements>(
   input: RunTransactionalIngest<Error, Requirements>
 ): Effect.Effect<

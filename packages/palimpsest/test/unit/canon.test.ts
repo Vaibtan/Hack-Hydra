@@ -55,9 +55,6 @@ describe("reconcile", () => {
   })
 
   it("is a fixpoint: reconciling its own output changes nothing", () => {
-    // A re-ingest reconciles the same claims against the entities the previous
-    // ingest wrote. If that produced a different answer, the slot count would
-    // move on every run — which it did, until this became order-independent.
     const incoming = [
       entity("journal", "thing", ["template"]),
       entity("template", "thing"),
@@ -73,8 +70,6 @@ describe("reconcile", () => {
   })
 
   it("does not leave one entity's alias standing as another entity's canon", () => {
-    // The failure that made re-ingest non-idempotent: "template" survived as a
-    // canon while also being an alias of "journal", so the next pass merged it.
     const result = reconcile([], [
       entity("journal", "thing", ["template"]),
       entity("template", "thing")

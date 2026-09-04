@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { parseQuestion, parseHaystackDate } from "../../src/index.js"
 
-/**
- * Oracle: the shape and the date format come from the real files in `data/`.
- * This fixture is a hand-built three-session question whose file order is
- * deliberately *not* chronological — the same trap 211 of the 500 LongMemEval_S
- * questions contain.
- */
 const RAW = {
   question_id: "gpt4_2655b836",
   question_type: "temporal-reasoning",

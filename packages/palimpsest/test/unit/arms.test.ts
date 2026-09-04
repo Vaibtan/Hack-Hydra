@@ -78,9 +78,6 @@ describe("union by claim key", () => {
 
 describe("as-of before every cap", () => {
   it("drops post-k claims before the union cap, not after", () => {
-    // Two visible claims and 200 from the future. v1 cut the slot expansion to
-    // 40 *first*, so the future claims consumed the budget and were then
-    // discarded; here the cut comes first and both visible claims survive.
     const future = Array.from({ length: 200 }, (_, i) =>
       claim({ ckey: `future-${String(i).padStart(3, "0")}`, sessionOrd: 50 })
     )
@@ -151,9 +148,6 @@ describe("the union cap", () => {
 
   it("defaults to 120", () => {
     expect(UNION_CAP).toBe(120)
-    // Across four walking arms, because one arm can no longer reach 120 on its
-    // own: `ARM_CAP` trims each walk to 60 first. Distinct keys per arm, so the
-    // union is the sum rather than one arm four times over.
     const report = unionArms(
       ["convergence", "sub:0", "sub:1", "sub:2"].map((label, a) =>
         arm(
@@ -179,8 +173,6 @@ describe("the per-arm cap", () => {
       )
     ])
     expect(report.candidates).toHaveLength(60)
-    // Dropped is what the *union* cap removed. The tail this arm never
-    // contributed is not in it, and the counts say so: the arm reported 60.
     expect(report.dropped).toHaveLength(0)
     expect(report.counts["convergence"]).toBe(60)
   })
@@ -213,10 +205,6 @@ describe("the per-arm cap", () => {
   })
 
   it("cuts as-of BEFORE its own cap, so a post-k claim never costs a place", () => {
-    // The defect this whole module exists to fix, now with two cuts to get
-    // wrong instead of one. Ten claims, five of them after k, and an arm cap of
-    // five: capping first would take the five newest -- all of them invisible
-    // at k -- and the arm would contribute nothing at all.
     const report = unionArms(
       [
         arm(
@@ -268,8 +256,6 @@ const path = (names: ReadonlyArray<string>) => ({
 
 describe("discovery seeds", () => {
   it("takes the entity a two-hop path passed through", () => {
-    // Token -> Entity -> Claim: that Entity is a name the question's own words
-    // reached, and its stems are worth walking from.
     const seeds = discoverySeeds([path(["tok", "wells fargo", "claim"])], [], new Set(["tok"]))
     expect(seeds).toContain("fargo")
     expect(seeds).toContain("well")
@@ -290,7 +276,6 @@ describe("discovery seeds", () => {
   })
 
   it("prefers a term that discriminates between candidates over one they all share", () => {
-    // "mortgage" is in every candidate and says nothing; "brooklyn" is in one.
     const top = [
       claim({ ckey: "c1", text: "mortgage from Wells Fargo" }),
       claim({ ckey: "c2", text: "mortgage rate rose" }),
@@ -315,9 +300,6 @@ describe("slot-mate grouping", () => {
     claim({ ckey, sessionOrd })
 
   it("spends the allowance across slots instead of on the longest history", () => {
-    // The defect this rule exists for: `(me, weight)` on a user who logs it
-    // weekly has ten mates, and v1's flat "forty newest" would take all of
-    // them before the other two slots the question reached contributed one.
     const weight = Array.from({ length: 10 }, (_, i) => mate(`w${i}`, 100 - i))
     const claims = [...weight, mate("residence", 50), mate("job", 49)]
     const slotOf = new Map<string, string>([
@@ -357,8 +339,6 @@ describe("slot-mate grouping", () => {
   })
 
   it("groups claims whose slot the FILLS walk did not return into one bucket", () => {
-    // Not one bucket each: an unknown slot is exactly the case where a long
-    // history could take the whole allowance.
     const claims = Array.from({ length: 9 }, (_, i) => mate(`c${i}`, i + 1))
 
     const grouped = groupSlotMates(claims, new Map(), new Set(), 40)

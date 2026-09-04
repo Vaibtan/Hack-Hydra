@@ -6,14 +6,12 @@ import type { Route } from "./Understand.js"
 
 const selectModel = (): string | undefined => configuredModel("PALIMPSEST_SELECT_MODEL")
 
-/** The short id the selector cites. The claim key's tail, as the reader's is. */
 export const shortId = (ckey: string): string => ckey.slice(-8)
 
 export const MAX_KEPT_TURNS = 30
 
 export const ALWAYS_KEEP_TOP_CONVERGENCE = 3
 
-/** Why a candidate did not reach the reader. */
 export type DropReason = "selector" | "turn_cap"
 
 export interface SelectionReport {
@@ -138,7 +136,6 @@ Keep the rows that help answer the question. Specifically:
 Return the ids you keep, each with a one-word reason. Keeping nothing is never correct: if no row
 is clearly relevant, keep the handful that are closest.`
 
-/** The candidate table, one row per line, in a stable order. */
 export const renderCandidateTable = (candidates: ReadonlyArray<Candidate>): string =>
   orderCandidates(candidates)
     .map((candidate) => {

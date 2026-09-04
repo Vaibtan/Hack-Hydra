@@ -35,7 +35,6 @@ export interface VertexRow {
   readonly properties: Readonly<Record<string, Scalar>>
 }
 
-/** One relationship upsert between two already-written vertices. */
 export interface RelRow {
   readonly srcLabel: string
   readonly srcKey: string
@@ -68,7 +67,6 @@ const reservedProperty = (query: string): HydraParseError =>
     query
   })
 
-/** Evaluates claims in order and stops at the first failure, so a failed row leaves no later claim behind. */
 const firstFailure = <E>(claims: Iterable<() => Either.Either<unknown, E>>): E | undefined => {
   for (const claim of claims) {
     const outcome = claim()
@@ -252,7 +250,6 @@ const make = Effect.gen(function* () {
       }
     ).pipe(Effect.asVoid)
 
-  /** Runs one operation at the caller's explicit causal floor without leaking it to another request. */
   const withCausalBookmark = <A, E, R>(
     bookmark: string,
     operation: Effect.Effect<A, E, R>
@@ -272,7 +269,6 @@ const make = Effect.gen(function* () {
   } as const
 })
 
-/** The one seam onto HydraDB. */
 export class HydraClient extends Effect.Service<HydraClient>()("palimpsest/HydraClient", {
   effect: make
 }) {}

@@ -1,129 +1,73 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
+import { loadDataset, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv, readPathModels, verifyModels } from "@palimpsest/llm"
 import { ClaimGraph, Reader, Retrieve, Supersede } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
-import { mkdir, writeFile } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import {
   JUDGE_MODEL,
+  MEASUREMENT_FIELDS,
   SPLIT_FILE,
+  arg,
   assertGenerationMatches,
+  batchOf,
+  flag,
   judge,
   judgeTemplate,
   liveExtractionGeneration,
+  mergeBatches,
+  orExit,
+  parseBatch,
+  parseDataset,
+  parseProfile,
+  parseSplit,
   readRuntimeConfig,
+  readSplitFile,
   renderReaderAb,
+  splitFilePath,
+  testGateRefusal,
+  uidFor,
+  workspaceRoot,
+  writeAtomic,
   type ReaderAbFile,
-  type ReaderAbRow,
-  type SplitFile
+  type ReaderAbRow
 } from "../src/index.js"
 
 /**
  * `reader-ab [--split dev] [--types single-session-preference,knowledge-update]`
  * `          [--profile full|fast] [--concurrency 6] [--batch 2/5 | --merge]`
  *
- * #30's last box: the route-specific reader rules, measured against v1's single
- * prompt **on identical packed evidence**.
- *
- * Every other v2 stage changes what the reader sees, so an ablation of the
- * pipeline measures it. This one changes only how the reader is asked, and a
- * pipeline ablation would compare two different packs. So the evidence is fixed
- * and only the prompt varies: retrieve and pack once, then read those exact
- * spans twice — with the route rules and with v1's prompt byte for byte — and
- * judge both with the same official template.
- *
- * The harness asserts the pairing rather than assuming it: both reads report a
- * span hash, and a row whose two hashes differ is refused rather than written,
- * because a paired comparison over unpaired evidence is worse than none.
- *
- * The population is the two routes whose rules the research predicted would
- * matter most — `single-session-preference` (v1's "as few words as the question
- * allows" produces the generic suggestion the judge marks wrong) and
- * `knowledge-update` (the reader has to say which of two values is current).
- *
- * Every call replays from `.cache/llm`, so a second run is $0.00 and identical.
+ * #30's reader-route rules against v1's single prompt on identical packed
+ * evidence: retrieve and pack once, read twice, judge both.
  */
 loadDotEnv()
 
-const arg = (name: string, fallback: string): string => {
-  const index = process.argv.indexOf(`--${name}`)
-  return index === -1 ? fallback : (process.argv[index + 1] ?? fallback)
-}
-
-const split = arg("split", "dev")
-const dataset = arg("dataset", "s") as DatasetName
-const profile = arg("profile", "full") as "full" | "fast"
+const split = orExit(() => parseSplit(arg("split", "dev"))) ?? "dev"
+const dataset = orExit(() => parseDataset(arg("dataset", "s")))
+const profile = orExit(() => parseProfile(arg("profile", "full")))
 const concurrency = Number(arg("concurrency", "6"))
 const judgeModel = arg("judge", JUDGE_MODEL)
 const types = arg("types", "single-session-preference,knowledge-update")
   .split(",")
   .map((one) => one.trim())
   .filter((one) => one !== "")
-/**
- * `--batch 2/5`, and `--merge` to join the pieces.
- *
- * Same reason as the eval's: this reads the graph, a read costs ~750 MiB of
- * resident memory per distinct user and does not bound, and the node holds
- * about seven users (`ops/hydradb/step-load-2026-08.md`). Twenty-five questions
- * is twenty-five users.
- *
- * Unlike the eval there is no warm pass to protect — the A/B compares two
- * *answers* on identical evidence and reports no latency — so a batch is read
- * once, and the only thing batching buys here is that the run finishes.
- */
-const batchArg = arg("batch", "")
-const merge = process.argv.includes("--merge")
-const batch = (() => {
-  if (batchArg === "") return null
-  const match = /^(\d+)\/(\d+)$/.exec(batchArg.trim())
-  if (match === null) {
-    console.error(`--batch must look like 2/5, not ${JSON.stringify(batchArg)}`)
-    process.exit(2)
-  }
-  const index = Number(match[1])
-  const count = Number(match[2])
-  if (index < 1 || count < 1 || index > count) {
-    console.error(`--batch ${batchArg}: the index must be between 1 and the count`)
-    process.exit(2)
-  }
-  return { index, count }
-})()
-
-const workspaceRoot = (): string => {
-  let dir = process.cwd()
-  for (let depth = 0; depth < 8; depth++) {
-    if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) return dir
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  return process.cwd()
-}
+const merge = flag("merge")
+const batch = orExit(() => parseBatch(arg("batch", "")))
 
 const root = workspaceRoot()
 const outDir = resolve(root, arg("out", "results"))
 
-if (split !== "dev" && split !== "test") {
-  console.error(`--split must be dev or test, not ${JSON.stringify(split)}`)
-  process.exit(2)
-}
-
-const splitPath = resolve(root, SPLIT_FILE)
+const splitPath = splitFilePath(root)
 if (!existsSync(splitPath)) {
   console.error(`--split ${split} needs ${SPLIT_FILE}; run \`pnpm splits\` and commit it first`)
   process.exit(2)
 }
-const splitFile = JSON.parse(readFileSync(splitPath, "utf8")) as SplitFile
-// The same refusal `eval` makes, for the same reason: the test half is read
-// once, after the dev gate is written down. An A/B is tuning by definition.
-if (split === "test" && splitFile.gate === null) {
-  console.error(
-    `refusing --split test: ${SPLIT_FILE} has no gate record. The reader A/B is a tuning ` +
-      "measurement and belongs on dev."
-  )
+const splitFile = readSplitFile(splitPath)
+const gateRefusal = testGateRefusal(splitFile, split)
+if (gateRefusal !== null) {
+  console.error(gateRefusal)
   process.exit(2)
 }
 try {
@@ -134,21 +78,12 @@ try {
 }
 
 const prefix = arg("prefix", splitFile.prefix)
-const uidFor = (questionId: string): string =>
-  prefix === "" ? questionId : `${prefix}-${questionId}`
 
 const batchPath = (index: number, count: number): string =>
   resolve(outDir, `reader-ab-${split}.batch-${String(index).padStart(2, "0")}-of-${count}.json`)
 
 const mergedPath = resolve(outDir, `reader-ab-${split}.json`)
 
-/**
- * Joins the batch files, refusing rather than repairing.
- *
- * The same standard as `merge-batches`: a missing or duplicated batch, batches
- * that disagree about what was measured, or a question answered twice, are all
- * ways a results file becomes wrong in a way no number in it would reveal.
- */
 if (merge) {
   const files = readdirSync(outDir)
     .filter((name) => name.startsWith(`reader-ab-${split}.batch-`) && name.endsWith(".json"))
@@ -157,44 +92,21 @@ if (merge) {
     console.error(`no batch files matching reader-ab-${split}.batch-*.json in ${outDir}`)
     process.exit(2)
   }
-  const parts = files.map(
-    (name) =>
-      JSON.parse(readFileSync(resolve(outDir, name), "utf8")) as ReaderAbFile & {
-        readonly batch?: { readonly index: number; readonly count: number }
-      }
-  )
-  const refusals: Array<string> = []
-  const count = parts[0]?.batch?.count
-  if (count === undefined) refusals.push(`${files[0]} carries no batch record`)
-  if (parts.some((one) => one.batch?.count !== count)) {
-    refusals.push("the files disagree about how many batches there are")
-  }
-  const seen = new Set(parts.map((one) => one.batch?.index))
-  for (let index = 1; index <= (count ?? 0); index++) {
-    if (!seen.has(index)) refusals.push(`batch ${index} of ${count} is missing`)
-  }
-  for (const field of ["split", "prefix", "profile", "readerModel", "judgeModel", "extractionGeneration"] as const) {
-    const values = [...new Set(parts.map((one) => JSON.stringify(one[field])))]
-    if (values.length > 1) refusals.push(`the batches disagree on \`${field}\`: ${values.join(" vs ")}`)
-  }
-  const rows = parts.flatMap((one) => one.rows)
-  const ids = new Set<string>()
-  for (const row of rows) {
-    if (ids.has(row.questionId)) refusals.push(`${row.questionId} appears in more than one batch`)
-    ids.add(row.questionId)
-  }
-  if (refusals.length > 0) {
+  const parts = files.map((name) => ({
+    name,
+    envelope: JSON.parse(readFileSync(resolve(outDir, name), "utf8")) as ReaderAbFile &
+      Record<string, unknown>
+  }))
+  const { refusals, merged } = mergeBatches(parts, MEASUREMENT_FIELDS)
+  if (refusals.length > 0 || merged === null) {
     console.error(`refusing to merge ${files.length} file(s):`)
     for (const refusal of refusals) console.error(`  ${refusal}`)
     process.exit(2)
   }
-  const mergedFile: ReaderAbFile = {
-    ...parts[0]!,
-    rows: [...rows].sort((a, b) => a.questionId.localeCompare(b.questionId))
-  }
-  delete (mergedFile as { batch?: unknown }).batch
-  writeFileSync(mergedPath, `${JSON.stringify(mergedFile, null, 2)}
-`, "utf8")
+  const { batch: _batch, ...first } = parts[0]!.envelope
+  const mergedFile: ReaderAbFile = { ...first, rows: merged.rows }
+  writeAtomic(mergedPath, `${JSON.stringify(mergedFile, null, 2)}
+`)
   console.log(renderReaderAb(mergedFile))
   console.log("")
   console.log(`merged ${files.length} batches (${mergedFile.rows.length} rows) into ${mergedPath}`)
@@ -224,18 +136,16 @@ const program = Effect.gen(function* () {
 
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const wanted = new Set(split === "dev" ? splitFile.dev : splitFile.test)
-  let population = questions
+  let population: ReadonlyArray<DatasetQuestion> = questions
     .filter((question) => wanted.has(question.questionId))
     .filter((question) => types.includes(question.questionType))
     .sort((a, b) => a.questionId.localeCompare(b.questionId))
 
   const wholePopulation = population.length
   if (batch !== null) {
-    const size = Math.ceil(population.length / batch.count)
-    const from = (batch.index - 1) * size
-    population = population.slice(from, from + size)
+    population = batchOf(population, batch).items
     if (population.length === 0) {
-      console.error(`batch ${batchArg} is empty; the population has ${wholePopulation} questions`)
+      console.error(`batch ${batch.index}/${batch.count} is empty; the population has ${wholePopulation} questions`)
       return yield* Effect.sync(() => process.exit(2))
     }
   }
@@ -260,14 +170,11 @@ const program = Effect.gen(function* () {
     console.error(`no ${split} questions of type ${types.join(", ")}`)
     return yield* Effect.sync(() => process.exit(2))
   }
-
-  // A user with no claims would read as an abstention in both arms and count as
-  // a tie, which is a measurement of the ingest rather than of the rules.
   const missing = yield* Effect.forEach(
     population,
     (question) =>
       claimGraph
-        .claimCount(uidFor(question.questionId))
+        .claimCount(uidFor(prefix, question.questionId))
         .pipe(Effect.map((claims) => ({ question, claims }))),
     { concurrency: 8 }
   ).pipe(Effect.orDie)
@@ -286,7 +193,7 @@ const program = Effect.gen(function* () {
     population,
     (question: DatasetQuestion) =>
       Effect.gen(function* () {
-        const uid = uidFor(question.questionId)
+        const uid = uidFor(prefix, question.questionId)
         const questionDate = question.questionDate.raw
 
         const ask = yield* retrieve.ask(uid, question.question, { questionDate, profile })
@@ -298,10 +205,6 @@ const program = Effect.gen(function* () {
           slotOf: new Map(Object.entries(plan.slots)),
           protectedKeys: new Set(plan.protectedKeys)
         })
-        // The *same spans*, re-read with v1's prompt. `readSpans` and not
-        // `read`: re-hydrating could produce a different pack if anything
-        // downstream of the graph were non-deterministic, and the whole claim of
-        // this file is that the two arms saw identical bytes.
         const withoutRoute = yield* reader.readSpans(
           question.question,
           questionDate,
@@ -310,8 +213,6 @@ const program = Effect.gen(function* () {
         )
 
         if (withRoute.spanHash !== withoutRoute.spanHash) {
-          // Refused, not reported. A paired comparison over unpaired evidence
-          // is worse than no comparison, because it looks like one.
           console.error(
             `${question.questionId}: the two arms read different spans ` +
               `(${withRoute.spanHash.slice(0, 12)} vs ${withoutRoute.spanHash.slice(0, 12)}); skipped`
@@ -379,9 +280,10 @@ const program = Effect.gen(function* () {
     rows: kept
   }
 
-  yield* Effect.promise(() => mkdir(outDir, { recursive: true }))
+  mkdirSync(outDir, { recursive: true })
   const jsonPath = batch === null ? mergedPath : batchPath(batch.index, batch.count)
-  yield* Effect.promise(() => writeFile(jsonPath, JSON.stringify(file, null, 2), "utf8"))
+  writeAtomic(jsonPath, `${JSON.stringify(file, null, 2)}
+`)
 
   const table = renderReaderAb(file)
   console.log("")

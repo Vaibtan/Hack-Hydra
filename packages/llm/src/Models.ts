@@ -3,7 +3,6 @@ import { Effect } from "effect"
 /** The model every read-path call defaults to; the reader is frozen at it for the v1-vs-v2 comparison. */
 export const DEFAULT_MODEL = "gpt-5.6-luna"
 
-/** Reader, selector and sufficiency ids: separately overridable, defaulting to one model. */
 export interface ReadPathModels {
   readonly reader: string
   readonly select: string
@@ -27,7 +26,6 @@ export const resolveReadPathModels = (fallback: string = DEFAULT_MODEL): ReadPat
 
 export const readPathModels = (fallback: string): ReadPathModels => resolveReadPathModels(fallback)
 
-/** The distinct ids to verify — usually one, at most three. */
 export const distinctIds = (models: ReadPathModels, extra: ReadonlyArray<string> = []): ReadonlyArray<string> =>
   [...new Set([models.reader, models.select, models.sufficiency, ...extra])].sort()
 
@@ -54,7 +52,6 @@ export const unknownIds = (
   return ids.filter((id) => !known.has(id))
 }
 
-/** The provider's model list, or `null` when it cannot be reached. */
 export const listModels = (
   baseUrl: string,
   apiKey: string
@@ -108,7 +105,6 @@ export interface StartupVerifyOptions {
   readonly quiet?: boolean
 }
 
-/** The startup check for a process about to spend money; fails with `UnknownModelError` on a bad id. */
 export const verifyModelsAtStartup = (
   options: StartupVerifyOptions = {}
 ): Effect.Effect<void, UnknownModelError> =>
@@ -125,7 +121,6 @@ export const verifyModelsAtStartup = (
     }
   })
 
-/** `verifyModelsAtStartup`, printing the error and exiting 2 instead of failing. */
 export const verifyModelsOrExit = (options: StartupVerifyOptions = {}): Effect.Effect<void> =>
   verifyModelsAtStartup(options).pipe(
     Effect.catchAll((error) =>

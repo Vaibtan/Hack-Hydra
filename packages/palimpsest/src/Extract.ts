@@ -9,23 +9,8 @@ import {
   type VersionedDependency
 } from "./SourceIdentity.js"
 
-/**
- * Claim extraction: one LLM call per session.
- *
- * The output is deliberately *not* character offsets. Asking a model for `cs`
- * and `ce` produces spans that are usually a few characters off and sometimes
- * nonsense; asking it to copy the evidence verbatim and locating that string
- * ourselves makes the span exact by construction. `Span` is still
- * `(turn_idx, cs, ce)` — it is just computed here rather than guessed there.
- */
-
 export const ENTITY_TYPES = ["person", "pet", "place", "org", "thing", "event", "topic", "self"] as const
 
-/**
- * A closed-ish attribute vocabulary. Slot collisions are what makes supersession
- * fire at all, so two sessions describing the same thing must land on the same
- * `attr`; free-form values are allowed but the prompt pushes hard toward these.
- */
 export const ATTRIBUTE_VOCABULARY = [
   "residence",
   "employer",
@@ -73,10 +58,6 @@ const Slot = Schema.Struct({
   attr: Schema.String
 })
 
-/**
- * `Schema.NullOr` rather than `Schema.optional`: OpenAI's strict structured
- * output requires every property to be present, with absence expressed as null.
- */
 const RawClaim = Schema.Struct({
   text: Schema.String,
   speaker: Schema.Literal("user", "assistant"),
@@ -139,19 +120,8 @@ export interface SessionExtraction {
   readonly cached: boolean
 }
 
-/**
- * Markdown emphasis, list bullets and heading markers. Models reliably drop
- * these when asked to quote — `**Zillow**: filter by price` comes back as
- * `Zillow: filter by price` — so a quote that differs only by them is the same
- * span, not a hallucination.
- */
 const MARKDOWN_NOISE = new Set(["*", "_", "`", "#", "~"])
 
-/**
- * Collapses runs of whitespace (and optionally markdown noise), remembering
- * which original index every kept character came from, so a match in the
- * normalised text maps back to a real span.
- */
 const normalise = (
   text: string,
   stripMarkdown = false
@@ -176,11 +146,6 @@ const normalise = (
   return { value, origin }
 }
 
-/**
- * Turns the model's quote into a real span. Exact match first; otherwise match
- * on whitespace-normalised text and map the offsets back. Anything that still
- * does not match is dropped and reported — never written with a guessed offset.
- */
 export const locateSpan = (
   turnText: string,
   quote: string
@@ -222,7 +187,6 @@ export const parseEventDate = (
   return { tEvent: 0, tPrec: "none" }
 }
 
-/** The static extraction instruction included in each extraction generation. */
 export const EXTRACTION_SYSTEM_PROMPT = `You build a searchable memory index over a chat transcript.
 
 You are given ONE conversation session between a user and an assistant, its date, the entities
@@ -291,18 +255,12 @@ const extractionOutputSchema = (() => {
   return parsed.right
 })()
 
-/** Immutable runtime identities used to describe one extraction generation. */
 export interface ExtractionRuntimeDependencies {
   readonly extractor: VersionedDependency
   readonly model: VersionedDependency
   readonly tokenizer: VersionedDependency
 }
 
-/**
- * Creates a generation from the exact prompt and Effect Schema this extractor
- * uses at runtime. The extractor revision names the remaining implementation
- * details, including prompt rendering and span recovery.
- */
 export const createRuntimeExtractionGeneration = (
   dependencies: ExtractionRuntimeDependencies
 ): ExtractionGeneration =>
@@ -413,7 +371,6 @@ export const extractSession = (
     }
   })
 
-/** Merges the entities seen so far, so canon keys stay stable across sessions. */
 export const mergeEntities = (
   known: ReadonlyArray<ExtractedEntity>,
   claims: ReadonlyArray<ExtractedClaim>

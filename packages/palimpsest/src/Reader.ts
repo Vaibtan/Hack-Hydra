@@ -29,7 +29,6 @@ export { NOT_IN_MEMORY, granularityFor, type Granularity } from "./Routes.js"
 /** Characters of surrounding turn text given on each side of a Span. */
 export const SPAN_CONTEXT = 300
 
-/** Cuts a Span out of its turn with context on both sides, clamped at both ends. */
 export const cutExcerpt = (
   text: string,
   cs: number,
@@ -129,20 +128,16 @@ export const systemFor = (route: Route | null): string =>
   route === null ? SYSTEM : `${SYSTEM}\n\nFor this question in particular:\n${RoutePolicy[route].rules}`
 
 export interface ReadOptions {
-  /** Decides granularity, adjudication and the reader's rules block. */
   readonly route: Route
   /** Drops the rules block from the system prompt only; granularity and adjudication still follow the route. */
   readonly noReaderRoute?: boolean
   readonly granularity?: Granularity
-  /** Which Slot each claim fills, from `plan.slots`. */
   readonly slotOf?: ReadonlyMap<string, string>
-  /** Never dropped by the budget — the probe hits. */
   readonly protectedKeys?: ReadonlySet<string>
   readonly budgetTokens?: number
 }
 
 export interface ReadSpansOptions {
-  /** The rules block to append; absent or `null` reads with the base prompt. */
   readonly route?: Route | null
   readonly granularity?: Granularity
 }
@@ -220,7 +215,6 @@ const make = Effect.gen(function* () {
   const hydra = yield* HydraClient
   const llm = yield* Llm
 
-  /** `Claim -EVIDENCE-> Turn`; spilled turns are reassembled only where the span reaches past the first chunk. */
   const evidenceText = (
     evidence: ReadonlyArray<AsOfLabelled>
   ): Effect.Effect<ReadonlyMap<string, TurnBody>, HydraError> =>
@@ -261,7 +255,6 @@ const make = Effect.gen(function* () {
       return new Map([...turns].map(([ckey, turn]) => [ckey, { text: turn.text, prefix: "" }]))
     })
 
-  /** `Turn <- Session` by key for each claim's turn and the one before it; every spilled turn is reassembled. */
   const turnText = (
     evidence: ReadonlyArray<AsOfLabelled>
   ): Effect.Effect<ReadonlyMap<string, TurnBody>, HydraError> =>
@@ -319,7 +312,6 @@ const make = Effect.gen(function* () {
       return bodies
     })
 
-  /** The verbatim text behind each claim, keyed by claim; a claim whose turn was not reached is absent. */
   const hydrateText = (
     evidence: ReadonlyArray<AsOfLabelled>,
     granularity: Granularity
@@ -378,7 +370,6 @@ const make = Effect.gen(function* () {
     }
   }
 
-  /** Reads spans already in hand; the seam the baselines share with the graph path. */
   const readSpans = (
     question: string,
     questionDate: string,
@@ -437,7 +428,6 @@ If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
       return answered(generated, spans, cited, recited, readStarted, granularity)
     })
 
-  /** Hydrate, dedupe by turn, label, budget, read. */
   const read = (
     question: string,
     questionDate: string,

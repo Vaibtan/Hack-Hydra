@@ -1,11 +1,15 @@
 # The whole dev programme in ticket order. Graph-touching runs go through
-# scripts/eval-batched.ps1; bm25, fullctx and oracle-session read the dataset
-# and run unbatched. palimpsest and palimpsest-v2 come first because the
-# adoption gate is read from exactly those two.
+# scripts/eval-batched.ps1; the dataset-only baselines run unbatched, twice
+# (the warm pass is the latency column, replayed from cache).
+#
+# The v1 systems (palimpsest, palimpsest-premise) no longer exist in this
+# checkout. Their steps are skipped unless -V1Worktree names a checkout of the
+# pre-cleanup-v1 tag:  git worktree add ..\palimpsest-v1 pre-cleanup-v1
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-programme.ps1
-#   ... -From 4        # resume at the fourth run
-#   ... -List          # print the plan and exit
+#   ... -From 4                       # resume at the fourth run
+#   ... -List                         # print the plan and exit
+#   ... -V1Worktree ..\palimpsest-v1  # run the v1 steps from the tag
 
 [CmdletBinding()]
 param(
@@ -16,6 +20,7 @@ param(
   [int] $Batches = 15,
   [ValidateRange(1, 16)]
   [int] $Concurrency = 2,
+  [string] $V1Worktree = "",
   [switch] $List
 )
 
@@ -29,14 +34,14 @@ $batched = Join-Path $PSScriptRoot "eval-batched.ps1"
 $logDirectory = Join-Path $repositoryRoot ".eval-logs"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 
-# `variant` must match the suffix `eval` derives from the flags (`noTimeScope`
-# -> `no-timescope`), or the merge finds no files.
+# `variant` must equal the suffix `eval` derives from the flags (`noTimeScope`
+# -> `no-timescope`, `--profile fast` -> `profile-fast`), or the merge finds no files.
 $runs = @(
-  @{ name = "palimpsest";            system = "palimpsest";    graph = $true;  args = @();                              variant = "" }
+  @{ name = "palimpsest";            system = "palimpsest";    graph = $true;  v1 = $true;  args = @();                 variant = "" }
   @{ name = "palimpsest-v2 full";    system = "palimpsest-v2"; graph = $true;  args = @();                              variant = "" }
   @{ name = "baselines";             system = "bm25,fullctx,oracle-session"; graph = $false; args = @();                variant = "" }
-  @{ name = "palimpsest-premise";    system = "palimpsest-premise"; graph = $true; args = @();                          variant = "" }
-  @{ name = "v2 fast profile";       system = "palimpsest-v2"; graph = $true;  args = @("--profile", "fast");           variant = "" }
+  @{ name = "palimpsest-premise";    system = "palimpsest-premise"; graph = $true; v1 = $true; args = @();              variant = "" }
+  @{ name = "v2 fast profile";       system = "palimpsest-v2"; graph = $true;  args = @("--profile", "fast");           variant = "profile-fast" }
   @{ name = "ablation no-select";    system = "palimpsest-v2"; graph = $true;  args = @("--no-select");                 variant = "no-select" }
   @{ name = "ablation no-sufficiency"; system = "palimpsest-v2"; graph = $true; args = @("--no-sufficiency");           variant = "no-sufficiency" }
   @{ name = "ablation no-timescope"; system = "palimpsest-v2"; graph = $true;  args = @("--no-time-scope");             variant = "no-timescope" }
@@ -47,12 +52,23 @@ $runs = @(
   @{ name = "ablation granularity turn"; system = "palimpsest-v2"; graph = $true; args = @("--granularity", "turn");    variant = "granularity-turn" }
 )
 
+function Test-V1Run { param($run) return $run.ContainsKey("v1") -and $run.v1 }
+
 if ($List) {
   for ($i = 0; $i -lt $runs.Count; $i++) {
     $run = $runs[$i]
-    Write-Output ("{0,2}. {1,-26} {2,-14} {3}" -f ($i + 1), $run.name, $(if ($run.graph) { "batched x$Batches" } else { "one pass" }), ($run.args -join " "))
+    $mode = if (Test-V1Run $run) { "v1 from tag" } elseif ($run.graph) { "batched x$Batches" } else { "one pass" }
+    Write-Output ("{0,2}. {1,-26} {2,-14} {3}" -f ($i + 1), $run.name, $mode, ($run.args -join " "))
   }
   exit 0
+}
+
+if ($V1Worktree -ne "") {
+  if (-not (Test-Path (Join-Path $V1Worktree "packages/eval/bin/eval.ts"))) {
+    Write-Output "-V1Worktree $V1Worktree is not a checkout with packages/eval"
+    exit 1
+  }
+  $V1Worktree = (Resolve-Path $V1Worktree).Path
 }
 
 $startedAt = Get-Date
@@ -62,6 +78,13 @@ for ($i = $From - 1; $i -lt $runs.Count; $i++) {
   Write-Output ""
   Write-Output ("=== run {0}/{1}: {2} ===" -f $number, $runs.Count, $run.name)
 
+  if ((Test-V1Run $run) -and $V1Worktree -eq "") {
+    Write-Output ("run {0} skipped: {1} was retired from this checkout; run it from the pre-cleanup-v1 tag:" -f $number, $run.system)
+    Write-Output "  git worktree add ..\palimpsest-v1 pre-cleanup-v1"
+    Write-Output ("  ... dev-programme.ps1 -From {0} -V1Worktree ..\palimpsest-v1" -f $number)
+    continue
+  }
+
   if ($run.graph) {
     $arguments = @(
       "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $batched,
@@ -70,14 +93,15 @@ for ($i = $From - 1; $i -lt $runs.Count; $i++) {
     )
     if ($run.args.Count -gt 0) { $arguments += @("-ExtraArgs") + $run.args }
     if ($run.variant -ne "") { $arguments += @("-Variant", $run.variant) }
+    if (Test-V1Run $run) {
+      $arguments += @("-WorkingDirectory", $V1Worktree, "-ResultsDir", (Join-Path $repositoryRoot "results"))
+    }
     & powershell @arguments
     if ($LASTEXITCODE -ne 0) {
       Write-Output ("run {0} failed with exit code {1}; stopping" -f $number, $LASTEXITCODE)
       exit 1
     }
   } else {
-    # Unbatched, but still twice: the warm run replays every LLM call from
-    # cache and is where the latency column comes from.
     $log = Join-Path $logDirectory ("{0:d2}-{1}.log" -f $number, ($run.name -replace "[^a-z0-9]+", "-"))
     foreach ($pass in @("cold", "warm")) {
       $evalArguments = @(

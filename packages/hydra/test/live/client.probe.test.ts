@@ -3,14 +3,6 @@ import { Effect, Layer, Option } from "effect"
 import { beforeAll, describe, expect, it } from "vitest"
 import { HydraClient, HydraParseError, vertexId } from "../../src/index.js"
 
-/**
- * The probe suite. Every test here encodes a HydraDB behaviour the Palimpsest
- * design leans on (see `docs/review-2026-08-17-palimpsest-plan.md` §7). They run
- * against the live Docker node, because a mock would only re-state our beliefs.
- *
- * All keys are namespaced under a probe uid so the suite never collides with
- * ingested data in the shared `default` graph.
- */
 const UID = "probe-hydra-1"
 const k = (suffix: string) => `${UID}|${suffix}`
 
@@ -25,21 +17,12 @@ const tokenKeys = [k("t|cat"), k("t|vet"), k("t|hamster")]
 const entityKey = k("e|cat")
 const claimKeys = [k("c|1"), k("c|2"), k("c|3")]
 
-/**
- * Nothing is deleted, before or after. Every key here is fixed, so a re-run
- * overwrites the same vertices — and on a graph of any size `DETACH DELETE` is
- * first slow and then outright rejected (`delete_vertex_scan_edges … exceeds
- * limit 1000000`), because the scan is proportional to the whole store.
- */
 const seed = Effect.gen(function* () {
   const hydra = yield* HydraClient
   yield* hydra.batchMerge(
     "Token",
     tokenKeys.map((key, i) => ({ key, properties: { tkey: key, uid: UID, df: i + 1 } }))
   )
-  // The same rows under a label of the probe's own, so the `STARTS WITH` probe
-  // has something small to scan: the real `Token` label is past the engine's
-  // 250 000-vertex label-scan ceiling on any working graph.
   yield* hydra.batchMerge(
     "ProbeToken",
     tokenKeys.map((key, i) => ({ key: `p|${key}`, properties: { tkey: key, uid: UID, df: i + 1 } }))
@@ -61,7 +44,6 @@ const seed = Effect.gen(function* () {
       }
     }))
   )
-  // cat -> c1, cat -> c2 ; vet -> c1 ; cat NAMES entity(cat) MENTIONS c3
   yield* hydra.batchRel("HITS", [
     { srcLabel: "Token", srcKey: tokenKeys[0]!, dstLabel: "Claim", dstKey: claimKeys[0]! },
     { srcLabel: "Token", srcKey: tokenKeys[0]!, dstLabel: "Claim", dstKey: claimKeys[1]! },
@@ -135,10 +117,6 @@ describe("HydraClient against the live node", () => {
   })
 
   it("chunks a batch larger than the 1 MB body cap transparently", async () => {
-    // 150 x 8 KB is ~1.2 MB of body, over the cap. The keys are fixed, so a
-    // re-run overwrites the same vertices instead of adding more — which is why
-    // nothing is deleted afterwards: `DETACH DELETE` is far slower than the
-    // write (see the constants in Client.ts) and the test does not need it.
     const bulkKeys = Array.from({ length: 150 }, (_, i) => k(`bulk|${i}`))
     const padding = "x".repeat(8_000)
     const outcome = await run(
@@ -148,8 +126,6 @@ describe("HydraClient against the live node", () => {
           "ProbeBulk",
           bulkKeys.map((key) => ({ key, properties: { bkey: key, uid: UID, text: padding } }))
         )
-        // Read one row back by key rather than counting the label: the count is
-        // graph-wide and this suite deliberately leaves its vertices behind.
         const readBack = yield* hydra.query(
           "MATCH (n:ProbeBulk) WHERE n.bkey = $bkey RETURN n.text AS text",
           { bkey: bulkKeys[bulkKeys.length - 1]! }
@@ -157,8 +133,6 @@ describe("HydraClient against the live node", () => {
         return { written, text: String(readBack.rows[0]?.["text"] ?? "") }
       })
     )
-    // Only passes if the client split the batch: a single statement carrying
-    // all 150 rows would be refused for exceeding the 1 MB body cap.
     expect(outcome.written).toBe(150)
     expect(outcome.text).toBe(padding)
   })
@@ -197,11 +171,6 @@ describe("HydraClient against the live node", () => {
           relDirection: "outgoing" as const,
           maxLen: 2
         }
-        // `pathCount: 1` is what the engine does when the key is omitted, and
-        // it reports no truncation of any kind: this is a recall cap that looks
-        // exactly like an answer. Walking the `User` root over `HAS_SESSION`
-        // returned 1 of 39 sessions before the client started always sending
-        // the ceiling.
         const a = yield* hydra.msPaths({ ...base, pathCount: 1 })
         const b = yield* hydra.msPaths(base)
         return [a, b] as const
@@ -240,10 +209,6 @@ describe("HydraClient against the live node", () => {
   })
 
   it("filters on a relationship property, which is how as-of reads are pushed down", async () => {
-    // Anchored on the source vertex's id rather than `WHERE a.uid = $uid`: the
-    // uid form is a store-wide join over every SUPERSEDED_BY edge and exceeds
-    // the 30 s cap once real data shares the graph. What is being probed is
-    // that the *edge property* filter works, and that needs one claim.
     const rows = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
@@ -262,14 +227,10 @@ describe("HydraClient against the live node", () => {
       })
     )
     expect(rows[0]).toEqual([{ older: claimKeys[0], newer: claimKeys[1] }])
-    // The edge is stamped at session 2, so as of session 1 it is not visible.
     expect(rows[1]).toEqual([])
   })
 
   it("supports STARTS WITH on a parameter — but not at scale", async () => {
-    // The spec lists a `STARTS WITH` prefix scan over Token as a widening lever
-    // for unresolved anchors. The syntax works, on this probe's own small
-    // label:
     const rows = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
@@ -282,11 +243,6 @@ describe("HydraClient against the live node", () => {
     )
     expect(rows.map((r) => r["tkey"]).sort()).toEqual([...tokenKeys].sort())
 
-    // …and it is nonetheless unusable, because it is a label scan and the
-    // engine **refuses** one outright once a label holds more than 250 000
-    // vertices store-wide. That lever is retired; the anchors that matter are
-    // reached by MSpaths from explicit source values, which is index-driven and
-    // has no such ceiling.
     const refused = await run(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
@@ -300,8 +256,6 @@ describe("HydraClient against the live node", () => {
     if (refused._tag === "Left") {
       expect(refused.left.reason).toMatch(/cypher_vertex_label_index_candidates|exceeds limit/)
     }
-    // On a small store it simply succeeds; the assertion above only fires once
-    // the graph is big enough to show the wall, which is the point of a probe.
   })
 
   it("surfaces the engine's own reason text as a typed parse error", async () => {

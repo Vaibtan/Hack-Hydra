@@ -48,7 +48,6 @@ export const withReadTimeout = <A>(
     })
   })
 
-/** Per-stage wall time, recorded whether the stage succeeds or fails. */
 export interface Stopwatch {
   readonly stages: Record<string, number>
   readonly timed: <A, E, R>(stage: string, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
@@ -70,7 +69,6 @@ export const stopwatch = (): Stopwatch => {
   }
 }
 
-/** Every graph read of one ask, with the understand call in front of them. */
 export interface Gathered {
   readonly uid: string
   readonly question: string
@@ -135,7 +133,6 @@ export const gather = (
     const unionOptions = unionOptionsFor(options.asOf)
 
     const guard: StageGuard = (stage, effect) => timed(stage, withReadTimeout(stage, effect))
-    /** An optional arm that hits its ceiling is reported empty; the convergence walk is not optional. */
     const runArm = (
       label: string,
       kind: ArmKind,

@@ -11,7 +11,6 @@ const num = (node: PathNode | undefined, key: string): number =>
 const first = (path: HydraPath): PathNode | undefined => path.nodes[0]
 const last = (path: HydraPath): PathNode | undefined => path.nodes[path.nodes.length - 1]
 
-/** The Claim vertex's own properties, as every walk that ends on a Claim returns them. */
 export interface ClaimFields {
   readonly ckey: string
   readonly text: string
@@ -45,7 +44,6 @@ const claimFields = (node: PathNode): ClaimFields => ({
   ce: num(node, "ce")
 })
 
-/** One `Source -> ... -> Claim` path: the anchor it started from and the Claim it reached. */
 export interface ReachedRow {
   readonly anchor: string
   readonly df: number
@@ -92,7 +90,6 @@ export const middleEntityNames = (paths: ReadonlyArray<HydraPath>): ReadonlyArra
     return name === "" ? [] : [name]
   })
 
-/** A Turn vertex as `Turn <- Session` returns it, keyed by its own `turn` key. */
 export interface TurnText {
   readonly key: string
   readonly text: string
@@ -123,7 +120,6 @@ export const evidenceTurns = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<Ev
     return [{ ckey: str(claim, "ckey"), text: str(turn, "text"), chunks: num(turn, "chunks") }]
   })
 
-/** One `HAS_CHUNK` tail, keyed by the walk's source vertex. */
 export interface ChunkRow {
   readonly key: string
   readonly idx: number
@@ -163,7 +159,6 @@ export const reassemble = (base: string, chunks: ReadonlyArray<ChunkRow>): strin
     .map((chunk) => chunk.text)
     .join("")
 
-/** Chunk rows grouped by key, in the order they arrived. */
 export const chunksByKey = (rows: ReadonlyArray<ChunkRow>): ReadonlyMap<string, ReadonlyArray<ChunkRow>> => {
   const grouped = new Map<string, Array<ChunkRow>>()
   for (const row of rows) {

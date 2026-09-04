@@ -17,7 +17,6 @@ const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraClient>): Promi
 const UID_A = "probe-transcript-a"
 const UID_B = "probe-transcript-b"
 
-/** The longest turn in longmemeval_s_cleaned.json is 76 560 chars. */
 const HUGE_TURN = Array.from({ length: 7656 }, (_, i) => `line ${i} — ünïcödé 'quote' \\slash\n`)
   .join("")
   .slice(0, 76_560)
@@ -41,10 +40,6 @@ const sessions: ReadonlyArray<DatasetSession> = [
     turns: [{ turnIdx: 0, role: "user", text: "The GPS stopped working.", hasAnswer: true }]
   }
 ]
-
-// Nothing is wiped. Keys are fixed, so a re-run overwrites the same vertices,
-// and `DETACH DELETE` is rejected outright once the store passes a million
-// edges — the scan is proportional to the whole graph, not to what is deleted.
 
 describe("Transcript ingest against the live node", () => {
   it("writes sessions, turns and HAS_TURN edges under the user's key prefix", async () => {

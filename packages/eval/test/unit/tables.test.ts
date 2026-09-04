@@ -8,18 +8,12 @@ import {
   renderLatency,
   type PairedTable
 } from "../../src/Tables.js"
-import type { EvalRow } from "../../src/Results.js"
+import type { EvalRow } from "../../src/Envelope.js"
 
-/**
- * The arithmetic is pinned to the 2026-08-20 evidence audit, which computed it
- * by hand. If `pnpm table` and the audit ever disagree, one of them is wrong and
- * this test says which.
- */
 const AUDIT: PairedTable = { both: 38, leftOnly: 5, rightOnly: 3, neither: 8, n: 54 }
 
 describe("exact McNemar", () => {
   it("reproduces the audit's palimpsest-vs-bm25 p", () => {
-    // 2 * P(Binomial(8, 0.5) <= 3) = 2 * 93/256
     expect(mcnemarExact(AUDIT.leftOnly, AUDIT.rightOnly)).toBeCloseTo(0.7265625, 12)
   })
 
@@ -38,8 +32,6 @@ describe("exact McNemar", () => {
   })
 
   it("stays exact at a size the chi-square approximation would be used for", () => {
-    // 2 * P(Binomial(30, .5) <= 10), as an exact rational: the point of the
-    // exact form is that this number does not depend on an approximation.
     expect(mcnemarExact(20, 10)).toBeCloseTo((2 * 53_009_102) / 2 ** 30, 15)
   })
 })
@@ -139,9 +131,6 @@ describe("error class", () => {
 
 describe("latency table", () => {
   it("shows a dash where a row recorded nothing, because zero is a measurement", () => {
-    // Every baseline and every pre-timings v1 row has no `graphMs`. Printing
-    // `0 ms` for them would put the fastest number in the table next to the
-    // system that never measured it.
     const table = renderLatency([
       ["bm25", [row({ readerInputTokens: 4000 }), row({ readerInputTokens: 6000 })]]
     ])
@@ -149,12 +138,9 @@ describe("latency table", () => {
   })
 
   it("reports p50 and p90 separately, so a long tail is visible", () => {
-    // The shape is the point: a pipeline whose median ask is 3 s and whose
-    // ninetieth percentile is 40 s is not a 3 s pipeline, and a p50 alone says
-    // it is. Nearest-rank, so five of ten slow rows move p90 and not p50.
     const rows = [
-      ...Array.from({ length: 5 }, (_, i) => row({ questionId: `f${i}`, askMs: 3000, graphMs: 100 })),
-      ...Array.from({ length: 5 }, (_, i) => row({ questionId: `s${i}`, askMs: 40_000, graphMs: 100 }))
+      ...Array.from({ length: 6 }, (_, i) => row({ questionId: `f${i}`, askMs: 3000, graphMs: 100 })),
+      ...Array.from({ length: 4 }, (_, i) => row({ questionId: `s${i}`, askMs: 40_000, graphMs: 100 }))
     ]
     const table = renderLatency([["palimpsest-v2", rows]])
     expect(table).toContain("| palimpsest-v2 | 100 ms | 100 ms | 3.0 s | 40.0 s |")
@@ -197,8 +183,6 @@ describe("ablation table", () => {
   })
 
   it("scores against the answerable questions only", () => {
-    // The abstention questions are scored by a different rubric; counting them
-    // in an accuracy delta would let an ablation look better by refusing more.
     const table = renderAblations(full, [
       { ablations: ["noSelect"], rows: [answerable("1", true), answerable("2", false), answerable("3", false), row({ questionId: "abs", isAbstention: true, judged: true })] }
     ])

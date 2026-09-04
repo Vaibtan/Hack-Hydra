@@ -5,31 +5,6 @@ import { ATTRIBUTE_VOCABULARY } from "./Extract.js"
 import { resolveTimeInterval, type DayInterval } from "./TimeScope.js"
 import { stem, stems } from "./Tokenize.js"
 
-/**
- * Understanding the question, once, before anything is read.
- *
- * v1 asked the model for search terms and three booleans, and consumed two of
- * them. This asks the same call for the rest of what the shape of the answer
- * depends on — which *kind* of question it is, what it decomposes into, which
- * `(entity, attribute)` pairs it names outright — and consumes all of it.
- *
- * The division of labour is the point. The model is asked only for things a
- * model is good at: paraphrase, decomposition, naming the attribute behind a
- * noun. Everything with a right answer stays in code: the interval comes from
- * `TimeScope`, and a handful of deterministic cues override the route where the
- * question says outright what it is, so "how many X" is never classified as a
- * preference no matter what the model returns.
- */
-
-/**
- * The primary route. It drives two things and only two: which reader prompt is
- * appended, and how much text is hydrated around each span.
- *
- * Flags are *not* routes and are independent of it — a count question with a
- * time phrase gets the count reader **and** the time scope — because collapsing
- * them into one label is how v1 ended up with one shape for six kinds of
- * question.
- */
 export const ROUTES = [
   "fact",
   "preference",
@@ -42,13 +17,10 @@ export const ROUTES = [
 
 export type Route = (typeof ROUTES)[number]
 
-/** At most four, each self-contained, each carrying its own search terms. */
 export const MAX_SUB_QUESTIONS = 4
-/** At most six `(entity, attribute)` pairs to read Slots for directly. */
 export const MAX_PROBES = 6
 
 const Understanding = Schema.Struct({
-  /** Content words, plus synonyms and hypernyms of each. Unchanged from v1. */
   anchor_terms: Schema.Array(Schema.String),
   historical: Schema.Boolean,
   wants_count: Schema.Boolean,
@@ -70,7 +42,6 @@ const Understanding = Schema.Struct({
 
 export interface SubQuestion {
   readonly question: string
-  /** Stems, de-duplicated and sorted, exactly as the primary anchors are. */
   readonly terms: ReadonlyArray<string>
 }
 
@@ -80,7 +51,6 @@ export interface Probe {
 }
 
 export interface Understood {
-  /** Stems, de-duplicated, in a stable order. The convergence arm's sources. */
   readonly terms: ReadonlyArray<string>
   readonly historical: boolean
   readonly route: Route
@@ -91,7 +61,6 @@ export interface Understood {
     readonly hasTimeRef: boolean
     readonly needsDecomposition: boolean
   }
-  /** The phrase the model returned, verbatim. */
   readonly timeRef: string | null
   /** Resolved in code, or `null` when the phrase is not one of the supported forms. */
   readonly timeInterval: DayInterval | null
@@ -141,27 +110,6 @@ comes from this vocabulary: ${ATTRIBUTE_VOCABULARY.join(", ")}.
 Use "me" for the person asking. "How old is my grandma?" -> [{entity_canon: "grandma", attr: "age"}].
 Return an empty list when the question names no attribute from the vocabulary.`
 
-/**
- * Words that make a question's kind unambiguous whatever the model says.
- *
- * Kept small on purpose. A cue only earns its place when the question states
- * its own kind in words — "how many" is a count, full stop — because every cue
- * is a rule that fires on questions nobody looked at.
- */
-/**
- * **Narrowed on 2026-08-31, from evidence.** It was
- * `/\b(how many|how much|how often|how numerous)\b/`, and on the first v2 dev
- * run that put **21 of 36 questions on the `count` route** — 9 multi-session, 7
- * knowledge-update and 4 temporal-reasoning, none of which is a count. "How
- * much did I pay" is a fact and "how often do I go" is a frequency; neither is
- * a list to enumerate, which is what the route's reader rule asks for.
- *
- * The spec names exactly one phrase for this cue, `how many`, and the widening
- * was not in it. Three of the four wrong `count`-routed answers were
- * `INSUFFICIENT_EVIDENCE` abstentions, which is the compounding cost: the
- * sufficiency check judges a count PARTIAL whenever an item might be missing,
- * runs its second pass, and abstains — on a question that was never a count.
- */
 const COUNT_PHRASE = /\bhow many\b/
 const CURRENT_WORD = /\b(current|currently|now|nowadays|still|these days|at the moment)\b/
 const DID_I_WITH = /\bdid i\b[^?]*\bwith\b/
@@ -170,36 +118,18 @@ const ATTRIBUTE_STEMS = new Set(
   ATTRIBUTE_VOCABULARY.flatMap((attr) => attr.split("_")).map((word) => stem(word))
 )
 
-/**
- * The route, after the deterministic cues have had their say.
- *
- * Exported so the table of question × route is a unit test rather than an eval
- * run: a route is a prompt and a hydration granularity, and getting it wrong is
- * silent.
- */
 export const applyRouteCues = (
   question: string,
   modelRoute: Route,
   timeRef: string | null
 ): { readonly route: Route; readonly reason: string } => {
   const text = question.toLowerCase()
-  // Not over `temporal`. "How many years older is my grandma than me" says
-  // "how many" and is date arithmetic, not an enumeration — it is #27's own
-  // example question, and the count route would tell the reader to list items
-  // and total them when what it needs is to subtract two dates. A model that
-  // has already called a question temporal has resolved something a regex
-  // cannot, so the cue defers to it.
   if (COUNT_PHRASE.test(text) && modelRoute !== "temporal") {
     return { route: "count", reason: "cue:how_many" }
   }
   if (DID_I_WITH.test(text) && timeRef !== null) {
     return { route: "temporal", reason: "cue:did_i_with_time" }
   }
-  // "currently" turns a question about a *value* into a question about the
-  // latest one. The vocabulary check catches "what is my current employer";
-  // the route check catches "where do I currently live", where the attribute
-  // is `residence` and the question says "live" — resolving that is the
-  // model's job, and it has already done it by answering `fact`.
   if (
     CURRENT_WORD.test(text) &&
     (modelRoute === "fact" ||
@@ -211,7 +141,6 @@ export const applyRouteCues = (
   return { route: modelRoute, reason: "model" }
 }
 
-/** Stems of a question plus its expansion terms, de-duplicated and ordered. */
 export const anchorStems = (
   question: string,
   expanded: ReadonlyArray<string>
@@ -222,12 +151,6 @@ export const anchorStems = (
   return [...terms].sort()
 }
 
-/**
- * Shapes one model answer into the plan's inputs.
- *
- * Pure, and separate from the call, so every cap, every cue and the interval
- * arithmetic are testable without a provider.
- */
 export const shapeUnderstanding = (
   question: string,
   questionDate: number,
@@ -256,8 +179,6 @@ export const shapeUnderstanding = (
     route: cue.route,
     routeReason: cue.reason,
     flags: {
-      // The cue is evidence too: a question that says "how many" wants a count
-      // whatever the model ticked.
       wantsCount: value.wants_count || cue.reason === "cue:how_many",
       hasTimeRef: value.time_ref !== null && value.time_ref.trim() !== "",
       needsDecomposition: subQuestions.length > 0
@@ -271,14 +192,6 @@ export const shapeUnderstanding = (
   }
 }
 
-/**
- * One structured call, in the `anchors` cache family.
- *
- * Same family as v1 deliberately: the schema is part of the cache key, so the
- * v1 entries are not reused and cannot be, and keeping the family means one
- * directory holds every question-understanding call this project has ever made.
- * The system prompt says "version 2" for the same reason.
- */
 export const understand = (
   question: string,
   questionDate: number,

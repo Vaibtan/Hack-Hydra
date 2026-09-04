@@ -4,84 +4,70 @@ import {
   createRuntimeExtractionGeneration,
   type ExtractionGeneration
 } from "@palimpsest/palimpsest"
+import { Schema } from "effect"
 
-/**
- * The predeclared dev/test split of the Retrieval v2 population.
- *
- * The file this module reads and writes is the only thing standing between
- * "we did not tune on test" and an assertion nobody can check. It is committed
- * **before** the first v2 result exists, it names both id lists in full, and
- * `--split test` refuses to run until it also carries a gate record. Recomputing
- * the lists at eval time from `benchmarkSlice` would defeat the point — the
- * whole guarantee is that the lists did not move.
- */
-
-/** Repo-relative, so both the generator and the harness name the same file. */
+/** Repo-relative; committed before the first v2 result, with both id lists in full. */
 export const SPLIT_FILE = "data/splits/retrieval-v2.json"
 
 export type SplitName = "dev" | "test"
 
-export interface GateRecord {
-  /** ISO date the gate was read. */
-  readonly readAt: string
-  readonly passed: boolean
-  readonly numbers: Readonly<Record<string, number | string | boolean | null>>
-}
+const Revision = (id: string, revision: string) =>
+  Schema.Struct({ id: Schema.Literal(id), revision: Schema.Literal(revision) })
 
-export interface SplitFile {
-  readonly schemaVersion: 1
-  readonly dataset: string
-  /** `benchmarkSlice(questions, slice)` is the population these ids came from. */
-  readonly slice: number
-  /** The uid prefix the population was ingested under. */
-  readonly prefix: string
-  readonly createdAt: string
-  readonly note: string
-  readonly extractionGeneration: {
-    readonly id: string
-    readonly promptTemplateSha256: string
-    readonly outputSchemaSha256: string
-    readonly dependencies: typeof BENCHMARK_EXTRACTION_DEPENDENCIES
-  }
-  /** Ingest outcome, so a capacity-capped population is visible in the file. */
-  readonly population: {
-    readonly requested: number
-    readonly ingested: number
-    readonly capacityGateTripped: boolean
-  }
-  readonly dev: ReadonlyArray<string>
-  readonly test: ReadonlyArray<string>
-  readonly gate: GateRecord | null
-}
-
-/**
- * The extraction generation's declared dependency revisions, pinned for the
- * whole v1-vs-v2 comparison.
- *
- * `scripts/palimpsest-generation-config.ps1` derives these from `git rev-parse
- * HEAD`, which is right for the transactional ingest — a release pins itself to
- * a commit — and wrong here: this comparison spans a ticket per commit, and an
- * id that changes with every unrelated commit cannot be the thing an eval
- * refuses to run against. What must not move is the *extraction*, and that is
- * caught by the two content hashes the descriptor already carries
- * (`prompt_template_sha256`, `output_schema_sha256`) plus the model id. So the
- * revisions are declared constants naming the graph they belong to, and the
- * hashes do the real work: change `EXTRACTION_SYSTEM_PROMPT` or the output
- * schema and the id changes, which is exactly the confound the freeze exists to
- * prevent.
- *
- * The one thing this does *not* catch is a change to `Tokenize.ts`, which would
- * alter Token vertices without touching the extraction descriptor. The graph is
- * frozen for this work (#22, *Out of Scope*), so that is a declared assumption
- * rather than an enforced one.
- */
+/** Pinned to the g3 graph, not to HEAD; the descriptor's prompt and schema hashes catch extraction drift. */
 export const BENCHMARK_EXTRACTION_DEPENDENCIES = {
   extractor: { id: LOCAL_GENERATION_COMPONENTS.extractor, revision: "retrieval-v2-g3" },
   model: { id: "gpt-5.6-luna", revision: "gpt-5.6-luna" },
   tokenizer: { id: LOCAL_GENERATION_COMPONENTS.tokenizer, revision: "retrieval-v2-g3" }
 } as const
 
-/** The generation id as this checkout computes it, right now. */
+export const GateRecord = Schema.Struct({
+  readAt: Schema.String,
+  passed: Schema.Boolean,
+  numbers: Schema.Record({
+    key: Schema.String,
+    value: Schema.NullOr(Schema.Union(Schema.Number, Schema.String, Schema.Boolean))
+  })
+})
+export type GateRecord = typeof GateRecord.Type
+
+export const SplitFile = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  dataset: Schema.String,
+  slice: Schema.Number,
+  prefix: Schema.String,
+  createdAt: Schema.String,
+  note: Schema.String,
+  extractionGeneration: Schema.Struct({
+    id: Schema.String,
+    promptTemplateSha256: Schema.String,
+    outputSchemaSha256: Schema.String,
+    dependencies: Schema.Struct({
+      extractor: Revision(
+        BENCHMARK_EXTRACTION_DEPENDENCIES.extractor.id,
+        BENCHMARK_EXTRACTION_DEPENDENCIES.extractor.revision
+      ),
+      model: Revision(
+        BENCHMARK_EXTRACTION_DEPENDENCIES.model.id,
+        BENCHMARK_EXTRACTION_DEPENDENCIES.model.revision
+      ),
+      tokenizer: Revision(
+        BENCHMARK_EXTRACTION_DEPENDENCIES.tokenizer.id,
+        BENCHMARK_EXTRACTION_DEPENDENCIES.tokenizer.revision
+      )
+    })
+  }),
+  population: Schema.Struct({
+    requested: Schema.Number,
+    ingested: Schema.Number,
+    capacityGateTripped: Schema.Boolean
+  }),
+  dev: Schema.Array(Schema.String),
+  test: Schema.Array(Schema.String),
+  gate: Schema.NullOr(GateRecord)
+})
+export type SplitFile = typeof SplitFile.Type
+
 export const liveExtractionGeneration = (): ExtractionGeneration =>
   createRuntimeExtractionGeneration(BENCHMARK_EXTRACTION_DEPENDENCIES)
 
@@ -98,11 +84,6 @@ export class ExtractionGenerationDrift extends Error {
   }
 }
 
-/**
- * Fails closed when the checkout's extraction differs from the one that built
- * the graph. Cheap, and the alternative is a table whose two halves were
- * extracted by different prompts with nothing in the file to say so.
- */
 export const assertGenerationMatches = (file: SplitFile): void => {
   const live = liveExtractionGeneration()
   if (live.id !== file.extractionGeneration.id) {
@@ -110,14 +91,7 @@ export const assertGenerationMatches = (file: SplitFile): void => {
   }
 }
 
-/**
- * Splits a population into the questions already cached from the `g2` run and
- * the rest.
- *
- * Dev is *whatever was already paid for*, not a fresh sample: those 60 have
- * cached anchors, reads and judgements, so iteration on them costs $0, and
- * every one of them is a question v1's numbers already exist for.
- */
+/** Dev is the g2-cached questions, so iterating on them costs $0; test is the rest. */
 export const splitByCached = (
   population: ReadonlyArray<DatasetQuestion>,
   cachedIds: ReadonlyArray<string>
@@ -130,7 +104,6 @@ export const splitByCached = (
   }
 }
 
-/** Ids in `cachedIds` that the population does not contain. Must be empty. */
 export const outsidePopulation = (
   population: ReadonlyArray<DatasetQuestion>,
   cachedIds: ReadonlyArray<string>

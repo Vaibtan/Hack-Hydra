@@ -1,74 +1,47 @@
-import { existsSync, readFileSync } from "node:fs"
-import { writeFile } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
+import { existsSync } from "node:fs"
+import { resolve } from "node:path"
 import {
   SPLIT_FILE,
+  arg,
+  flag,
   gateRefusals,
   overwriteRefusal,
+  readEnvelope,
   readGate,
-  renderGate,
   readRuntimeConfig,
-  type EvalRow,
-  type GateEnvelope,
+  readSplitFile,
+  renderGate,
+  splitFilePath,
+  workspaceRoot,
+  writeAtomic,
   type SplitFile
 } from "../src/index.js"
 
 /**
  * `gate [--v1 results/palimpsest-dev.json] [--v2 results/palimpsest-v2-dev.json] [--write]`
  *
- * Reads the adoption gate on dev and, with `--write`, records the result in the
- * split file.
- *
- * The record is what lets `--split test` run at all, which is the point: "we
- * did not tune on test" is a claim, and a committed record with a date on it is
- * the only version of that claim anybody can check. It is written **whether the
- * gate passed or failed** — a gate that is only recorded when it passes is a
- * gate that was never read.
- *
- * Nothing here re-runs a model. It reads two results files, so it can be
- * repeated for free and produces the same answer every time.
+ * Reads the adoption gate on dev; `--write` records it in the split file once,
+ * pass or fail. Nothing here re-runs a model.
  */
-
-const arg = (name: string, fallback: string): string => {
-  const index = process.argv.indexOf(`--${name}`)
-  return index === -1 ? fallback : (process.argv[index + 1] ?? fallback)
-}
-
-const workspaceRoot = (): string => {
-  let dir = process.cwd()
-  for (let depth = 0; depth < 8; depth++) {
-    if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) return dir
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  return process.cwd()
-}
-
 const root = workspaceRoot()
-const write = process.argv.includes("--write")
+const write = flag("write")
+const v1File = arg("v1", "results/palimpsest-dev.json")
+const v2File = arg("v2", "results/palimpsest-v2-dev.json")
 
-const load = (path: string): { readonly envelope: Record<string, unknown>; readonly rows: ReadonlyArray<EvalRow> } => {
+const load = (path: string) => {
   const full = resolve(root, path)
   if (!existsSync(full)) {
     console.error(`no such results file: ${full}`)
-    console.error("  run `pnpm eval --system palimpsest,palimpsest-v2 --split dev` first")
+    console.error("  run `pnpm eval --system palimpsest-v2 --split dev` first (v1 from the pre-cleanup-v1 tag)")
     process.exit(2)
   }
-  const envelope = JSON.parse(readFileSync(full, "utf8")) as Record<string, unknown> & {
-    rows: ReadonlyArray<EvalRow>
-  }
-  return { envelope, rows: envelope.rows }
+  return readEnvelope(full)
 }
 
-const v1 = load(arg("v1", "results/palimpsest-dev.json"))
-const v2 = load(arg("v2", "results/palimpsest-v2-dev.json"))
+const v1 = load(v1File)
+const v2 = load(v2File)
 
-// Two files that came from different populations, generations or splits cannot
-// be compared, and a gate read across them would be meaningless in a way no
-// number in it would reveal. The rules are in `Gate.ts` so they are testable;
-// deciding the exit code is this file's job.
-const refusals = gateRefusals(v1.envelope as GateEnvelope, v2.envelope as GateEnvelope)
+const refusals = gateRefusals(v1, v2)
 if (refusals.length > 0) {
   for (const refusal of refusals) console.error(refusal)
   process.exit(2)
@@ -83,8 +56,8 @@ if (!write) {
   process.exit(report.passed ? 0 : 1)
 }
 
-const splitPath = resolve(root, SPLIT_FILE)
-const split = JSON.parse(readFileSync(splitPath, "utf8")) as SplitFile
+const splitPath = splitFilePath(root)
+const split = readSplitFile(splitPath)
 const overwrite = overwriteRefusal(split.gate)
 if (overwrite !== null) {
   console.error(overwrite)
@@ -101,21 +74,19 @@ const recorded: SplitFile = {
       ...Object.fromEntries(
         report.criteria.map((criterion) => [`criterion:${criterion.name}`, criterion.passed])
       ),
-      v1File: arg("v1", "results/palimpsest-dev.json"),
-      v2File: arg("v2", "results/palimpsest-v2-dev.json"),
-      // Which runtime the numbers behind this gate were measured on: the read
-      // cache and the query cap are chosen per phase, and a gate read on
-      // ingest-phase latency would be reading a different measurement.
+      v1File,
+      v2File,
       runtimeConfigSha256: readRuntimeConfig().sha256,
-      readerModel: String(v2.envelope["readerModel"] ?? ""),
-      selectModel: String(v2.envelope["selectModel"] ?? ""),
-      sufficiencyModel: String(v2.envelope["sufficiencyModel"] ?? ""),
-      extractionGeneration: String(v2.envelope["extractionGeneration"] ?? "")
+      readerModel: v2.readerModel,
+      selectModel: v2.selectModel ?? "",
+      sufficiencyModel: v2.sufficiencyModel ?? "",
+      extractionGeneration: v2.extractionGeneration ?? ""
     }
   }
 }
-await writeFile(splitPath, `${JSON.stringify(recorded, null, 2)}\n`, "utf8")
-await writeFile(resolve(root, "results/gate-dev.md"), `${renderGate(report)}\n`, "utf8")
+
+writeAtomic(resolve(root, "results/gate-dev.md"), `${renderGate(report)}\n`)
+writeAtomic(splitPath, `${JSON.stringify(recorded, null, 2)}\n`)
 console.log(`recorded in ${SPLIT_FILE} and results/gate-dev.md`)
 console.log(
   report.passed
