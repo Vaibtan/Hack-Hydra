@@ -5,16 +5,13 @@ import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import {
-  ClaimGraph,
-  Ingest,
-  Supersede,
-  Transcript,
-  claimKind,
-  readUserStats,
-  stems,
-  tokenKey
-} from "../../src/index.js"
+import { ClaimGraph } from "../../src/ClaimGraph.js"
+import { Ingest } from "../../src/Ingest.js"
+import { claimKind, tokenKey } from "../../src/Keys.js"
+import { Supersede } from "../../src/Supersede.js"
+import { stems } from "../../src/Tokenize.js"
+import { Transcript } from "../../src/Transcript.js"
+import { readUserStats } from "../../src/User.js"
 
 /**
  * A whole user through the whole write path, against the live node and the real

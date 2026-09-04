@@ -1,7 +1,7 @@
 import { HydraClient, type HydraPath } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
-import { WARM_SOURCES_PER_WALK, warmUser } from "../../src/index.js"
+import { WARM_SOURCES_PER_WALK, warmUser } from "../../src/User.js"
 
 /**
  * The warm's two bounds, and the bug that made both necessary.

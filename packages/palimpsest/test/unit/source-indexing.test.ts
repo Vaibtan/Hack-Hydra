@@ -1,7 +1,5 @@
-import {
-  makeIngestGenerationConfig,
-  planSourceIndexSession
-} from "../../src/index.js"
+import { makeIngestGenerationConfig } from "../../src/GenerationConfig.js"
+import { planSourceIndexSession } from "../../src/SourceIndexing.js"
 import type { DatasetSession } from "@palimpsest/dataset"
 import { describe, expect, it } from "vitest"
 

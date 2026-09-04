@@ -3,46 +3,35 @@ import { Data, Either } from "effect"
 import { canonicalJson } from "./SourceIdentity.js"
 import type { ExtractedEntity } from "./Extract.js"
 
-/** An immutable physical Entity identity that a canonical view may resolve. */
 export interface EntityIdentity {
-  /** Stable physical identity; a view never rewrites it. */
   readonly id: string
-  /** Canonical text recorded when this immutable identity was indexed. */
   readonly canon: string
-  /** Entity category recorded with the immutable identity. */
   readonly etype: ExtractedEntity["etype"]
 }
 
-/** A proposed equivalence between two immutable Entity identities. */
 export interface EntityEquivalence {
   readonly leftIdentityId: string
   readonly rightIdentityId: string
 }
 
-/** Input used to create one selected canonical view. */
 export interface CreateEntityCanonicalView {
   readonly identities: ReadonlyArray<EntityIdentity>
   readonly equivalences: ReadonlyArray<EntityEquivalence>
 }
 
-/** An immutable, direct SAME_AS edge in one canonical view. */
+/** Versioned resolution from one immutable identity to its canonical target inside a view. */
 export interface SameAsEdge {
   readonly viewId: string
   readonly fromIdentityId: string
   readonly toCanonicalIdentityId: string
 }
 
-/** A deterministic, versioned view over immutable Entity identities. */
 export interface EntityCanonicalView {
-  /** Content-addressed identity of this exact resolution view. */
   readonly id: string
-  /** Direct resolution for every identity represented by the view. */
   readonly resolutions: ReadonlyMap<string, string>
-  /** Non-identity resolutions persisted as versioned SAME_AS edges. */
   readonly sameAs: ReadonlyArray<SameAsEdge>
 }
 
-/** The supplied identities or equivalences cannot form a canonical view. */
 export class InvalidEntityCanonicalView extends Data.TaggedError("InvalidEntityCanonicalView")<{
   readonly reason: "emptyIdentity" | "duplicateIdentity" | "unknownIdentity" | "invalidEncoding"
   readonly identityId: string
@@ -52,7 +41,6 @@ export class InvalidEntityCanonicalView extends Data.TaggedError("InvalidEntityC
   }
 }
 
-/** An identity is not represented by the selected canonical view. */
 export class EntityNotInCanonicalView extends Data.TaggedError("EntityNotInCanonicalView")<{
   readonly identityId: string
 }> {
@@ -119,11 +107,6 @@ const viewFromResolutions = (resolutions: ReadonlyMap<string, string>): EntityCa
   return { id, resolutions, sameAs }
 }
 
-/**
- * Creates a content-addressed canonical view without changing a physical Entity
- * identity. The lexically first `(canon, id)` in each equivalence component is
- * the view's canonical target, so every rebuild of the same input is stable.
- */
 export const createEntityCanonicalView = (
   input: CreateEntityCanonicalView
 ): Either.Either<EntityCanonicalView, InvalidEntityCanonicalView> => {
@@ -176,10 +159,8 @@ export const createEntityCanonicalView = (
   return Either.right(viewFromResolutions(resolutions))
 }
 
-/** Serializes the content that determines one canonical-view identity. */
 export const serializeEntityCanonicalView = (view: EntityCanonicalView): string => descriptorFor(view.resolutions)
 
-/** Parses a persisted canonical view and verifies its content-addressed identity. */
 export const parseEntityCanonicalView = (
   id: string,
   serialized: string
@@ -213,7 +194,6 @@ export const parseEntityCanonicalView = (
   }
 }
 
-/** Resolves one immutable identity through the selected canonical view. */
 export const resolveEntityInCanonicalView = (
   view: EntityCanonicalView,
   identityId: string

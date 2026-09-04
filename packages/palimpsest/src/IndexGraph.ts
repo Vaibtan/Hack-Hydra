@@ -13,7 +13,7 @@ import { claimTokens } from "./Tokenize.js"
 
 const ALIAS_SEPARATOR = "\u001f"
 
-/** Stable semantic identity for an observed Entity; it never names a mutable graph record. */
+/** Content address of (canon, etype, aliases); never a mutable graph record. */
 export const indexEntityIdentityId = (entity: ExtractedEntity): string => {
   const aliases = [...new Set(entity.aliases)].sort((left, right) => left.localeCompare(right))
   const descriptor = canonicalJson({
@@ -25,7 +25,6 @@ export const indexEntityIdentityId = (entity: ExtractedEntity): string => {
   return `entity-v1-${createHash("sha256").update(descriptor, "utf8").digest("hex")}`
 }
 
-/** Immutable vertex key for one source-bound entity record in one index generation. */
 export const indexEntityKey = (
   uid: string,
   generationId: string,
@@ -35,7 +34,6 @@ export const indexEntityKey = (
 ): string =>
   `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|entity|${identityId}`
 
-/** Immutable vertex key for one source-bound claim record in one index generation. */
 export const indexClaimKey = (
   uid: string,
   generationId: string,
@@ -45,7 +43,6 @@ export const indexClaimKey = (
 ): string =>
   `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|claim|${digest}`
 
-/** Immutable vertex key for one source-bound slot record in one index generation. */
 export const indexSlotKey = (
   uid: string,
   generationId: string,
@@ -56,7 +53,6 @@ export const indexSlotKey = (
 ): string =>
   `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|slot|${identityId}|${attr}`
 
-/** Immutable vertex key for one source-bound token record in one index generation. */
 export const indexTokenKey = (
   uid: string,
   generationId: string,
@@ -66,7 +62,6 @@ export const indexTokenKey = (
 ): string =>
   `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|token|${stem}`
 
-/** A derived graph write could not prove its source lineage. */
 export class IndexGraphWriteRejected extends Data.TaggedError("IndexGraphWriteRejected")<{
   readonly reason: "sourceRevisionMismatch" | "unknownTurn" | "invalidSpan"
 }> {
@@ -75,13 +70,11 @@ export class IndexGraphWriteRejected extends Data.TaggedError("IndexGraphWriteRe
   }
 }
 
-/** One immutable index vertex prepared before the graph is touched. */
 export interface IndexGraphVertex {
   readonly key: string
   readonly properties: Readonly<Record<string, Scalar>>
 }
 
-/** One index edge, including the source/index generation filters required by a reader. */
 export interface IndexGraphRelation {
   readonly type: "INDEX_EVIDENCE" | "INDEX_MENTIONS" | "INDEX_FILLS" | "INDEX_HITS" | "INDEX_NAMES"
   readonly srcLabel: "IndexClaim" | "IndexEntity" | "IndexToken"
@@ -91,7 +84,6 @@ export interface IndexGraphRelation {
   readonly properties: Readonly<Record<string, Scalar>>
 }
 
-/** Complete isolated data-plane write for one source revision and index generation. */
 export interface IndexGraphWritePlan {
   readonly generationId: string
   readonly sourceDigest: string
@@ -103,7 +95,6 @@ export interface IndexGraphWritePlan {
   readonly relations: ReadonlyArray<IndexGraphRelation>
 }
 
-/** Summary of the derived records written for one isolated source/index pair. */
 export interface IndexGraphWriteReport {
   readonly generationId: string
   readonly sourceDigest: string
@@ -113,7 +104,6 @@ export interface IndexGraphWriteReport {
   readonly tokens: number
 }
 
-/** Public input to the generation-scoped index writer. */
 export interface PlanIndexGraphWrite {
   readonly generation: IndexGeneration
   readonly revision: SourceRevision
@@ -138,11 +128,7 @@ const entityForSlot = (
   canon: string
 ): ExtractedEntity => entitiesByCanon.get(canon) ?? { canon, etype: "topic", aliases: [] }
 
-/**
- * Builds a generation- and source-scoped graph write without consulting mutable
- * graph state. Canonicalisation happens through the selected `SAME_AS` view,
- * not by renaming these immutable records in place.
- */
+/** Pure plan of Index* vertices and INDEX_* edges for one source revision and generation. */
 export const planIndexGraphWrite = (
   input: PlanIndexGraphWrite
 ): Either.Either<IndexGraphWritePlan, IndexGraphWriteRejected> => {
@@ -408,5 +394,4 @@ const make = Effect.gen(function* () {
   return { write } as const
 })
 
-/** Isolated derived graph writer; legacy claim labels are intentionally untouched. */
 export class IndexGraph extends Effect.Service<IndexGraph>()("palimpsest/IndexGraph", { effect: make }) {}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { matchKeys, reconcile } from "../../src/index.js"
-import type { ExtractedEntity } from "../../src/index.js"
+import { matchKeys, reconcile } from "../../src/Canon.js"
+import type { ExtractedEntity } from "../../src/Extract.js"
 
 const entity = (
   canon: string,

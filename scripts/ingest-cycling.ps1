@@ -1,20 +1,8 @@
-# Runs the population ingest in cycles, restarting the node between them.
-#
-# Why this exists, measured on 2026-08-31: HydraDB's RSS grows with the write
-# *work a process has done*, not with the graph. A resumed ingest took it from
-# 5 MiB to 5.06 GiB in half an hour, and a restart took it straight back to
-# 4.3 MiB with the same graph underneath -- every engine cache on /metrics
-# totalled 430 KB at the peak, so the memory was allocator growth under a
-# write-heavy workload and not anything the engine was holding on purpose.
-#
-# That makes the 200-user population reachable on a 15 GiB host, but only if the
-# node is cycled. `--skip-existing` is what makes cycling cheap and safe: every
-# write is a content-addressed MERGE, so a user interrupted mid-write completes
-# on the next pass, and a user already complete costs one ~100 ms read by id.
-#
-# The node is restarted with the *ingest* phase settings every cycle (read cache
-# off, 120 s query cap) -- see ops/hydradb/step-load-2026-08.md. Switch back to
-# eval settings when the population is in.
+# Runs the population ingest in cycles, restarting the node with the ingest
+# phase settings whenever it reaches -RestartAtPercent of its memory limit
+# (ops/hydradb/step-load-2026-08.md). `--skip-existing` makes a cycle cheap:
+# every write is a content-addressed MERGE, so an interrupted user completes on
+# the next pass.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ingest-cycling.ps1 `
 #     -Slice 200 -Prefix g3 -Users 3 -RestartAtPercent 70 [-Split dev]
@@ -24,33 +12,18 @@ param(
   [int] $Slice = 200,
   [string] $Prefix = "g3",
   [int] $Users = 3,
-  # Well below the capacity gate's 90 %: the point is to cycle the node before
-  # the gate has to stop it, so a restart is a scheduled cost rather than an
-  # incident.
+  # Below the capacity gate's 90 % so the restart is scheduled, not an incident.
   [ValidateRange(10, 89)]
   [int] $RestartAtPercent = 70,
   [ValidateRange(5, 600)]
   [int] $SampleIntervalSeconds = 15,
   [ValidateRange(1, 100)]
   [int] $MaxCycles = 40,
-  # The object-store read cache during the ingest phase.
-  #
-  # The ops note turned it off for a reason that no longer holds: with it on,
-  # RSS grew ~2 GiB/min and the capacity gate stopped the node in three minutes.
-  # Cycling is what handles that now, and with the cache *off* every block
-  # compaction reads is an HTTP GET -- MinIO measured 450 % of its six CPUs and
-  # 251 GB of network out during an ingest, while HydraDB sat at 164 % of four.
-  # Whether trading more frequent restarts for fewer round trips is a net win is
-  # a measurement, which is why this is a switch.
+  # Object-store read cache during the ingest. Off is the measured default;
+  # on trades more frequent restarts for fewer MinIO round trips (unmeasured).
   [ValidateSet("on", "off")]
   [string] $ReadCache = "off",
-  # Narrows the ingest to one half of the committed split.
-  #
-  # The dev half is what every result before the gate is measured on, and it is
-  # scattered through `benchmarkSlice` order rather than being a prefix of it.
-  # Ingesting `-Split dev` first turns an eleven-hour wait before the first
-  # number into about ninety minutes, with the test half loading afterwards
-  # while nothing is blocked on it.
+  # `dev` first gets the first number in ~90 min instead of ~11 h.
   [ValidateSet("", "dev", "test")]
   [string] $Split = "",
   [string] $LogDirectory
@@ -58,11 +31,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot "lib/hydra.psm1") -Force
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
-$opsDirectory = Join-Path $repositoryRoot "ops/hydradb"
-$composePath = Join-Path $opsDirectory "compose.benchmark.yaml"
-$envFile = Join-Path $opsDirectory ".env.benchmark"
+$repositoryRoot = Get-HydraRepositoryRoot
 if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
   $LogDirectory = Join-Path $repositoryRoot ".ingest-logs"
 }
@@ -81,60 +52,14 @@ function Convert-DockerMemoryToBytes {
   return [Int64] ([decimal] $Matches.number * $factor)
 }
 
-function Get-HydraContainerId {
-  $found = @(
-    @(& docker ps --filter "label=com.docker.compose.project=palimpsest-hydradb-benchmark" `
-        --filter "label=com.docker.compose.service=hydradb" --format "{{.ID}}") |
-      ForEach-Object { ([string] $_).Trim() } | Where-Object { $_.Length -gt 0 }
-  )
-  if ($found.Count -ne 1) { return $null }
-  return $found[0]
-}
-
-function Restart-HydraForIngest {
-  param([switch] $Force)
-
-  # The two phase-selected settings, every cycle. A node brought up without them
-  # would ingest with the read cache on, which is the configuration that took
-  # RSS up ~2 GiB a minute during writes.
-  $env:PALIMPSEST_HYDRADB_READ_CACHE = if ($ReadCache -eq "on") { "true" } else { "false" }
-  $env:PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS = "120000"
-  & docker compose --project-directory $opsDirectory --env-file $envFile -f $composePath up -d hydradb | Out-Null
-
-  # `compose up -d` on a service whose configuration has not changed is a no-op,
-  # which would make every cycle after the first restart nothing at all -- the
-  # one thing this script exists to do. So the process is restarted explicitly.
-  # `docker restart` and not `--force-recreate`: recreating would give the
-  # container a new id, which the capacity gate watching alongside resolved once
-  # at startup, and would reapply the Compose `mem_limit` over any live
-  # `docker update`.
-  if ($Force) {
-    $existing = Get-HydraContainerId
-    if ($null -ne $existing) {
-      # SIGTERM and wait: the writer lease is only released cleanly on a
-      # graceful stop, and a node killed mid-write comes back permanently
-      # read-only on this object store (CONTEXT.md, writer lease).
-      & docker restart --time 30 $existing | Out-Null
-    }
-  }
-
-  for ($i = 0; $i -lt 60; $i++) {
-    try {
-      $response = Invoke-WebRequest -Uri "http://127.0.0.1:29090/readyz" -TimeoutSec 5 -UseBasicParsing
-      if ($response.StatusCode -eq 200) { return $true }
-    } catch {
-      Start-Sleep -Seconds 2
-    }
-  }
-  return $false
-}
+$readCacheSetting = if ($ReadCache -eq "on") { "true" } else { "false" }
 
 $startedAt = Get-Date
 for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
-  # The first cycle takes the node as it finds it; every later one is a cycle
-  # *because* the previous one hit the memory ceiling, so it must restart.
-  $ready = if ($cycle -eq 1) { Restart-HydraForIngest } else { Restart-HydraForIngest -Force }
-  if (-not $ready) {
+  # Cycle 1 takes the node as found; every later cycle exists because the
+  # previous one hit the ceiling, so it restarts.
+  $node = Set-HydraPhase -Phase ingest -ReadCache $readCacheSetting -Restart:($cycle -gt 1) -TimeoutSeconds 120
+  if (-not $node.ready) {
     Write-Output "cycle $cycle : node did not become ready; stopping"
     exit 1
   }
@@ -165,10 +90,8 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
     $used = Convert-DockerMemoryToBytes -Value (([string] $usage[0]).Split("/")[0].Trim())
     if ($used -ge $ceiling) {
       Write-Output ("cycle {0} : {1:n0} bytes >= ceiling, stopping the ingest and cycling the node" -f $cycle, $used)
-      # The ingest is killed, not the node: a user interrupted mid-write
-      # completes on the next pass because every write is a content-addressed
-      # MERGE, and stopping the *writer* first means the node shuts down with no
-      # statement in flight and releases its writer lease cleanly.
+      # The writer is stopped first so the node has no statement in flight
+      # and releases its writer lease cleanly.
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
       $cycledForMemory = $true
       break
@@ -180,7 +103,7 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
   foreach ($line in $tail) { Write-Output "  | $line" }
 
   if (-not $cycledForMemory) {
-    # The ingest ran to completion. `wall clock` is the last line it prints.
+    # `wall clock` is the last line ingest-slice prints on completion.
     if (($tail -join "`n") -match "wall clock") {
       $elapsed = ((Get-Date) - $startedAt).TotalMinutes
       Write-Output ("done after {0} cycle(s), {1:n1} min" -f $cycle, $elapsed)

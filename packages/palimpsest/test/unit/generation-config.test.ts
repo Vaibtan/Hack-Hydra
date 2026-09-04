@@ -1,7 +1,4 @@
-import {
-  LOCAL_GENERATION_COMPONENTS,
-  makeIngestGenerationConfig
-} from "../../src/index.js"
+import { LOCAL_GENERATION_COMPONENTS, makeIngestGenerationConfig } from "../../src/GenerationConfig.js"
 import { describe, expect, it } from "vitest"
 
 const input = {

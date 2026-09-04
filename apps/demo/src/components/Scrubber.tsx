@@ -9,18 +9,6 @@ export interface TrajectoryStep {
   readonly changed: boolean
 }
 
-/**
- * The as-of scrubber.
- *
- * As-of is **data-level**: `session_ord ≤ k` on claims and `at_session ≤ k` on
- * supersession edges. Two integer comparisons. There is no snapshot, no branch,
- * and no second copy of the graph — HydraDB's bookmarks are causal floors, not
- * time travel, and this could not be built on them.
- *
- * The property that has to be earned is the *first* one: before a fact was ever
- * stated, the memory says so, rather than leaking a value it will only learn
- * later. Running the trajectory is what shows that.
- */
 export const Scrubber = ({
   uid,
   question,

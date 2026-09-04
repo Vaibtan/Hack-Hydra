@@ -7,42 +7,18 @@ import {
 } from "@palimpsest/hydra"
 import { Effect } from "effect"
 import { claimKind, slotKey, tokenKey } from "./Keys.js"
+import { middleEntityNames, reachedRows, slotFills } from "./Rows.js"
 import { scoreReached, type ReachedClaim } from "./Scoring.js"
 import { stems } from "./Tokenize.js"
 import type { Probe, SubQuestion } from "./Understand.js"
 
-/**
- * Several deterministic ways to reach a claim, unioned into one candidate set.
- *
- * v1 had one arm — the convergence walk — and one widening lever, the slot
- * expansion behind it. That shape loses a question whose second fact nothing
- * lexical reaches: "how many years older is my grandma" converges hard on the
- * grandma claim and never touches `(me, age)`, which is one indexed read away.
- *
- * So candidates come from arms that ask different questions of the same graph,
- * and the union records *which* arm reached each claim. That provenance is not
- * decoration: it is what the union cap sorts by, what the receipt shows, and
- * what the error-class table needs to say whether a miss was retrieval's or
- * selection's.
- */
-
-/**
- * The kinds of arm, in the order the union cap prefers them.
- *
- * A probe hit is an `(entity, attribute)` the question named outright, so it is
- * the most direct evidence there is. A sub-question walk asked something the
- * question actually contains. The convergence walk is the general case.
- * Discovery guessed, from terms the first walk turned up. A slot-mate was not
- * reached by anything — it came along because a candidate filled its slot — and
- * v1 already treats it that way.
- */
+/** The kinds of arm, in the order the union cap prefers them. */
 export const ARM_PRIORITY = ["probe", "subQuestion", "convergence", "discovery", "slotMate"] as const
 
 export type ArmKind = (typeof ARM_PRIORITY)[number]
 
 export interface ArmResult {
   readonly kind: ArmKind
-  /** The arm's own label, e.g. `convergence` or `probe:me|age`, for the receipt. */
   readonly label: string
   readonly claims: ReadonlyArray<ReachedClaim>
 }
@@ -54,35 +30,15 @@ export interface Candidate extends ReachedClaim {
   readonly kind: ArmKind
 }
 
-/**
- * How many claims survive the union.
- *
- * The selector reads this table, so it is a prompt budget rather than a recall
- * one: 120 rows of id, index text, date, speaker and status is a few thousand
- * tokens, and past that the listwise call starts losing rows in the middle.
- */
 export const UNION_CAP = 120
 
-/**
- * How many claims one *walking* arm may contribute.
- *
- * A convergence walk over a broad question returns hundreds of claims with a
- * long tail of convergence-1 rows that no selector will keep and every one of
- * which costs a place in the union. Sixty is the point past which the tail is
- * all noise on the dev questions; the probe and slot-mate arms have no cap here
- * because their own reads are already bounded by the Slots they name.
- *
- * It is applied **inside** `unionArms`, after the as-of cut and before the
- * union cap — a per-arm cap in the arm itself would be exactly the
- * cap-before-as-of defect this module exists to fix.
- */
+/** Per walking arm, applied inside `unionArms` after the as-of cut. */
 export const ARM_CAP = 60
 
 const CAPPED_KINDS: ReadonlyArray<ArmKind> = ["convergence", "subQuestion", "discovery"]
 
 export interface UnionReport {
   readonly candidates: ReadonlyArray<Candidate>
-  /** Claims the cap removed, most-preferred first, for the receipt. */
   readonly dropped: ReadonlyArray<Candidate>
   /** Per-arm counts after the as-of cut, before the union cap. */
   readonly counts: Readonly<Record<string, number>>
@@ -90,21 +46,7 @@ export interface UnionReport {
 
 const priorityOf = (kind: ArmKind): number => ARM_PRIORITY.indexOf(kind)
 
-/**
- * Unions the arms by claim key.
- *
- * **The as-of cut happens here, before any cap** — every arm's claims are
- * filtered to `session_ord ≤ k` first. v1 got this wrong in one place: Query
- * 2's slot-mates were cut to 40 *before* `applyAsOf`, so post-`k` claims
- * consumed the budget and were then discarded, and the scrubber lost recall at
- * every position but the last. v1 is left as it is so the paired comparison is
- * against the shipped behaviour; this is the version that does not.
- *
- * A claim several arms reached keeps the best of each: the lowest arm
- * priority, the highest convergence and score, the shortest path. A probe hit
- * that the convergence walk also found is still a probe hit, and still carries
- * the convergence that walk measured.
- */
+/** Unions the arms by claim key: as-of cut, then the arm cap, then the union cap. */
 export const unionArms = (
   arms: ReadonlyArray<ArmResult>,
   options: { readonly asOf?: number; readonly cap?: number; readonly armCap?: number } = {}
@@ -119,9 +61,6 @@ export const unionArms = (
       options.asOf === undefined
         ? arm.claims
         : arm.claims.filter((claim) => claim.sessionOrd <= options.asOf!)
-    // As-of first, then the arm's own cap, then the union cap. Each cut is over
-    // what the previous one left, so no budget is ever spent on a claim from
-    // after `k` and then thrown away.
     const capped = CAPPED_KINDS.includes(arm.kind)
       ? [...visible]
           .sort(
@@ -166,17 +105,7 @@ export const unionArms = (
   }
 }
 
-// ------------------------------------------------------------ the live arms
 
-/**
- * Query 1's shape, shared by every arm that walks from anchors.
- *
- * A constant-valued target selector (`Claim.kind`) is what makes an `MSpaths`
- * walk return *every* source→target pair rather than one path per source, and
- * it is also an order of magnitude faster than raising `pathCount` — see the
- * engine table in CONTEXT.md. Every arm below reuses it, so a sub-question walk
- * costs exactly what the primary walk costs.
- */
 export const convergenceConfig = (
   uid: string,
   terms: ReadonlyArray<string>,
@@ -193,31 +122,77 @@ export const convergenceConfig = (
   maxLen
 })
 
-/** One arm's reads, with the query it ran, for the receipt. */
+/** The `Slot <-FILLS- Claim` walk every Slot read shares: probes, slot-mates and the warm. */
+export const SLOT_CLAIMS_WALK = {
+  sourceLabel: "Slot",
+  sourceProperty: "skey",
+  relTypes: ["FILLS"],
+  relDirection: "incoming"
+} as const
+
+export const slotClaimsConfig = (uid: string, skeys: ReadonlyArray<string>): MsPathsConfig => ({
+  ...SLOT_CLAIMS_WALK,
+  sourceValues: skeys,
+  targetLabel: "Claim",
+  targetProperty: "kind",
+  targetValues: [claimKind(uid)],
+  maxLen: 1
+})
+
+const candidateSlotsConfig = (ckeys: ReadonlyArray<string>): MsPathsConfig => ({
+  sourceLabel: "Claim",
+  sourceProperty: "ckey",
+  sourceValues: ckeys,
+  relTypes: ["FILLS"],
+  relDirection: "outgoing",
+  maxLen: 1
+})
+
+/** One arm's read, with the query it ran for the receipt. `rawPaths` never leaves memory. */
 export interface LiveArm extends ArmResult {
   readonly query: string | null
   readonly paths: number
-  /**
-   * The walk's paths, unscored. In memory only — never in a receipt.
-   *
-   * The discovery arm seeds itself from the *entities* a two-hop path passed
-   * through, which `scoreReached` throws away when it folds a path set down to
-   * one row per claim. Re-reading them would be a second identical round trip,
-   * so the walk that already has them hands them on.
-   */
   readonly rawPaths: ReadonlyArray<HydraPath>
+  /** The arm exceeded its read ceiling and was reported empty rather than thrown. */
+  readonly timedOut: boolean
 }
 
-const emptyArm = (kind: ArmKind, label: string): LiveArm => ({
+export const emptyArm = (kind: ArmKind, label: string, timedOut = false): LiveArm => ({
   kind,
   label,
   claims: [],
   query: null,
   paths: 0,
-  rawPaths: []
+  rawPaths: [],
+  timedOut
 })
 
-/** The convergence walk: today's Query 1, widened for the selector. */
+/** Scored with zero anchors: the claim was named or pulled in by its Slot, not converged on. */
+export const withoutConvergence = (claim: ReachedClaim): ReachedClaim => ({
+  ...claim,
+  anchors: [],
+  convergence: 0,
+  score: 0
+})
+
+export const walkArm = (
+  hydra: HydraClient,
+  kind: ArmKind,
+  label: string,
+  config: MsPathsConfig,
+  total: number,
+  score: (claim: ReachedClaim) => ReachedClaim = (claim) => claim
+): Effect.Effect<LiveArm, HydraError> =>
+  Effect.map(hydra.msPaths(config), (paths) => ({
+    kind,
+    label,
+    claims: scoreReached(reachedRows(paths), total).map(score),
+    query: renderMsPathsQuery(config).query,
+    paths: paths.length,
+    rawPaths: paths,
+    timedOut: false
+  }))
+
 export const convergenceArm = (
   hydra: HydraClient,
   uid: string,
@@ -225,27 +200,10 @@ export const convergenceArm = (
   total: number,
   maxLen: number
 ): Effect.Effect<LiveArm, HydraError> =>
-  Effect.gen(function* () {
-    if (terms.length === 0) return emptyArm("convergence", "convergence")
-    const config = convergenceConfig(uid, terms, maxLen)
-    const paths = yield* hydra.msPaths(config)
-    return {
-      kind: "convergence",
-      label: "convergence",
-      claims: scoreReached(paths, total),
-      query: renderMsPathsQuery(config).query,
-      paths: paths.length,
-      rawPaths: paths
-    }
-  })
+  terms.length === 0
+    ? Effect.succeed(emptyArm("convergence", "convergence"))
+    : walkArm(hydra, "convergence", "convergence", convergenceConfig(uid, terms, maxLen), total)
 
-/**
- * A sub-question's own convergence walk.
- *
- * The terms come from the Understand call, which returns them *with* each
- * sub-question — so decomposing a question costs no extra LLM round trip, only
- * an extra graph read that runs beside the others.
- */
 export const subQuestionArm = (
   hydra: HydraClient,
   uid: string,
@@ -254,86 +212,30 @@ export const subQuestionArm = (
   total: number,
   maxLen: number
 ): Effect.Effect<LiveArm, HydraError> =>
-  Effect.gen(function* () {
-    const label = `sub:${index}`
-    if (sub.terms.length === 0) return emptyArm("subQuestion", label)
-    const config = convergenceConfig(uid, sub.terms, maxLen)
-    const paths = yield* hydra.msPaths(config)
-    return {
-      kind: "subQuestion",
-      label,
-      claims: scoreReached(paths, total),
-      query: renderMsPathsQuery(config).query,
-      paths: paths.length,
-      rawPaths: paths
-    }
-  })
+  sub.terms.length === 0
+    ? Effect.succeed(emptyArm("subQuestion", `sub:${index}`))
+    : walkArm(hydra, "subQuestion", `sub:${index}`, convergenceConfig(uid, sub.terms, maxLen), total)
 
-/**
- * A Slot read for an `(entity, attribute)` the question named outright.
- *
- * This is the arm that answers "how many years older is my grandma than me":
- * nothing lexical reaches the `(me, age)` claim, and it is one indexed read
- * away. A Slot that does not exist is an empty arm, not an error — the model
- * proposes the pair, the graph decides whether it is there.
- *
- * The claims come back scored with **zero** anchors, exactly as v1's slot-mates
- * do: they did not converge, they were named. The union's arm priority is what
- * keeps them, not a score they did not earn.
- */
+export const probeLabel = (probe: Probe): string => `probe:${probe.entityCanon}|${probe.attr}`
+
 export const probeArm = (
   hydra: HydraClient,
   uid: string,
   probe: Probe,
   total: number
 ): Effect.Effect<LiveArm, HydraError> =>
-  Effect.gen(function* () {
-    const label = `probe:${probe.entityCanon}|${probe.attr}`
-    const config: MsPathsConfig = {
-      sourceLabel: "Slot",
-      sourceProperty: "skey",
-      sourceValues: [slotKey(uid, probe.entityCanon, probe.attr)],
-      targetLabel: "Claim",
-      targetProperty: "kind",
-      targetValues: [claimKind(uid)],
-      relTypes: ["FILLS"],
-      relDirection: "incoming",
-      maxLen: 1
-    }
-    const paths = yield* hydra.msPaths(config)
-    return {
-      kind: "probe",
-      label,
-      claims: scoreReached(paths, total).map((claim) => ({
-        ...claim,
-        anchors: [],
-        convergence: 0,
-        score: 0
-      })),
-      query: renderMsPathsQuery(config).query,
-      paths: paths.length,
-      rawPaths: paths
-    }
-  })
+  walkArm(
+    hydra,
+    "probe",
+    probeLabel(probe),
+    slotClaimsConfig(uid, [slotKey(uid, probe.entityCanon, probe.attr)]),
+    total,
+    withoutConvergence
+  )
 
-/** How many terms the discovery walk may seed itself with. */
 export const MAX_DISCOVERY_SEEDS = 20
 
-/**
- * Terms to try that the question did not supply, from what the first walk found.
- *
- * Two sources, both deterministic and both free of another LLM call: the
- * **entities** a two-hop path passed through — `Token→Entity→Claim` means that
- * Entity is a name the question's own words reached — and terms from the top
- * candidates' index text.
- *
- * Ranked by *rarity within the candidate set*: a term in one of the top ten
- * candidates discriminates between them, a term in nine does not. That is an
- * idf-shaped signal computable from what is already in hand. The spec asks for
- * idf from the Token `df`, which `Scoring` reads only for terms that were
- * already anchors — and a term that was already an anchor discovers nothing.
- * The deviation is here rather than hidden.
- */
+/** Terms the question did not supply, ranked by rarity within the top candidates. */
 export const discoverySeeds = (
   paths: ReadonlyArray<HydraPath>,
   top: ReadonlyArray<ReachedClaim>,
@@ -341,11 +243,7 @@ export const discoverySeeds = (
 ): ReadonlyArray<string> => {
   const seeds = new Map<string, number>()
 
-  for (const path of paths) {
-    if (path.nodes.length !== 3) continue
-    const middle = path.nodes[1]
-    const name = String(middle?.properties["name"] ?? "")
-    if (name === "") continue
+  for (const name of middleEntityNames(paths)) {
     for (const s of stems(name)) {
       if (!alreadyAnchors.has(s)) seeds.set(s, 0)
     }
@@ -368,7 +266,6 @@ export const discoverySeeds = (
     .map(([term]) => term)
 }
 
-/** One more convergence walk, from terms the question never said. */
 export const discoveryArm = (
   hydra: HydraClient,
   uid: string,
@@ -376,50 +273,16 @@ export const discoveryArm = (
   total: number,
   maxLen: number
 ): Effect.Effect<LiveArm, HydraError> =>
-  Effect.gen(function* () {
-    if (seeds.length === 0) return emptyArm("discovery", "discovery")
-    const config = convergenceConfig(uid, seeds, maxLen)
-    const paths = yield* hydra.msPaths(config)
-    return {
-      kind: "discovery",
-      label: "discovery",
-      // Scored, but never allowed to outrank a claim the question's own words
-      // reached: the union's arm priority puts discovery below convergence.
-      claims: scoreReached(paths, total),
-      query: renderMsPathsQuery(config).query,
-      paths: paths.length,
-      rawPaths: paths
-    }
-  })
+  seeds.length === 0
+    ? Effect.succeed(emptyArm("discovery", "discovery"))
+    : walkArm(hydra, "discovery", "discovery", convergenceConfig(uid, seeds, maxLen), total)
 
-/**
- * How many slot-mates one Slot may contribute to the evidence.
- *
- * v1 had no per-slot bound, so the forty newest slot-mates could all come from
- * a single frequently-restated Slot — `(me, weight)` on a user who logs it
- * weekly — and the other Slots the question actually reached contributed
- * nothing at all.
- */
+
+export const MAX_SLOT_EXPANSION = 40
+
 export const MAX_SLOT_MATES_PER_SLOT = 5
 
-/**
- * The slot-mate arm's grouping rule, as a function of what came back.
- *
- * Three things happen here and the order of them is the whole rule:
- *
- * 1. **Newest first.** A slot-mate exists so a knowledge-update question can
- *    see the value that was replaced; taking the oldest five of a long history
- *    would show the reader the least relevant end of it.
- * 2. **Skip what an arm already reached.** A claim the convergence walk found
- *    earned its place through the question's own words; letting it in again as
- *    a slot-mate would spend the allowance twice on one claim.
- * 3. **At most five per Slot, then at most `MAX_SLOT_EXPANSION` overall.** The
- *    per-Slot bound is what spreads the budget across the Slots the candidates
- *    named instead of letting one broad Slot take all of it.
- *
- * `ckey` breaks every ordering tie, so the same node state produces the same
- * evidence in the same order on a replay.
- */
+/** Newest first, skipping what an arm already reached, at most five per Slot and `overallCap` overall. */
 export const groupSlotMates = (
   claims: ReadonlyArray<ReachedClaim>,
   slotOf: ReadonlyMap<string, string>,
@@ -431,9 +294,6 @@ export const groupSlotMates = (
   const perSlot = new Map<string, Array<ReachedClaim>>()
   for (const claim of [...claims].sort(newestFirst)) {
     if (alreadyReached.has(claim.ckey)) continue
-    // A claim whose Slot the `FILLS` walk did not return is grouped under `""`.
-    // It is one bucket rather than one bucket each, on purpose: an unknown Slot
-    // is exactly the case where a long history could take the whole allowance.
     const slot = slotOf.get(claim.ckey) ?? ""
     const bucket = perSlot.get(slot) ?? []
     if (bucket.length >= MAX_SLOT_MATES_PER_SLOT) continue
@@ -442,3 +302,73 @@ export const groupSlotMates = (
   }
   return [...perSlot.values()].flat().sort(newestFirst).slice(0, overallCap)
 }
+
+export interface SlotMateArm extends LiveArm {
+  /** Which Slot each claim fills: every candidate the `FILLS` walk resolved, plus every slot-mate read. */
+  readonly slotOf: ReadonlyMap<string, string>
+}
+
+/** Wraps one stage's read: the caller's timing and read ceiling. */
+export type StageGuard = <A>(
+  stage: string,
+  effect: Effect.Effect<A, HydraError>
+) => Effect.Effect<A, HydraError>
+
+/** Two reads (`slotKeys`, `slotClaims`); a `HydraLimitError` in either degrades to an empty arm marked `timedOut`. */
+export const slotMateArm = (
+  hydra: HydraClient,
+  uid: string,
+  candidates: ReadonlyArray<ReachedClaim>,
+  alreadyReached: ReadonlySet<string>,
+  total: number,
+  guard: StageGuard
+): Effect.Effect<SlotMateArm, HydraError> =>
+  Effect.gen(function* () {
+    const expansion = yield* Effect.either(
+      Effect.gen(function* () {
+        const fills = yield* guard(
+          "slotKeys",
+          candidates.length === 0
+            ? Effect.succeed([])
+            : Effect.map(
+                hydra.msPaths(candidateSlotsConfig(candidates.map((claim) => claim.ckey))),
+                slotFills
+              )
+        )
+        const skeys = [...new Set(fills.map((fill) => fill.skey))].sort()
+        const candidateSlotOf = new Map(
+          fills.filter((fill) => fill.ckey !== "").map((fill) => [fill.ckey, fill.skey] as const)
+        )
+        const config = slotClaimsConfig(uid, skeys)
+        const paths = yield* guard(
+          "slotClaims",
+          skeys.length === 0 ? Effect.succeed([]) : hydra.msPaths(config)
+        )
+        const slotOf = new Map(
+          slotFills(paths)
+            .filter((fill) => fill.ckey !== "")
+            .map((fill) => [fill.ckey, fill.skey] as const)
+        )
+        const arm: LiveArm = {
+          kind: "slotMate",
+          label: "slotMate",
+          claims: scoreReached(reachedRows(paths), total).map(withoutConvergence),
+          query: skeys.length === 0 ? null : renderMsPathsQuery(config).query,
+          paths: paths.length,
+          rawPaths: [],
+          timedOut: false
+        }
+        return { candidateSlotOf, arm, slotOf }
+      })
+    )
+    if (expansion._tag === "Left") {
+      if (expansion.left._tag !== "HydraLimitError") return yield* Effect.fail(expansion.left)
+      return { ...emptyArm("slotMate", "slotMate", true), slotOf: new Map<string, string>() }
+    }
+    const { candidateSlotOf, arm, slotOf } = expansion.right
+    return {
+      ...arm,
+      claims: groupSlotMates(arm.claims, slotOf, alreadyReached, MAX_SLOT_EXPANSION),
+      slotOf: new Map([...candidateSlotOf, ...slotOf])
+    }
+  })

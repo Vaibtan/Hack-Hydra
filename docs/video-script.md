@@ -119,12 +119,13 @@ Ask *"Where do I live?"*
 
 Click **Ask 8 times** in the determinism panel.
 
-> Eight runs, one hash. The hash is sha256 over the sorted claim keys of the evidence set, so this
-> says retrieval is deterministic **given a fixed graph** — two bounded MSpaths calls and pure
-> scoring, no sampling.
+> Eight runs, one hash. The hash is sha256 over the sorted span tuples of the evidence set, and
+> every model decision on the read path is cached by content hash, so this says retrieval is
+> **replay-deterministic**: fixed graph plus fixed cache, byte-identical answer and receipt.
 >
-> Extraction is *not* deterministic; it is a model call. What makes a whole benchmark run
-> reproducible is the on-disk cache, not the graph. Both halves of that are in the writeup.
+> The first run's selection is model-dependent, and extraction is a model call too. What makes a
+> whole benchmark run reproducible is the on-disk cache, not the graph. Both halves of that are
+> in the writeup.
 
 ## 4:20 — 4:50 · The numbers
 

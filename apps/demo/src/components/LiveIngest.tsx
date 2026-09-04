@@ -1,19 +1,6 @@
 import { useState } from "react"
 import { api, type IngestResult } from "../api"
 
-/**
- * Live ingest.
- *
- * A session typed here goes through exactly the path the benchmark takes:
- * transcript written verbatim, one extraction call, canon reconciliation
- * against what this user's graph already holds, claims/entities/slots/tokens
- * and their edges, then the supersession pass over the slots it touched. The
- * ask that follows carries HydraDB's causal bookmark, so it sees this write
- * even when the read lands on a different server process.
- *
- * It is the one slow thing in the demo (an extraction and a supersession call,
- * a few seconds), so it shows progress rather than freezing.
- */
 
 const PLACEHOLDER = `user: I moved again last week — I'm in Lisbon now, not Berlin.
 assistant: Lisbon is a big change from Berlin. How are you finding it?
@@ -29,11 +16,6 @@ const today = (): string => {
   )
 }
 
-/**
- * `user:` / `assistant:` prefixes, one turn per line, because the demo needs a
- * multi-turn session typed in seconds. A line without a prefix continues the
- * turn above it.
- */
 export const parseTurns = (
   text: string
 ): ReadonlyArray<{ readonly role: "user" | "assistant"; readonly content: string }> => {

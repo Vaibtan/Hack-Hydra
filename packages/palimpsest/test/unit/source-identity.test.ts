@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-  canonicalSessionSource,
-  createExtractionGeneration,
-  parseExtractionGeneration,
-  sourceRevisionInputForSession
-} from "../../src/index.js"
+import { canonicalSessionSource, createExtractionGeneration, parseExtractionGeneration, sourceRevisionInputForSession } from "../../src/SourceIdentity.js"
 
 const session = {
   sid: "source-session",

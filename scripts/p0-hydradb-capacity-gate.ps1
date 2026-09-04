@@ -21,6 +21,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot "lib/hydra.psm1") -Force
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $profilePath = Join-Path $repositoryRoot "ops/hydradb/benchmark-profile.v1.json"
@@ -63,27 +64,11 @@ function Convert-DockerMemoryToBytes {
   return [Int64] ([decimal] $Matches.number * $factor)
 }
 
-function Find-BenchmarkHydraContainer {
-  # `@(...)` wraps the *whole* pipeline: a one-container result would otherwise
-  # come back as a bare string, which has no `.Count` under StrictMode — and one
-  # container is the case this gate exists for. The variable is not named
-  # `$matches` because that is the automatic variable `-match` writes to, which
-  # `Convert-DockerMemoryToBytes` reads.
-  $found = @(
-    @(
-      & docker ps --filter "label=com.docker.compose.project=palimpsest-hydradb-benchmark" `
-        --filter "label=com.docker.compose.service=hydradb" --format "{{.ID}}"
-    ) | ForEach-Object { ([string] $_).Trim() } | Where-Object { $_.Length -gt 0 }
-  )
-  Assert-LastDockerCommand -Operation "find benchmark HydraDB container"
-  if ($found.Count -ne 1) {
-    throw "Expected exactly one running benchmark HydraDB container, found $($found.Count)"
-  }
-  return $found[0]
-}
-
 if ([string]::IsNullOrWhiteSpace($ContainerId)) {
-  $ContainerId = Find-BenchmarkHydraContainer
+  $ContainerId = Get-HydraContainerId
+  if ($null -eq $ContainerId) {
+    throw "Expected exactly one running benchmark HydraDB container"
+  }
 }
 
 $container = (& docker inspect $ContainerId | ConvertFrom-Json)[0]

@@ -1,22 +1,7 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform"
 import { Schema } from "effect"
 
-/**
- * The HTTP surface, defined once as schemas so the demo and the smoke script
- * share the *types* with the server rather than re-declaring them.
- *
- * The shapes here are deliberately the library's own vocabulary — verdict,
- * receipt, span, chain — because the demo's whole job is to show those. An API
- * that flattened a receipt into a "score" would make the thing being
- * demonstrated unshowable.
- */
-
-// ---- errors -----------------------------------------------------------------
-
-/**
- * The graph is unreachable, over its limits, or refused the statement. Surfaced
- * with the engine's own reason text, which is precise and worth propagating.
- */
+/** The graph is unreachable, over its limits, or refused the statement. */
 export class GraphError extends Schema.TaggedError<GraphError>()(
   "GraphError",
   { reason: Schema.String },
@@ -30,25 +15,18 @@ export class NotFound extends Schema.TaggedError<NotFound>()(
   HttpApiSchema.annotations({ status: 404 })
 ) {}
 
-/** The request was well-formed but asks for something impossible. */
 export class BadRequest extends Schema.TaggedError<BadRequest>()(
   "BadRequest",
   { reason: Schema.String },
   HttpApiSchema.annotations({ status: 400 })
 ) {}
 
-// ---- shared shapes ----------------------------------------------------------
-
 export const Highlight = Schema.Struct({
   start: Schema.Number,
   end: Schema.Number
 })
 
-/**
- * One piece of evidence: verbatim turn text with the Span located inside it.
- * The reader never sees a Claim's text and neither does the UI — `excerpt` is
- * the transcript, and `highlight` says which characters the graph pointed at.
- */
+/** Verbatim turn text with the Span located inside it; never a Claim's text. */
 export const EvidenceSpan = Schema.Struct({
   ckey: Schema.String,
   id: Schema.String,
@@ -70,7 +48,6 @@ export const ConvergenceRow = Schema.Struct({
   anchors: Schema.Array(Schema.String)
 })
 
-/** Serializable scalar parameters for the Hydra-specific diagnostic rendering. */
 export const QueryParameters = Schema.Record({
   key: Schema.String,
   value: Schema.Union(Schema.String, Schema.Number)
@@ -80,8 +57,6 @@ export const QueryParameters = Schema.Record({
 export const Receipt = Schema.Struct({
   question: Schema.String,
   uid: Schema.String,
-  /** Which read path answered: the shipped `v1`, or the `v2` retrieval plan. */
-  pipeline: Schema.Literal("v1", "v2"),
   profile: Schema.Literal("full", "fast"),
   asOf: Schema.NullOr(Schema.Number),
   anchorTerms: Schema.Array(Schema.String),
@@ -97,10 +72,6 @@ export const Receipt = Schema.Struct({
   query1Paths: Schema.Number,
   query2: Schema.NullOr(Schema.String),
   query2Paths: Schema.Number,
-  /**
-   * The read path's three model ids. `pipeline` says which were called: v1 uses
-   * `reader` alone, v2 uses all three.
-   */
   models: Schema.Struct({
     reader: Schema.String,
     select: Schema.String,
@@ -109,18 +80,11 @@ export const Receipt = Schema.Struct({
   convergence: Schema.Array(ConvergenceRow)
 })
 
+export const ArmKind = Schema.Literal("probe", "subQuestion", "convergence", "discovery", "slotMate")
 
-/**
- * The v2 plan, as the demo renders it: route -> arms -> scope -> select ->
- * sufficiency -> read, each with what it decided.
- *
- * Null on v1, which has no plan. The panel therefore has to handle its absence
- * rather than assuming it — a demo that only works on v2 would quietly stop
- * being able to show the comparison the whole talk is about.
- */
 export const PlanArm = Schema.Struct({
   label: Schema.String,
-  kind: Schema.String,
+  kind: ArmKind,
   claims: Schema.Number,
   paths: Schema.Number,
   query: Schema.NullOr(Schema.String),
@@ -137,37 +101,46 @@ export const PlanTimeScope = Schema.Struct({
 
 export const PlanSelection = Schema.Struct({
   kept: Schema.Array(Schema.String),
-  dropped: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
+  dropped: Schema.Array(
+    Schema.Struct({ id: Schema.String, reason: Schema.Literal("selector", "turn_cap") })
+  ),
   reasons: Schema.Record({ key: Schema.String, value: Schema.String }),
   fallback: Schema.Boolean
 })
 
 export const PlanSufficiency = Schema.Struct({
-  /** `EXACT` / `INFERRABLE` / `PARTIAL`, or `skipped` when the call never ran. */
-  tier: Schema.String,
+  /** `skipped` when the check never ran. */
+  tier: Schema.Literal("EXACT", "INFERRABLE", "PARTIAL", "skipped"),
   missing: Schema.String,
   premise: Schema.String,
-  /** Excerpt ids the check cited, after the CURRENT-and-in-pack verification. */
+  /** Excerpt ids the check cited that are in the pack and CURRENT. */
   premiseContradictedBy: Schema.Array(Schema.String),
   secondPass: Schema.Boolean
 })
 
-/**
- * What the token budget cost. Ids and reasons, not a count: a count says how
- * many excerpts went and not which, or why.
- */
 export const PlanBudget = Schema.Struct({
   budget: Schema.Number,
   estimatedTokens: Schema.Number,
   charsPerToken: Schema.Number,
   dropped: Schema.Array(
-    Schema.Struct({ id: Schema.String, reason: Schema.String, chars: Schema.Number })
+    Schema.Struct({ id: Schema.String, reason: Schema.Literal("budget"), chars: Schema.Number })
   ),
   overBudget: Schema.Boolean
 })
 
+export const Route = Schema.Literal(
+  "fact",
+  "preference",
+  "assistant_output",
+  "update",
+  "count",
+  "temporal",
+  "multi_fact"
+)
+
+/** What each stage decided, with its wall time. */
 export const RetrievalPlan = Schema.Struct({
-  route: Schema.String,
+  route: Route,
   routeReason: Schema.String,
   flags: Schema.Array(Schema.String),
   subQuestions: Schema.Array(Schema.String),
@@ -178,13 +151,12 @@ export const RetrievalPlan = Schema.Struct({
   timeScope: PlanTimeScope,
   selection: PlanSelection,
   sufficiency: PlanSufficiency,
-  /** Null when the ask abstained before anything was packed. */
-  budget: Schema.NullOr(PlanBudget),
+  budget: PlanBudget,
   intervalSentence: Schema.NullOr(Schema.String),
-  /** Per-stage wall time. Concurrent stages overlap, so these do not sum. */
+  /** Per-stage wall time; concurrent stages overlap, so these do not sum. */
   stages: Schema.Record({ key: Schema.String, value: Schema.Number }),
   askMs: Schema.Number,
-  /** The HydraDB stages alone, so the index has an honest number of its own. */
+  /** The HydraDB stages alone. */
   graphMs: Schema.Number
 })
 
@@ -197,36 +169,34 @@ export const AskRequest = Schema.Struct({
   /** Read the memory as it stood at session `k`. */
   asOf: Schema.optional(Schema.Number),
   historical: Schema.optional(Schema.Boolean),
-  /** Skip the reader and return the structural verdict and evidence only. */
+  /** Skip the pack and the reader: the retrieval verdict, plan and hydrated evidence only. */
   retrieveOnly: Schema.optional(Schema.Boolean),
-  premiseCheck: Schema.optional(Schema.Boolean),
-  /** `v1` is the shipped path; `v2` is the retrieval plan. Defaults to `v1`. */
-  pipeline: Schema.optional(Schema.Literal("v1", "v2")),
-  /** `fast` drops the sufficiency check and its second pass. Defaults to `full`. */
+  /** `fast` drops the sufficiency check and its second pass. Defaults to `fast`. */
   profile: Schema.optional(Schema.Literal("full", "fast"))
 })
 
+export const AbstentionReason = Schema.Literal(
+  "A1_no_anchors",
+  "A2_no_convergence",
+  "INSUFFICIENT_EVIDENCE",
+  "CONTRADICTED_PREMISE"
+)
+
 export const AskResponse = Schema.Struct({
   verdict: Schema.Literal("ANSWER", "ABSENT"),
-  /** `A1_no_anchors` / `A2_no_convergence`, or null when the verdict is ANSWER. */
-  reason: Schema.NullOr(Schema.String),
+  reason: Schema.NullOr(AbstentionReason),
   answer: Schema.NullOr(Schema.String),
-  /** The reader declined — the third abstention line, distinct from A1/A2. */
+  /** The reader declined: distinct from a structural ABSENT. */
   notInMemory: Schema.Boolean,
   reasoning: Schema.String,
   citedIds: Schema.Array(Schema.String),
-  premiseSupported: Schema.NullOr(Schema.Boolean),
-  premiseNote: Schema.String,
   evidence: Schema.Array(EvidenceSpan),
   receipt: Receipt,
-  /** The v2 plan, or null on v1 — which has no plan to show. */
-  plan: Schema.NullOr(RetrievalPlan),
-  /** sha256 over the sorted evidence keys. Same graph, same question, same hash. */
+  plan: RetrievalPlan,
+  /** The read's span hash when there was a read, else sha256 over the sorted evidence keys. */
   hash: Schema.String,
   latencyMs: Schema.Number
 })
-
-// ---- ingest -----------------------------------------------------------------
 
 export const IngestTurn = Schema.Struct({
   role: Schema.Literal("user", "assistant"),
@@ -249,9 +219,8 @@ export const IngestSessionResponse = Schema.Struct({
   dropped: Schema.Number,
   touchedSlots: Schema.Array(Schema.String),
   supersessions: Schema.Number,
-  /** True when this exact session was already in the graph and nothing was added. */
   alreadyPresent: Schema.Boolean,
-  /** HydraDB's opaque causal token. Send it on a later ask to require this write. */
+  /** HydraDB's opaque causal token; send it on a later ask to require this write. */
   bookmark: Schema.NullOr(Schema.String),
   stats: Schema.Struct({
     claims: Schema.Number,
@@ -265,11 +234,7 @@ export const IngestSessionResponse = Schema.Struct({
   })
 })
 
-/**
- * Result of the new bounded source/index path. `queryVisible` remains false:
- * indexing alone never selects a retrieval generation or claims terminal
- * ingest success.
- */
+/** `queryVisible` stays false: indexing alone never selects a retrieval generation. */
 export const SourceIndexSessionResponse = Schema.Struct({
   uid: Schema.String,
   sid: Schema.String,
@@ -282,8 +247,6 @@ export const SourceIndexSessionResponse = Schema.Struct({
   queryVisible: Schema.Literal(false)
 })
 
-// ---- reads ------------------------------------------------------------------
-
 export const SessionRow = Schema.Struct({
   sid: Schema.String,
   sessionOrd: Schema.Number,
@@ -292,7 +255,6 @@ export const SessionRow = Schema.Struct({
   turns: Schema.Number
 })
 
-/** The exact verbatim transcript slice that a derived assertion points to. */
 export const DerivedAssertionSourceSpan = Schema.Struct({
   sourceDigest: Schema.String,
   logicalSessionId: Schema.String,
@@ -305,10 +267,7 @@ export const DerivedAssertionSourceSpan = Schema.Struct({
   highlight: Highlight
 })
 
-/**
- * A model-generated index assertion, deliberately distinct from evidence.
- * Its `source` is the verbatim transcript span the assertion was derived from.
- */
+/** A model-generated index assertion with the verbatim span it was derived from; not evidence. */
 export const DerivedIndexAssertion = Schema.Struct({
   assertionKey: Schema.String,
   derivedText: Schema.String,
@@ -337,7 +296,6 @@ export const StatsResponse = Schema.Struct({
   turns: Schema.Number,
   supersessions: Schema.Number,
   contestedSlots: Schema.Number,
-  /** Slots holding ≥ 2 claims — the ones a supersession chain can exist in. */
   contested: Schema.Array(
     Schema.Struct({
       skey: Schema.String,
@@ -351,35 +309,20 @@ export const StatsResponse = Schema.Struct({
 const UidPath = Schema.Struct({ uid: Schema.String })
 const SlotPath = Schema.Struct({ uid: Schema.String, skey: Schema.String })
 
-/**
- * `asOf` arrives as a query string, so it is a string schema that parses to a
- * number rather than `Schema.Number`, which would reject `"4"`.
- */
 const AsOfQuery = Schema.Struct({
   asOf: Schema.optional(Schema.NumberFromString)
 })
 
-/**
- * What a warm actually touched.
- *
- * Counts rather than a bare 204 because a warm that silently reached nothing is
- * indistinguishable from one that worked, and the whole reason this endpoint
- * exists is that the previous warm — a by-id read of the `User` vertex — did not
- * touch the blocks the cold ask pays for.
- */
+/** What a warm reached, so a warm that touched nothing is visible. */
 export const WarmResponse = Schema.Struct({
   uid: Schema.String,
   entities: Schema.Number,
   slots: Schema.Number,
   sessions: Schema.Number,
-  /** Reached backwards along `NAMES` from the entities; there is no User->Token edge. */
   tokens: Schema.Number,
-  /** Claims reached through `FILLS` from the slots — the shape of Query 2. */
   slotClaims: Schema.Number,
   turns: Schema.Number,
-  /** Walks that failed. A warm that reached nothing must not look like success. */
   failed: Schema.Number,
-  /** The budget ran out before every walk was made. */
   truncated: Schema.Boolean,
   ms: Schema.Number
 })
@@ -430,14 +373,6 @@ export const users = HttpApiGroup.make("users")
       .addError(GraphError)
       .addError(NotFound)
   )
-  /**
-   * Reads the blocks the next ask will read, so the first question after
-   * selecting a user is not the one that pays for them.
-   *
-   * `POST` rather than `GET` because it is an instruction and not a resource:
-   * nothing is returned that a caller wants for its own sake, and a `GET` would
-   * invite a cache in front of it.
-   */
   .add(
     HttpApiEndpoint.post("warm", "/users/:uid/warm")
       .setPath(UidPath)

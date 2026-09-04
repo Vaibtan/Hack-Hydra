@@ -1,18 +1,11 @@
 import type { HydraPath } from "@palimpsest/hydra"
 import { describe, expect, it } from "vitest"
-import {
-  applyAsOf,
-  beforeAsOf,
-  convergenceThreshold,
-  decide,
-  idf,
-  orderEvidence,
-  rank,
-  scoreReached,
-  type ReachedClaim
-} from "../../src/index.js"
+import { reachedRows } from "../../src/Rows.js"
+import { applyAsOf, beforeAsOf, convergenceThreshold, decide, idf, orderEvidence, rank, scoreReached, type ReachedClaim } from "../../src/Scoring.js"
 
-/** Builds the shape HydraDB actually returns: Token -> [Entity ->] Claim. */
+const scorePaths = (paths: ReadonlyArray<HydraPath>, totalClaims: number) =>
+  scoreReached(reachedRows(paths), totalClaims)
+
 const path = (
   anchor: { stem: string; df: number },
   claim: { ckey: string; sessionOrd?: number; tEvent?: number },
@@ -68,7 +61,7 @@ describe("idf", () => {
 
 describe("scoreReached", () => {
   it("counts distinct anchors reaching a claim, not paths", () => {
-    const reached = scoreReached(
+    const reached = scorePaths(
       [
         path({ stem: "hamster", df: 3 }, { ckey: "c1" }),
         path({ stem: "hamster", df: 3 }, { ckey: "c1" }, true),
@@ -84,7 +77,7 @@ describe("scoreReached", () => {
   })
 
   it("records the shortest route to a claim reached both directly and via an entity", () => {
-    const reached = scoreReached(
+    const reached = scorePaths(
       [
         path({ stem: "hamster", df: 3 }, { ckey: "c1" }, true),
         path({ stem: "hamster", df: 3 }, { ckey: "c1" })
@@ -95,11 +88,11 @@ describe("scoreReached", () => {
   })
 
   it("scores a claim reached by two rare anchors above one reached by two common ones", () => {
-    const rare = scoreReached(
+    const rare = scorePaths(
       [path({ stem: "a", df: 1 }, { ckey: "c1" }), path({ stem: "b", df: 1 }, { ckey: "c1" })],
       1000
     )
-    const common = scoreReached(
+    const common = scorePaths(
       [path({ stem: "c", df: 900 }, { ckey: "c2" }), path({ stem: "d", df: 900 }, { ckey: "c2" })],
       1000
     )
@@ -108,12 +101,12 @@ describe("scoreReached", () => {
   })
 
   it("carries the span and the clocks through, because the reader needs them", () => {
-    const reached = scoreReached([path({ stem: "a", df: 1 }, { ckey: "c1", tEvent: 20230315 })], 10)
+    const reached = scorePaths([path({ stem: "a", df: 1 }, { ckey: "c1", tEvent: 20230315 })], 10)
     expect(reached[0]).toMatchObject({ sid: "s1", turnIdx: 0, cs: 0, ce: 5, tEvent: 20230315 })
   })
 
   it("returns nothing for an empty path set", () => {
-    expect(scoreReached([], 10)).toEqual([])
+    expect(scorePaths([], 10)).toEqual([])
   })
 })
 
@@ -240,14 +233,7 @@ describe("orderEvidence", () => {
 
 
 describe("beforeAsOf", () => {
-  /**
-   * The audit's §2.2 case, exactly: a claim from the future that converges
-   * harder than anything the memory actually held at `k`. Filtering after the
-   * verdict let it decide A1/A2, fill the convergence table the receipt prints,
-   * and eat a top-K slot — so an as-of receipt described a memory that did not
-   * exist yet, and early-`k` recall degraded with nothing to show for it.
-   */
-  const reached = scoreReached(
+  const reached = scorePaths(
     [
       path({ stem: "mortgage", df: 2 }, { ckey: "past", sessionOrd: 3 }),
       path({ stem: "wells", df: 2 }, { ckey: "past", sessionOrd: 3 }),
@@ -282,9 +268,6 @@ describe("beforeAsOf", () => {
   })
 
   it("can abstain as of k on a question it would answer today", () => {
-    // Before session 3 the memory holds nothing about this at all, and the
-    // honest receipt says so rather than reporting anchors that resolved
-    // against a claim from session 37.
     const asOf2 = beforeAsOf(reached, 2)
     const verdict = decide(asOf2, new Set(asOf2.flatMap((claim) => claim.anchors)).size)
     expect(verdict.kind).toBe("ABSENT")

@@ -2,21 +2,10 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer, Option } from "effect"
-import { userKey, warmUser } from "@palimpsest/palimpsest"
+import { userKey } from "../src/Keys.js"
+import { warmUser } from "../src/User.js"
 
-/**
- * `warm --uid g3-001be529 [--uid …] [--deep] [--budget-ms 15000]`
- *
- * Reads the blocks an ask will read, before the ask, so the demo's first
- * question is not the one that pays for them. The walk itself — and why it
- * touches Tokens by going backwards along `NAMES` rather than forwards from the
- * `User` root, which has no edge to a Token — is documented on `warmUser`.
- *
- * The server exposes the same function at `POST /users/:uid/warm`, so the demo
- * and this command cannot warm different things.
- *
- * Reads only. Warming twice is free and warming the wrong user is harmless.
- */
+/** `warm --uid g3-001be529 [--uid …] [--deep] [--budget-ms 15000]` */
 loadDotEnv()
 
 const uids = process.argv.reduce<Array<string>>((acc, value, index) => {

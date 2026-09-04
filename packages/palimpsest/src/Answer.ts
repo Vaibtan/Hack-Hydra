@@ -2,9 +2,17 @@ import type { LanguageModel } from "@effect/ai"
 import type { HydraError } from "@palimpsest/hydra"
 import type { Llm } from "@palimpsest/llm"
 import { Effect } from "effect"
-import type { Granularity, ReadAnswer, Reader } from "./Reader.js"
-import { READER_TOKEN_BUDGET } from "./Pack.js"
-import type { AskOptions, AskResult, PlanBudget, PlanSufficiency, Retrieve } from "./Retrieve.js"
+import { CHARS_PER_TOKEN, READER_TOKEN_BUDGET } from "./Pack.js"
+import type {
+  AnsweredPlan,
+  AskOptions,
+  AskResult,
+  PlanBudget,
+  PlanSufficiency,
+  RetrievalPlan
+} from "./Plan.js"
+import type { Granularity, ReadAnswer, ReadOptions, Reader } from "./Reader.js"
+import type { Retrieve } from "./Retrieve.js"
 import type { AbstentionReason } from "./Scoring.js"
 import {
   abstains,
@@ -14,118 +22,119 @@ import {
   skipped,
   type SufficiencyReport
 } from "./Sufficiency.js"
+import type { Route } from "./Understand.js"
 
-/**
- * The whole v2 path, in one call: retrieve, pack, check, maybe go back once,
- * read.
- *
- * A function and not a service, deliberately. Every caller already holds both
- * `Retrieve` and `Reader` — the eval, the CLI, the demo server — and adding a
- * third service to their layers would buy nothing over passing the two they
- * have. What it does buy is that the *loop* lives in one place: the eval and
- * the demo must not be able to drift into running different pipelines, because
- * the numbers in the writeup come from one of them and the video from the
- * other.
- *
- * v1 does not come through here. It is `retrieve.ask` then `reader.read`, as it
- * has always been, and that is what keeps its evidence byte-identical while
- * both pipelines read one graph.
- */
+/** An ask whose plan has been through the pack and the sufficiency check. */
+export interface AnsweredAsk extends AskResult {
+  readonly plan: AnsweredPlan
+}
 
 export interface V2Answer {
-  readonly ask: AskResult
-  /** The final read. Absent when the verdict was `ABSENT` before reading. */
+  readonly ask: AnsweredAsk
+  /** The final read; `null` when the verdict was `ABSENT` before reading. */
   readonly read: ReadAnswer | null
   readonly verdict: "ANSWER" | "ABSENT"
   readonly reason: AbstentionReason | null
   readonly sufficiency: SufficiencyReport
-  /** The refined pass ran. At most once, by construction. */
   readonly secondPass: boolean
-  /** The ask that produced the evidence actually read — the second, if there was one. */
   readonly passes: number
+  /** The read's span hash when there was a read, else the ask's claim hash. */
+  readonly hash: string
 }
 
 export interface AnswerOptions extends AskOptions {
-  readonly premiseCheck?: boolean
   /** Forces one granularity for every route, for the `span|turn` ablation. */
   readonly granularity?: Granularity
-  /** Skips the sufficiency stage entirely, for the `--no-sufficiency` ablation. */
   readonly noSufficiency?: boolean
-  /**
-   * Drops the route-specific rules block from the reader prompt, for the
-   * `--reader-route=off` ablation. The reader then sees v1's single prompt,
-   * byte for byte, on v2's evidence — which is the comparison that isolates
-   * the rules from everything else v2 changed.
-   */
+  /** Drops the route rules block from the reader prompt only, for `--reader-route=off`. */
   readonly noReaderRoute?: boolean
 }
 
-/**
- * Writes the sufficiency verdict back onto the ask's plan.
- *
- * #29's receipt box asks for `plan.sufficiency`, and the plan comes out of
- * `Retrieve.ask` before the pack the check judges exists. Rather than leave the
- * field to whichever caller happens to hold both halves — the eval, the HTTP
- * projection and the CLI each held a different subset, and the HTTP projection
- * was the only one that assembled it — `answerV2` returns an `AskResult` whose
- * plan is already complete. Every consumer then reads one shape.
- *
- * A v1 ask has no plan and gets none.
- */
-const withSufficiency = (
-  ask: AskResult,
+const readOptionsFor = (
+  route: Route,
+  plan: RetrievalPlan,
+  options: AnswerOptions
+): ReadOptions => ({
+  route,
+  ...(options.noReaderRoute === true ? { noReaderRoute: true } : {}),
+  ...(options.granularity === undefined ? {} : { granularity: options.granularity }),
+  slotOf: new Map(Object.entries(plan.slots)),
+  protectedKeys: new Set(plan.protectedKeys)
+})
+
+const planSufficiency = (
   report: SufficiencyReport,
-  secondPass: boolean,
-  read: ReadAnswer | null = null
-): AskResult => {
-  if (ask.plan === null) return ask
-  const sufficiency: PlanSufficiency = {
-    // `skipped` is a value the tier enum does not have, and the distinction
-    // matters to a reader of a receipt: `skipped()` reports `EXACT`, which
-    // would otherwise read as "the check ran and was satisfied".
-    tier: report.skipped ? "skipped" : report.tier,
-    missing: report.missing,
-    premise: report.premise,
-    premiseContradictedBy: report.premiseContradictedBy,
-    secondPass
-  }
-  // The budget rides along for the same reason and by the same route: it is
-  // applied to the packed excerpts, so `ask` cannot know it and the one caller
-  // that holds both halves writes it back.
-  const budget: PlanBudget | null =
-    read === null
-      ? null
-      : {
-          budget: READER_TOKEN_BUDGET,
-          estimatedTokens: read.estimatedTokens,
-          charsPerToken: read.charsPerToken,
-          dropped: read.budgetDrops.map((drop) => ({
-            id: drop.id,
-            reason: drop.reason,
-            chars: drop.chars
-          })),
-          overBudget: read.overBudget
-        }
-  return { ...ask, plan: { ...ask.plan, sufficiency, budget } }
+  read: ReadAnswer | null,
+  secondPass: boolean
+): PlanSufficiency => ({
+  tier: report.skipped ? "skipped" : report.tier,
+  missing: report.missing,
+  premise: report.premise,
+  premiseContradictedBy:
+    read === null ? [] : (premiseContradiction(report, read.spans)?.citedIds ?? []),
+  secondPass
+})
+
+const planBudget = (read: ReadAnswer | null): PlanBudget =>
+  read === null || read.pack === null
+    ? {
+        budget: READER_TOKEN_BUDGET,
+        estimatedTokens: 0,
+        charsPerToken: CHARS_PER_TOKEN,
+        dropped: [],
+        overBudget: false
+      }
+    : {
+        budget: READER_TOKEN_BUDGET,
+        estimatedTokens: read.pack.estimatedTokens,
+        charsPerToken: read.pack.charsPerToken,
+        dropped: read.pack.drops.map((drop) => ({
+          id: drop.id,
+          reason: drop.reason,
+          chars: drop.chars
+        })),
+        overBudget: read.pack.overBudget
+      }
+
+interface Outcome {
+  readonly ask: AskResult
+  readonly read: ReadAnswer | null
+  readonly report: SufficiencyReport
+  readonly secondPass: boolean
+  readonly verdict: "ANSWER" | "ABSENT"
+  readonly reason: AbstentionReason | null
 }
 
-/**
- * Turns an ask into the reader's pack options.
- *
- * Only ever called with a plan, because only v2 has one — the option is what
- * switches the pack stage on, and v1 must never pass it.
- */
-const packOptions = (ask: AskResult, granularity?: Granularity) => {
-  const plan = ask.plan
-  if (plan === null) return undefined
-  return {
-    route: plan.route,
-    ...(granularity === undefined ? {} : { granularity }),
-    slotOf: new Map(Object.entries(plan.slots)),
-    protectedKeys: new Set(plan.protectedKeys)
-  }
-}
+const assemble = (outcome: Outcome): V2Answer => ({
+  ask: {
+    ...outcome.ask,
+    plan: {
+      ...outcome.ask.plan,
+      sufficiency: planSufficiency(outcome.report, outcome.read, outcome.secondPass),
+      budget: planBudget(outcome.read)
+    }
+  },
+  read: outcome.read,
+  verdict: outcome.verdict,
+  reason: outcome.reason,
+  sufficiency: outcome.report,
+  secondPass: outcome.secondPass,
+  passes: outcome.secondPass ? 2 : 1,
+  hash: outcome.read === null ? outcome.ask.hash : outcome.read.spanHash
+})
 
+/** An ask that was never read: the plan completed with a skipped check and an empty budget. */
+export const unreadAnswer = (ask: AskResult): V2Answer =>
+  assemble({
+    ask,
+    read: null,
+    report: skipped(),
+    secondPass: false,
+    verdict: ask.verdict,
+    reason: ask.reason
+  })
+
+/** The whole read path: retrieve, pack, check, at most one refined pass, read. */
 export const answerV2 = (
   retrieve: Retrieve,
   reader: Reader,
@@ -136,133 +145,67 @@ export const answerV2 = (
 ): Effect.Effect<V2Answer, HydraError, LanguageModel.LanguageModel | Llm> =>
   Effect.gen(function* () {
     const profile = options.profile ?? "full"
-    const askOptions = { ...options, questionDate, pipeline: "v2" as const }
+    const askOptions = { ...options, questionDate }
 
     const first = yield* retrieve.ask(uid, question, askOptions)
-    if (first.verdict === "ABSENT") {
-      return {
-        ask: withSufficiency(first, skipped(), false, null),
-        read: null,
-        verdict: "ABSENT" as const,
-        reason: first.reason,
-        sufficiency: skipped(),
-        secondPass: false,
-        passes: 1
-      }
-    }
+    if (first.verdict === "ABSENT") return unreadAnswer(first)
 
-    const readOptions = {
-      ...(options.premiseCheck === true ? { premiseCheck: true } : {}),
-      ...(options.noReaderRoute === true ? {} : { route: first.plan?.route ?? null }),
-      ...(() => {
-        const pack = packOptions(first, options.granularity)
-        return pack === undefined ? {} : { pack }
-      })()
-    }
-
-    // The check reads the *packed* excerpts, which is why it cannot live inside
-    // `ask`: the pack is what the reader will see, and judging sufficiency from
-    // the claim index text instead would be judging a summary of the evidence
-    // rather than the evidence.
-    const firstRead = yield* reader.read(question, questionDate, first.evidence, readOptions)
-    const route = first.plan?.route ?? "fact"
+    const route = first.plan.route
+    const firstRead = yield* reader.read(
+      question,
+      questionDate,
+      first.evidence,
+      readOptionsFor(route, first.plan, options)
+    )
+    const answer = (
+      ask: AskResult,
+      read: ReadAnswer,
+      report: SufficiencyReport,
+      secondPass: boolean
+    ): V2Answer =>
+      assemble({ ask, read, report, secondPass, verdict: "ANSWER", reason: null })
+    const contradicted = (
+      ask: AskResult,
+      read: ReadAnswer,
+      report: SufficiencyReport,
+      secondPass: boolean
+    ): V2Answer =>
+      assemble({ ask, read, report, secondPass, verdict: "ABSENT", reason: "CONTRADICTED_PREMISE" })
 
     if (options.noSufficiency === true || !runsOn(route, firstRead.spans, profile)) {
-      return {
-        ask: withSufficiency(first, skipped(), false, firstRead),
-        read: firstRead,
-        verdict: "ANSWER" as const,
-        reason: null,
-        sufficiency: skipped(),
-        secondPass: false,
-        passes: 1
-      }
+      return answer(first, firstRead, skipped(), false)
     }
 
     const judged = yield* judgeSufficiency(question, questionDate, route, firstRead.spans)
-
-    // A contradicted premise short-circuits: there is nothing a second pass can
-    // find that would make a false presupposition true, and reading on would
-    // produce a confident answer to a question that should not have one.
-    const contradiction = premiseContradiction(judged, firstRead.spans)
-    if (contradiction !== null) {
-      return {
-        ask: withSufficiency(first, judged, false, firstRead),
-        read: firstRead,
-        verdict: "ABSENT" as const,
-        reason: "CONTRADICTED_PREMISE" as const,
-        sufficiency: judged,
-        secondPass: false,
-        passes: 1
-      }
+    if (premiseContradiction(judged, firstRead.spans) !== null) {
+      return contradicted(first, firstRead, judged, false)
     }
-
     if (judged.tier !== "PARTIAL" || judged.missingTerms.length === 0) {
-      return {
-        ask: withSufficiency(first, judged, false, firstRead),
-        read: firstRead,
-        verdict: "ANSWER" as const,
-        reason: null,
-        sufficiency: judged,
-        secondPass: false,
-        passes: 1
-      }
+      return answer(first, firstRead, judged, false)
     }
 
-    // ---- exactly one refined pass ------------------------------------------
-    // The same arms, widened by the terms the check named. Not a loop: a second
-    // PARTIAL is information ("this memory does not contain it"), a third would
-    // be a budget, and every extra pass is another graph read and two more LLM
-    // calls on a question that is already the expensive kind.
     const second = yield* retrieve.ask(uid, question, {
       ...askOptions,
       extraTerms: judged.missingTerms
     })
-    if (second.verdict === "ABSENT") {
-      // The wider search abstained where the narrower one did not, which can
-      // only mean the widening changed the candidate set out from under the
-      // verdict. Keep the first pass's answer: a second pass exists to add
-      // evidence, never to take an answer away.
-      return {
-        ask: withSufficiency(first, judged, true, firstRead),
-        read: firstRead,
-        verdict: "ANSWER" as const,
-        reason: null,
-        sufficiency: judged,
-        secondPass: true,
-        passes: 2
-      }
-    }
+    if (second.verdict === "ABSENT") return answer(first, firstRead, judged, true)
 
-    const secondRead = yield* reader.read(question, questionDate, second.evidence, {
-      ...readOptions,
-      ...(() => {
-        const pack = packOptions(second, options.granularity)
-        return pack === undefined ? {} : { pack }
-      })()
-    })
+    const secondRead = yield* reader.read(
+      question,
+      questionDate,
+      second.evidence,
+      readOptionsFor(route, second.plan, options)
+    )
     const rejudged = yield* judgeSufficiency(question, questionDate, route, secondRead.spans)
-
-    const stillContradicted = premiseContradiction(rejudged, secondRead.spans)
-    if (stillContradicted !== null) {
-      return {
-        ask: withSufficiency(second, rejudged, true, secondRead),
-        read: secondRead,
-        verdict: "ABSENT" as const,
-        reason: "CONTRADICTED_PREMISE" as const,
-        sufficiency: rejudged,
-        secondPass: true,
-        passes: 2
-      }
+    if (premiseContradiction(rejudged, secondRead.spans) !== null) {
+      return contradicted(second, secondRead, rejudged, true)
     }
-
-    return {
-      ask: withSufficiency(second, rejudged, true, secondRead),
+    return assemble({
+      ask: second,
       read: secondRead,
-      verdict: abstains(rejudged) ? ("ABSENT" as const) : ("ANSWER" as const),
-      reason: abstains(rejudged) ? ("INSUFFICIENT_EVIDENCE" as const) : null,
-      sufficiency: rejudged,
+      report: rejudged,
       secondPass: true,
-      passes: 2
-    }
+      verdict: abstains(rejudged) ? "ABSENT" : "ANSWER",
+      reason: abstains(rejudged) ? "INSUFFICIENT_EVIDENCE" : null
+    })
   })

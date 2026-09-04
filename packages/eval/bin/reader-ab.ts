@@ -289,31 +289,14 @@ const program = Effect.gen(function* () {
         const uid = uidFor(question.questionId)
         const questionDate = question.questionDate.raw
 
-        // One retrieval, one pack. Both arms read what this produced.
-        const ask = yield* retrieve.ask(uid, question.question, {
-          questionDate,
-          pipeline: "v2",
-          profile
-        })
+        const ask = yield* retrieve.ask(uid, question.question, { questionDate, profile })
+        if (ask.verdict === "ABSENT") return null
+
         const plan = ask.plan
-        const pack =
-          plan === null
-            ? undefined
-            : {
-                route: plan.route,
-                slotOf: new Map(Object.entries(plan.slots)),
-                protectedKeys: new Set(plan.protectedKeys)
-              }
-
-        if (ask.verdict === "ABSENT") {
-          // Nothing to read, so nothing to compare. Skipped rather than counted
-          // as a tie: a structural abstention says the arms were never asked.
-          return null
-        }
-
         const withRoute = yield* reader.read(question.question, questionDate, ask.evidence, {
-          ...(pack === undefined ? {} : { pack }),
-          route: plan?.route ?? null
+          route: plan.route,
+          slotOf: new Map(Object.entries(plan.slots)),
+          protectedKeys: new Set(plan.protectedKeys)
         })
         // The *same spans*, re-read with v1's prompt. `readSpans` and not
         // `read`: re-hydrating could produce a different pack if anything
@@ -347,7 +330,7 @@ const program = Effect.gen(function* () {
         done++
         console.log(
           `  ${String(done).padStart(3)}/${population.length}  ${question.questionId}  ` +
-            `${question.questionType.padEnd(26)} route ${(plan?.route ?? "—").padEnd(17)} ` +
+            `${question.questionType.padEnd(26)} route ${plan.route.padEnd(17)} ` +
             `${judgedRoute.correct ? "OK " : "   "} vs ${judgedPlain.correct ? "OK " : "   "}`
         )
 
@@ -355,7 +338,7 @@ const program = Effect.gen(function* () {
           questionId: question.questionId,
           questionType: question.questionType,
           judgeTemplate: judgeTemplate(question),
-          route: plan?.route ?? null,
+          route: plan.route,
           spanHash: withRoute.spanHash,
           excerpts: withRoute.spans.length,
           withRoute: {

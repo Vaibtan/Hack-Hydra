@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { decodeResponse } from "../../src/index.js"
+import { decodeResponse } from "../../src/Decode.js"
 
-/**
- * Oracle: verbatim response bodies captured from HydraDB 0.1.0 on
- * 127.0.0.1:8443 during the #1 probe run. If the engine's wire format changes,
- * these stop matching and the live probe suite catches it too.
- */
+/** Oracle: verbatim response bodies captured from HydraDB 0.1.0 during the #1 probe run. */
 const SCALAR_RESPONSE = {
   query_id: "http-query-6",
   columns: ["id", "k", "v"],

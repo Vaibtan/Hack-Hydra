@@ -1,35 +1,10 @@
 import { createHash } from "node:crypto"
+import { RoutePolicy } from "./Routes.js"
+import { shortId } from "./Select.js"
 import type { Route } from "./Understand.js"
-
-/**
- * Turning a selected evidence set into the thing the reader actually sees.
- *
- * Three jobs, all of them pure, all of them things v1 either did not do or did
- * in one shape for every question:
- *
- *  - **adjudication**, and only where it helps: telling the reader which of a
- *    Slot's current claims is the latest one;
- *  - **the budget**, so a wide slot cannot decide how many tokens the reader is
- *    asked to read;
- *  - **the hash**, over the source spans rather than the claim keys, so "same
- *    evidence" means the same bytes.
- */
 
 export type PackLabel = "CURRENT" | "EARLIER STATEMENT" | "SUPERSEDED"
 
-/**
- * The routes where the latest current claim of a Slot is singled out.
- *
- * Not every route, and this is the part that is easy to get wrong. `(me,
- * hobby)` and "things to return" are multi-valued: labelling the older entries
- * `EARLIER STATEMENT` there tells the reader to discard facts that are all
- * still true, which is exactly how a count question loses half its items. So
- * adjudication runs on `update` and `fact` — the routes that ask for *a* value
- * — and nowhere else.
- */
-export const ADJUDICATED_ROUTES: ReadonlyArray<Route> = ["update", "fact"]
-
-/** What adjudication needs off a claim. */
 export interface Adjudicable {
   readonly ckey: string
   readonly status: "CURRENT" | "SUPERSEDED"
@@ -37,22 +12,13 @@ export interface Adjudicable {
   readonly tEvent: number
 }
 
-/**
- * Labels each claim `CURRENT`, `EARLIER STATEMENT` or `SUPERSEDED`.
- *
- * A superseded claim is superseded on every route — that is graph structure,
- * not a reading strategy. The `EARLIER STATEMENT` label is the new one, and it
- * exists because supersession inference is incomplete: two claims can both be
- * `CURRENT` in the same Slot with different values, and v1 handed both to the
- * reader with the same label and no way to choose. This says which was said
- * last without asserting that the other was replaced.
- */
+/** `SUPERSEDED` holds on every route; `EARLIER STATEMENT` marks a CURRENT claim outranked in its Slot, on the routes that adjudicate. */
 export const adjudicate = <A extends Adjudicable>(
   claims: ReadonlyArray<A>,
   slotOf: ReadonlyMap<string, string>,
   route: Route
 ): ReadonlyArray<A & { readonly label: PackLabel }> => {
-  const adjudicated = ADJUDICATED_ROUTES.includes(route)
+  const adjudicated = RoutePolicy[route].adjudicate
   const latestOfSlot = new Map<string, A>()
   if (adjudicated) {
     for (const claim of claims) {
@@ -88,23 +54,10 @@ export const adjudicate = <A extends Adjudicable>(
   })
 }
 
-// ------------------------------------------------------------------- budget
 
-/**
- * Characters per token, for the budget estimate.
- *
- * Four is the usual English figure and the value the full-context baseline's
- * 520 000-character cap was already sized from. It is a *placeholder until the
- * dev run calibrates it*: the reader's provider-reported `readerInputTokens`
- * and the packed character count are recorded side by side in every results
- * row, so the ratio is a division rather than an assumption, and the receipt
- * echoes whichever value produced a given result. There is no tokenizer to
- * appeal to — Luna's is unverified — which is why this is a measured constant
- * and not a library call.
- */
+/** Calibrated placeholder; the reader's provider-reported tokens are recorded beside it in every results row. */
 export const CHARS_PER_TOKEN = 4
 
-/** Reader input tokens per ask. The 1/30-of-full-context story rests on this. */
 export const READER_TOKEN_BUDGET = 6000
 
 export interface Packable {
@@ -114,66 +67,34 @@ export interface Packable {
   readonly cs: number
   readonly ce: number
   readonly excerpt: string
-  /** Where the span sits inside `excerpt` — what locates the excerpt in the turn. */
   readonly highlight: { readonly start: number; readonly end: number }
 }
 
 export const estimateTokens = (spans: ReadonlyArray<{ readonly excerpt: string }>): number =>
   Math.ceil(spans.reduce((n, span) => n + span.excerpt.length, 0) / CHARS_PER_TOKEN)
 
-/**
- * Why one excerpt did not reach the reader.
- *
- * One value today, and named rather than implied because the receipt has to
- * distinguish it from the two other ways an excerpt can be missing: the
- * selector dropped it (`selector`), or the turn cap did (`turn_cap`). Those are
- * decisions about relevance; this one is a decision about money, and a reader
- * of a receipt asking "why is the answer session not in the evidence" needs to
- * be told which.
- */
+/** Distinct from the selector's `selector` / `turn_cap`: a decision about money, not relevance. */
 export type BudgetDropReason = "budget"
 
-/** One dropped excerpt, in the form the receipt and the results row record. */
 export interface BudgetDrop {
   readonly ckey: string
-  /** The short id the reader would have cited — the claim key's tail. */
   readonly id: string
   readonly reason: BudgetDropReason
-  /** What dropping it saved, so the cut is auditable against the estimate. */
   readonly chars: number
 }
 
 export interface BudgetReport<A> {
   readonly kept: ReadonlyArray<A>
   readonly dropped: ReadonlyArray<A>
-  /** The same drops, with the id and reason the receipt needs. */
   readonly drops: ReadonlyArray<BudgetDrop>
   readonly estimatedTokens: number
   readonly charsPerToken: number
   readonly budget: number
-  /**
-   * The pack is still over budget and nothing left may be dropped.
-   *
-   * Reachable, and silent until now: `protectedKeys` are never dropped, so a
-   * question with many probe hits can produce a pack that exceeds the budget
-   * with nothing droppable in it. That is the right trade — losing the
-   * `(entity, attribute)` the question named outright to a token budget is
-   * losing the thing the question was about — but it must not be invisible,
-   * because the alternative is a reader-token number that quietly misses its
-   * target with no row saying why.
-   */
+  /** Still over budget with nothing droppable left: every remaining row is protected. */
   readonly overBudget: boolean
 }
 
-/**
- * Cuts the pack down to the budget, from the tail of the selector's ranking.
- *
- * The tail, not the longest excerpt: the selector already said which rows help
- * least, and dropping by size instead would quietly prefer short evidence to
- * relevant evidence. `protectedKeys` are never dropped — a probe hit is an
- * `(entity, attribute)` the question named outright, and losing it to a budget
- * is losing the thing the question was about.
- */
+/** Cuts from the tail of the selector's ranking, never a protected row. */
 export const applyBudget = <A extends { readonly ckey: string; readonly excerpt: string }>(
   spans: ReadonlyArray<A>,
   options: {
@@ -188,7 +109,6 @@ export const applyBudget = <A extends { readonly ckey: string; readonly excerpt:
   const dropped: Array<A> = []
   let overBudget = false
   while (estimateTokens(kept) > budget) {
-    // From the tail, skipping protected rows.
     let index = -1
     for (let i = kept.length - 1; i >= 0; i--) {
       if (!isProtected(kept[i]!)) {
@@ -207,12 +127,9 @@ export const applyBudget = <A extends { readonly ckey: string; readonly excerpt:
   return {
     kept,
     dropped,
-    // `ckey.slice(-8)` and not an import from `Select`: the short id is the
-    // reader's citation format and belongs to the pack, and `Pack` depending on
-    // the selector to name its own rows would be the wrong direction.
     drops: dropped.map((span) => ({
       ckey: span.ckey,
-      id: span.ckey.slice(-8),
+      id: shortId(span.ckey),
       reason: "budget" as const,
       chars: span.excerpt.length
     })),
@@ -223,14 +140,7 @@ export const applyBudget = <A extends { readonly ckey: string; readonly excerpt:
   }
 }
 
-// --------------------------------------------------------------------- hash
 
-/**
- * One row per source span, in a form two runs can compare.
- *
- * `sessionKey`, not `sid`: thirteen haystacks list the same session id twice at
- * different dates, so `sid` alone names two different conversations.
- */
 export const spanTuple = (span: {
   readonly sessionKey: string
   readonly turnIdx: number
@@ -238,15 +148,7 @@ export const spanTuple = (span: {
   readonly ce: number
 }): string => `${span.sessionKey}|${span.turnIdx}|${span.cs}|${span.ce}`
 
-/**
- * The determinism hash over **source spans**.
- *
- * v1 hashed claim keys, which answers "did retrieval choose the same claims"
- * — a question about the index. A judge replaying an answer is asking "did the
- * reader see the same bytes", and two different claims can point at the same
- * span while one claim can be hydrated at two granularities. The claim-key hash
- * is kept beside this one as `claimHash` so v1's results stay comparable.
- */
+/** The determinism hash over source spans: "did the reader see the same bytes". */
 export const spanHash = (
   spans: ReadonlyArray<{
     readonly sessionKey: string
@@ -259,36 +161,12 @@ export const spanHash = (
     .update([...new Set(spans.map(spanTuple))].sort().join("\n"), "utf8")
     .digest("hex")
 
-/**
- * The excerpt's own window inside the turn.
- *
- * `cutExcerpt` puts the span at `highlight.start` characters into the excerpt,
- * so the excerpt covers `[cs - highlight.start, that + excerpt.length)` of the
- * turn. Nothing else in a `Packable` says where in the turn its text came from.
- */
 const excerptWindow = (span: Packable): { readonly from: number; readonly to: number } => {
   const from = span.cs - span.highlight.start
   return { from, to: from + span.excerpt.length }
 }
 
-/**
- * Collapses spans that came from the same turn — but only where the text
- * actually covers them.
- *
- * A turn selected through several claims should be one excerpt: the reader pays
- * for the same text once. The trap is that "one excerpt" is only true when one
- * of the excerpts *contains* the other's span. Hydration cuts ±300 characters
- * around each span, so two claims 2 000 characters apart in one turn produce two
- * **disjoint** windows; keeping the longer text and widening `cs`/`ce` to their
- * union then throws away one claim's evidence while `spanHash` records the union
- * as seen — two runs that showed the reader genuinely different text would hash
- * the same, which is the one thing the span hash exists to prevent.
- *
- * So spans merge only when the retained excerpt covers both, and otherwise both
- * survive as separate rows of the same turn. The proper fix is upstream — group
- * by turn *before* hydrating and cut one window over the union — and this stays
- * as the check that the invariant held.
- */
+/** Merges spans of one turn only where one excerpt window covers both; disjoint windows stay separate rows. */
 export const dedupeByTurn = <A extends Packable>(spans: ReadonlyArray<A>): ReadonlyArray<A> => {
   const out: Array<A> = []
   const seatsByTurn = new Map<string, Array<number>>()
@@ -312,8 +190,6 @@ export const dedupeByTurn = <A extends Packable>(spans: ReadonlyArray<A>): Reado
       const heldCovers = low >= window.from && high <= window.to
       const spanCovers = low >= incoming.from && high <= incoming.to
       if (!heldCovers && !spanCovers) continue
-      // Both texts may cover the union; keep the one with more context around
-      // it, so merging never costs the reader bytes it would otherwise see.
       const keepHeld =
         heldCovers && (!spanCovers || held.excerpt.length >= span.excerpt.length)
       const winner = keepHeld ? held : span
@@ -329,10 +205,6 @@ export const dedupeByTurn = <A extends Packable>(spans: ReadonlyArray<A>): Reado
     }
     if (merged) continue
 
-    // Disjoint windows in one turn: two excerpts, honestly. Hydration cuts
-    // +-SPAN_CONTEXT around each span, so two claims far apart in a long turn
-    // produce text that does not overlap, and pretending otherwise is what
-    // makes the span hash lie.
     seats.push(out.length)
     out.push(span)
   }

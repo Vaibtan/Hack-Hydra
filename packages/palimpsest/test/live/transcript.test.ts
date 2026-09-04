@@ -3,7 +3,8 @@ import { HydraClient } from "@palimpsest/hydra"
 import type { DatasetSession } from "@palimpsest/dataset"
 import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
-import { Transcript, turnKey } from "../../src/index.js"
+import { turnKey } from "../../src/Keys.js"
+import { Transcript } from "../../src/Transcript.js"
 
 const layer = Transcript.Default.pipe(
   Layer.provideMerge(HydraClient.Default),

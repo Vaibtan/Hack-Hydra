@@ -1,38 +1,14 @@
-/**
- * The Cypher-subset rules live here and nowhere else. Callers of the client
- * never learn that string lists have to be inlined or that `maxLen` is capped.
- */
-
-/** Server caps, from `vendor/hydradb/src/core/config.rs`. */
+/** Server caps, from `vendor/hydradb/src/core/config.rs`; the string cap was measured by bisection. */
 export const MAX_TRAVERSAL_HOPS = 16
 export const MAX_QUERY_RESULT_VERTICES = 100_000
 export const MAX_BODY_BYTES = 1_000_000
-/**
- * Measured against HydraDB 0.1.0 by bisection: a string property of 32 743
- * UTF-8 bytes is stored, 32 744 fails the write with a 500 and the opaque
- * message "internal query execution error". The cap is on bytes, not code
- * points (16 371 two-byte characters is the same boundary).
- */
 export const MAX_STRING_PROPERTY_BYTES = 32_743
 
-/**
- * A **source-only** `algo.MSpaths` walk returns one path per source value
- * unless told otherwise, and says nothing about having stopped — a recall cap
- * that looks exactly like an answer. Walking the `User` root over
- * `HAS_SESSION` returned 1 of 39 sessions this way.
- *
- * A walk *with* a constant-valued target selector is not subject to it: every
- * source→target pair comes back. That is what `Claim.kind` is for, and it is
- * also the faster plan by an order of magnitude — raising `pathCount` on the
- * convergence query took its median from 0.12 s to 14 s while returning
- * byte-identical evidence, because the engine then enumerates paths it would
- * otherwise prune.
- *
- * So the ceiling is applied to source-only walks only, and a caller that wants
- * fewer paths says so. Nobody is truncated by omission; nobody pays for
- * breadth a target selector already guarantees.
- */
+/** Applied to source-only `MSpaths` walks only; a target selector already returns every pair. */
 export const DEFAULT_PATH_COUNT = MAX_QUERY_RESULT_VERTICES
+
+/** The property every record carries so a lossy numeric id can be verified against its full key on read. */
+export const FULL_KEY_PROPERTY = "__palimpsest_full_key"
 
 export type RelDirection = "outgoing" | "incoming" | "both"
 
@@ -49,19 +25,13 @@ export interface MsPathsConfig {
   readonly pathCount?: number
 }
 
-/** HydraDB string literal: single-quoted, backslash-escaped. */
 const literal = (value: string): string => `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`
 
 const literalList = (values: ReadonlyArray<string>): string => `[${values.map(literal).join(",")}]`
 
-/**
- * Identifiers (labels, property names, relationship types) are interpolated
- * into the statement, so they must not be attacker-shaped. Our schema only ever
- * uses fixed ASCII names; anything else is a bug, not a query.
- */
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-const requireIdentifier = (kind: string, value: string): string => {
+export const requireIdentifier = (kind: string, value: string): string => {
   if (!IDENTIFIER.test(value)) {
     throw new Error(`invalid ${kind} identifier: ${JSON.stringify(value)}`)
   }
@@ -118,3 +88,44 @@ export const renderMsPathsQuery = (config: MsPathsConfig): RenderedQuery => {
     parameters
   }
 }
+
+/** `properties` must not include `FULL_KEY_PROPERTY`; it is projected last under its own name. */
+export const renderGetByIdQuery = (label: string, properties: ReadonlyArray<string>): string => {
+  requireIdentifier("label", label)
+  const projection = properties
+    .concat(FULL_KEY_PROPERTY)
+    .map((property) => `n.${requireIdentifier("property", property)} AS ${property}`)
+    .join(", ")
+  return `MATCH (n:${label} {id: $id}) RETURN ${projection}`
+}
+
+export const renderVertexMergeStatement = (label: string, properties: ReadonlyArray<string>): string => {
+  requireIdentifier("label", label)
+  const assignments = [
+    `n.${FULL_KEY_PROPERTY} = row.${FULL_KEY_PROPERTY}`,
+    ...properties.map((p) => `n.${requireIdentifier("property", p)} = row.${p}`)
+  ]
+    .join(", ")
+  return `UNWIND $rows AS row MERGE (n {id: row.id}) SET n:${label}, ${assignments}`
+}
+
+export const renderRelMergeStatement = (
+  relType: string,
+  srcLabel: string,
+  dstLabel: string,
+  properties: ReadonlyArray<string>
+): string => {
+  requireIdentifier("relType", relType)
+  requireIdentifier("srcLabel", srcLabel)
+  requireIdentifier("dstLabel", dstLabel)
+  const setClause = ` SET ${[
+    `r.${FULL_KEY_PROPERTY} = row.${FULL_KEY_PROPERTY}`,
+    ...properties.map((p) => `r.${requireIdentifier("property", p)} = row.${p}`)
+  ].join(", ")}`
+  return (
+    `UNWIND $rows AS row MATCH (s:${srcLabel} {id: row.s}), (d:${dstLabel} {id: row.d}) ` +
+    `MERGE (s)-[r:${relType} {id: row.r}]->(d)${setClause}`
+  )
+}
+
+export const DELETE_BY_ID_STATEMENT = "UNWIND $rows AS row MATCH (n {id: row.id}) DETACH DELETE n"

@@ -1,17 +1,14 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
-import { Llm, LlmLive, loadDotEnv, verifyModelsAtStartup } from "@palimpsest/llm"
+import { Llm, LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { ClaimGraph, Ingest, Supersede, Transcript } from "../src/index.js"
+import { ClaimGraph } from "../src/ClaimGraph.js"
+import { Ingest } from "../src/Ingest.js"
+import { Supersede } from "../src/Supersede.js"
+import { Transcript } from "../src/Transcript.js"
 
-/**
- * `ingest --uid <question_id> [--dataset s|oracle] [--users N] [--concurrency N] [--reset]`
- *
- * Ingests one benchmark user's whole haystack — transcript, claims, entities,
- * slots, tokens and edges — or, with `--users N`, the first N users of the
- * stratified slice in parallel.
- */
+/** `ingest --uid <question_id> [--dataset s|oracle] [--users N] [--concurrency N] [--reset]` */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -20,12 +17,6 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const uid = arg("uid", "")
-/**
- * Ingest the same question under a different key prefix. Useful after a prompt
- * change — the graph is additive and content-addressed, so re-ingesting in
- * place leaves the old claims alongside the new ones, and deleting them is an
- * hours-long operation on this engine.
- */
 const asUid = arg("as", "")
 const dataset = arg("dataset", "s") as DatasetName
 const concurrency = Number(arg("concurrency", "4"))
@@ -41,11 +32,7 @@ const AppLive = Ingest.Default.pipe(
 )
 
 const program = Effect.gen(function* () {
-  // Before anything is spent. A typo in `PALIMPSEST_SELECT_MODEL` is otherwise a
-  // run of provider errors -- or, on a provider that silently substitutes, real
-  // numbers from a model nobody chose. Fails closed on an unknown id and only
-  // on that: an unreachable provider warns and the command proceeds.
-  yield* verifyModelsAtStartup({ quiet: true })
+  yield* verifyModelsOrExit({ quiet: true })
   const ingest = yield* Ingest
   const llm = yield* Llm
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)

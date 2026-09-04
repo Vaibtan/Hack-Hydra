@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { locateSpan, mergeEntities, parseEventDate } from "../../src/index.js"
-import type { ExtractedClaim } from "../../src/index.js"
+import { locateSpan, mergeEntities, parseEventDate } from "../../src/Extract.js"
+import type { ExtractedClaim } from "../../src/Extract.js"
 
 const TURN =
   "I'm thinking of getting my car detailed soon.\nBy the way, I just got my car serviced\n  for the first time on March 15th, and it was great."

@@ -1,18 +1,7 @@
-# The whole dev programme, in the order the tickets need it.
-#
-# Every graph-touching run goes through scripts/eval-batched.ps1: twelve batches
-# of five questions, the node restarted between them, each batch read cold and
-# then warm inside one node lifetime, and the warm pass is what lands in the
-# results file. The reason is in ops/hydradb/step-load-2026-08.md -- a read
-# costs ~750 MiB of resident memory per distinct user and does not bound, so the
-# node holds about seven of the 60 dev users.
-#
-# `bm25`, `fullctx` and `oracle-session` read the dataset rather than the graph,
-# so they run unbatched in one pass and take minutes.
-#
-# Order is not arbitrary. `palimpsest` and `palimpsest-v2` come first because
-# the adoption gate is read from exactly those two, and if the gate is going to
-# fail it should fail before eight ablations have been run against it.
+# The whole dev programme in ticket order. Graph-touching runs go through
+# scripts/eval-batched.ps1; bm25, fullctx and oracle-session read the dataset
+# and run unbatched. palimpsest and palimpsest-v2 come first because the
+# adoption gate is read from exactly those two.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-programme.ps1
 #   ... -From 4        # resume at the fourth run
@@ -22,13 +11,7 @@
 param(
   [ValidateRange(1, 99)]
   [int] $From = 1,
-  # Fifteen, not twelve: measured. `palimpsest` peaked at 3.7 GiB per five-user
-  # batch and `palimpsest-v2` at **5.19 GiB of 5.5**, because v2 reads more per
-  # user — convergence, sub-question walks, Slot probes, a discovery hop and the
-  # slot expansion, where v1 reads one walk. Four users a batch keeps a v2 batch
-  # near 4 GiB, and the extra three restarts cost about ninety seconds across a
-  # run. The cold time is per question and does not change with the batch size;
-  # only the restart count does.
+  # 15 x 4 users: v2 peaked at 5.19 GiB of 5.5 at five users a batch.
   [ValidateRange(1, 99)]
   [int] $Batches = 15,
   [ValidateRange(1, 16)]
@@ -39,14 +22,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $PSScriptRoot "lib/hydra.psm1") -Force
+
+$repositoryRoot = Get-HydraRepositoryRoot
 $batched = Join-Path $PSScriptRoot "eval-batched.ps1"
 $logDirectory = Join-Path $repositoryRoot ".eval-logs"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 
-# `variant` must match the suffix `eval` builds from the flags, or the merge
-# finds no files. `eval` lower-cases `ablationNames` after inserting a hyphen
-# after the leading "no", so `noTimeScope` becomes `no-timescope`.
+# `variant` must match the suffix `eval` derives from the flags (`noTimeScope`
+# -> `no-timescope`), or the merge finds no files.
 $runs = @(
   @{ name = "palimpsest";            system = "palimpsest";    graph = $true;  args = @();                              variant = "" }
   @{ name = "palimpsest-v2 full";    system = "palimpsest-v2"; graph = $true;  args = @();                              variant = "" }
@@ -92,20 +76,17 @@ for ($i = $From - 1; $i -lt $runs.Count; $i++) {
       exit 1
     }
   } else {
-    # No graph reads, so no batching and no priming pass. Still run twice: the
-    # second run replays every LLM call from cache, which is where the latency
-    # column comes from for these systems too.
+    # Unbatched, but still twice: the warm run replays every LLM call from
+    # cache and is where the latency column comes from.
     $log = Join-Path $logDirectory ("{0:d2}-{1}.log" -f $number, ($run.name -replace "[^a-z0-9]+", "-"))
     foreach ($pass in @("cold", "warm")) {
       $evalArguments = @(
         "tsx", "packages/eval/bin/eval.ts",
         "--system", $run.system, "--split", "dev", "--concurrency", "$Concurrency"
       ) + $run.args
-      $process = Start-Process -FilePath "npx.cmd" -ArgumentList $evalArguments `
-        -WorkingDirectory $repositoryRoot -RedirectStandardOutput "$log.$pass" `
-        -RedirectStandardError "$log.$pass.err" -WindowStyle Hidden -PassThru -Wait
-      if ($process.ExitCode -ne 0) {
-        Write-Output ("run {0} {1} pass failed with exit code {2}; see {3}.{1}" -f $number, $pass, $process.ExitCode, $log)
+      $exitCode = Invoke-EvalProcess -ArgumentList $evalArguments -Log "$log.$pass"
+      if ($exitCode -ne 0) {
+        Write-Output ("run {0} {1} pass failed with exit code {2}; see {3}.{1}" -f $number, $pass, $exitCode, $log)
         exit 1
       }
     }

@@ -3,7 +3,7 @@ import { Data, Either } from "effect"
 import type { DroppedClaim, ExtractedClaim, ExtractedEntity } from "./Extract.js"
 import { canonicalJson, type CanonicalJson } from "./SourceIdentity.js"
 
-/** Durable extraction output; cache-hit state is intentionally excluded. */
+/** Extraction output without cache-hit state. */
 export interface PersistedSessionExtraction {
   readonly sid: string
   readonly sessionOrd: number
@@ -11,7 +11,6 @@ export interface PersistedSessionExtraction {
   readonly dropped: ReadonlyArray<DroppedClaim>
 }
 
-/** Inputs bound into one content-addressed extraction artifact. */
 export interface CreateExtractionArtifact {
   readonly commitId: string
   readonly sourceDigest: string
@@ -19,13 +18,11 @@ export interface CreateExtractionArtifact {
   readonly extraction: PersistedSessionExtraction
 }
 
-/** Immutable model output tied to exactly one source-processing commit. */
 export interface ExtractionArtifact extends CreateExtractionArtifact {
   readonly id: string
   readonly canonicalJson: string
 }
 
-/** A persisted extraction artifact was malformed or no longer matched its id. */
 export class InvalidExtractionArtifact extends Data.TaggedError("InvalidExtractionArtifact")<{
   readonly reason: "invalidEncoding" | "identifierMismatch"
 }> {
@@ -79,7 +76,6 @@ const descriptorFor = (input: CreateExtractionArtifact): CanonicalJson => ({
   source_digest: input.sourceDigest
 })
 
-/** Creates a durable artifact identity from only source-bound model output. */
 export const createExtractionArtifact = (input: CreateExtractionArtifact): ExtractionArtifact => {
   const serialized = canonicalJson(descriptorFor(input))
   return {
@@ -196,7 +192,6 @@ const droppedClaimFrom = (value: unknown): DroppedClaim | undefined => {
   return { reason, turnIdx, quote, text }
 }
 
-/** Reconstitutes a stored artifact only when its bytes and content-address both verify. */
 export const parseExtractionArtifact = (
   id: string,
   serialized: string

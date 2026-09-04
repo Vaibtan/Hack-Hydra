@@ -1,242 +1,22 @@
-/**
- * The API, as the demo sees it.
- *
- * Hand-written types rather than a generated client: the demo is a
- * single-purpose app against a five-endpoint API, and a generated client would
- * add a build step to the one part of the project a viewer is most likely to
- * read.
- */
+import type * as S from "@palimpsest/server"
 
-export interface Highlight {
-  readonly start: number
-  readonly end: number
-}
-
-export interface EvidenceSpan {
-  readonly ckey: string
-  readonly id: string
-  readonly sid: string
-  readonly sessionOrd: number
-  readonly sessionDate: number
-  readonly tEvent: number
-  readonly speaker: string
-  readonly status: "CURRENT" | "SUPERSEDED"
-  readonly atSession: number | null
-  readonly excerpt: string
-  readonly highlight: Highlight
-}
-
-export interface ConvergenceRow {
-  readonly ckey: string
-  readonly convergence: number
-  readonly score: number
-  readonly anchors: ReadonlyArray<string>
-}
-
-export interface Receipt {
-  readonly question: string
-  readonly uid: string
-  /** Which read path answered. `v1` is the shipped one. */
-  readonly pipeline: "v1" | "v2"
-  readonly profile: "full" | "fast"
-  readonly asOf: number | null
-  readonly anchorTerms: ReadonlyArray<string>
-  readonly anchorsReachingClaims: ReadonlyArray<string>
-  readonly anchorsReachingNothing: ReadonlyArray<string>
-  readonly historical: boolean
-  readonly wantsCount: boolean
-  readonly timeRef: string | null
-  readonly convergenceThreshold: number
-  readonly totalClaims: number
-  readonly query1: string
-  readonly query1Params: Readonly<Record<string, string | number>>
-  readonly query1Paths: number
-  readonly query2: string | null
-  readonly query2Paths: number
-  readonly convergence: ReadonlyArray<ConvergenceRow>
-}
-
-
-/**
- * The v2 plan: what each stage decided, and how long it took.
- *
- * The receipt says what was *read*; this says what was *decided*. Null on v1,
- * which has no plan — the panel renders the receipt alone in that case, because
- * showing the two pipelines side by side is the point of the demo.
- */
-export interface PlanArm {
-  readonly label: string
-  readonly kind: string
-  readonly claims: number
-  readonly paths: number
-  readonly query: string | null
-  readonly timedOut: boolean
-}
-
-export interface RetrievalPlan {
-  readonly route: string
-  readonly routeReason: string
-  readonly flags: ReadonlyArray<string>
-  readonly subQuestions: ReadonlyArray<string>
-  readonly probes: ReadonlyArray<string>
-  readonly extraTerms: ReadonlyArray<string>
-  readonly arms: ReadonlyArray<PlanArm>
-  readonly union: { readonly candidates: number; readonly dropped: number }
-  readonly timeScope: {
-    readonly phrase: string | null
-    readonly interval: readonly [number, number] | null
-    readonly inScope: number
-    readonly outOfScope: number
-    readonly applied: boolean
-  }
-  readonly selection: {
-    readonly kept: ReadonlyArray<string>
-    readonly dropped: ReadonlyArray<{ readonly id: string; readonly reason: string }>
-    readonly reasons: Readonly<Record<string, string>>
-    readonly fallback: boolean
-  }
-  readonly sufficiency: {
-    /** `EXACT` / `INFERRABLE` / `PARTIAL`, or `skipped` when the call never ran. */
-    readonly tier: string
-    readonly missing: string
-    readonly premise: string
-    /** Excerpt ids the check cited, after the CURRENT-and-in-pack verification. */
-    readonly premiseContradictedBy: ReadonlyArray<string>
-    readonly secondPass: boolean
-  }
-  /** Null when the ask abstained before anything was packed. */
-  readonly budget: {
-    readonly budget: number
-    readonly estimatedTokens: number
-    readonly charsPerToken: number
-    readonly dropped: ReadonlyArray<{
-      readonly id: string
-      readonly reason: string
-      readonly chars: number
-    }>
-    readonly overBudget: boolean
-  } | null
-  readonly intervalSentence: string | null
-  readonly stages: Readonly<Record<string, number>>
-  readonly askMs: number
-  readonly graphMs: number
-}
-
-export interface AskResponse {
-  readonly verdict: "ANSWER" | "ABSENT"
-  readonly reason: string | null
-  readonly answer: string | null
-  readonly notInMemory: boolean
-  readonly reasoning: string
-  readonly citedIds: ReadonlyArray<string>
-  readonly premiseSupported: boolean | null
-  readonly premiseNote: string
-  readonly evidence: ReadonlyArray<EvidenceSpan>
-  readonly receipt: Receipt
-  /** Null on v1. */
-  readonly plan: RetrievalPlan | null
-  readonly hash: string
-  readonly latencyMs: number
-}
-
-export interface SessionRow {
-  readonly sid: string
-  readonly sessionOrd: number
-  readonly dateInt: number
-  readonly ts: number
-  readonly turns: number
-}
-
-export interface DerivedAssertionSourceSpan {
-  readonly sourceDigest: string
-  readonly logicalSessionId: string
-  readonly sid: string
-  readonly turnIdx: number
-  readonly offsetStart: number
-  readonly offsetEnd: number
-  readonly speaker: string
-  readonly excerpt: string
-  readonly highlight: Highlight
-}
-
-/** Model-generated index output paired with its actual verbatim source span. */
-export interface DerivedIndexAssertion {
-  readonly assertionKey: string
-  readonly derivedText: string
-  readonly sessionOrd: number
-  readonly tEvent: number
-  readonly sid: string
-  readonly source: DerivedAssertionSourceSpan
-  readonly supersededBy: string | null
-  readonly atSession: number | null
-}
-
-export interface SlotChain {
-  readonly skey: string
-  readonly asOf: number | null
-  readonly assertions: ReadonlyArray<DerivedIndexAssertion>
-}
-
-export interface ContestedSlot {
-  readonly skey: string
-  readonly entityName: string
-  readonly attr: string
-  readonly nClaims: number
-}
-
-export interface Stats {
-  readonly uid: string
-  readonly claims: number
-  readonly entities: number
-  readonly slots: number
-  readonly tokens: number
-  readonly sessions: number
-  readonly turns: number
-  readonly supersessions: number
-  readonly contestedSlots: number
-  readonly contested: ReadonlyArray<ContestedSlot>
-}
-
-/** What a warm reached, so a warm that touched nothing is visible. */
-export interface WarmResult {
-  readonly uid: string
-  readonly entities: number
-  readonly slots: number
-  readonly sessions: number
-  readonly tokens: number
-  readonly slotClaims: number
-  readonly turns: number
-  /** Walks that failed; a warm that reached nothing must not look like success. */
-  readonly failed: number
-  /** The budget ran out before every walk was made. */
-  readonly truncated: boolean
-  readonly ms: number
-}
-
-export interface IngestResult {
-  readonly uid: string
-  readonly sid: string
-  readonly sessionOrd: number
-  readonly claims: number
-  readonly dropped: number
-  readonly touchedSlots: ReadonlyArray<string>
-  readonly supersessions: number
-  readonly alreadyPresent: boolean
-  readonly bookmark: string | null
-  readonly stats: Omit<Stats, "uid" | "contested">
-}
-
-export interface AskInput {
-  readonly question: string
-  readonly bookmark?: string
-  readonly questionDate?: string
-  readonly asOf?: number
-  readonly historical?: boolean
-  readonly retrieveOnly?: boolean
-  readonly premiseCheck?: boolean
-  readonly pipeline?: "v1" | "v2"
-  readonly profile?: "full" | "fast"
-}
+export type Highlight = typeof S.Highlight.Type
+export type EvidenceSpan = typeof S.EvidenceSpan.Type
+export type ConvergenceRow = typeof S.ConvergenceRow.Type
+export type Receipt = typeof S.Receipt.Type
+export type PlanArm = typeof S.PlanArm.Type
+export type RetrievalPlan = typeof S.RetrievalPlan.Type
+export type AskResponse = typeof S.AskResponse.Type
+export type AskInput = typeof S.AskRequest.Type
+export type SessionRow = typeof S.SessionRow.Type
+export type DerivedAssertionSourceSpan = typeof S.DerivedAssertionSourceSpan.Type
+export type DerivedIndexAssertion = typeof S.DerivedIndexAssertion.Type
+export type SlotChain = typeof S.SlotChainResponse.Type
+export type Stats = typeof S.StatsResponse.Type
+export type ContestedSlot = Stats["contested"][number]
+export type WarmResult = typeof S.WarmResponse.Type
+export type IngestResult = typeof S.IngestSessionResponse.Type
+export type IngestInput = typeof S.IngestSessionRequest.Type
 
 export class ApiError extends Error {
   constructor(
@@ -267,30 +47,13 @@ export const api = {
   sessions: (uid: string): Promise<ReadonlyArray<SessionRow>> =>
     request(`/users/${encodeURIComponent(uid)}/sessions`),
 
-  /**
-   * Reads the blocks the next ask will read, so the demo's first question after
-   * selecting a user is not the one that pays for them.
-   *
-   * HydraDB's object-store cache is cold per user and a cold block is an HTTP
-   * GET to the object store, not a page fault: the first ask measured 11 397 ms
-   * of `graphMs` against a warm 68 ms.
-   *
-   * **It used to call `stats`, and that was the bug.** `stats` is an indexed
-   * read by id off the `User` vertex; it touches none of the blocks a
-   * convergence walk reads, so the comment claiming it was "enough to pull that
-   * user's pages in" was wrong, and the ops note had already measured that
-   * warming made no difference to the cold number. `/warm` walks what an ask
-   * walks — the fan-out, the Tokens behind the entities, the slots' claims and
-   * the sessions' turns.
-   */
+  /** Reads what the next ask will read; a failure must not stop the user asking. */
   warm: async (uid: string): Promise<WarmResult | null> => {
     try {
       return await request<WarmResult>(`/users/${encodeURIComponent(uid)}/warm`, {
         method: "POST"
       })
     } catch {
-      // Warming is an optimisation. A failure here must not stop the user
-      // asking a question -- the ask will report its own error if there is one.
       return null
     }
   },
@@ -303,20 +66,14 @@ export const api = {
         (asOf === undefined ? "" : `?asOf=${asOf}`)
     ),
 
-  ingestSession: (
-    uid: string,
-    session: {
-      readonly date: string
-      readonly turns: ReadonlyArray<{ readonly role: "user" | "assistant"; readonly content: string }>
-    }
-  ): Promise<IngestResult> =>
+  ingestSession: (uid: string, session: IngestInput): Promise<IngestResult> =>
     request(`/users/${encodeURIComponent(uid)}/sessions`, {
       method: "POST",
       body: JSON.stringify(session)
     })
 }
 
-/** `20231130` → `30 Nov 2023`, because a date is read far more often than it is sorted. */
+/** `20231130` to `30 Nov 2023`. */
 export const formatDateInt = (dateInt: number): string => {
   const text = String(dateInt)
   if (text.length !== 8) return text

@@ -1,7 +1,7 @@
 # Palimpsest — build spec (v1, 2026-08-17)
 
 Agent memory layer for cross-session continuity on HydraDB. Track: *Context & Memory Systems*.
-Supersedes the day plan in the handoff; incorporates `docs/review-2026-08-17-palimpsest-plan.md`.
+Supersedes the day plan in the handoff; incorporates `docs/archive/review-2026-08-17-palimpsest-plan.md`.
 
 Locked decisions: TypeScript + Effect only · HydraDB-only retrieval (no external index) · ~7 days ·
 repo + writeup + recorded video · demo = benchmark replay **and** live ingestion · users partitioned

@@ -4,7 +4,7 @@ import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { Transcript } from "../../src/index.js"
+import { Transcript } from "../../src/Transcript.js"
 
 /**
  * The same ingest, but against a real LongMemEval user rather than a fixture —

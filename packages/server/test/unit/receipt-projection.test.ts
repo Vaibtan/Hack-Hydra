@@ -1,12 +1,11 @@
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import type { Receipt as RetrievalReceipt } from "@palimpsest/palimpsest"
-import { Receipt, projectRetrievalReceipt } from "../../src/index.js"
+import { Receipt } from "../../src/index.js"
 
 const receipt = (): RetrievalReceipt => ({
   question: "Where did I move?",
   uid: "user-a",
-  pipeline: "v1",
   profile: "full",
   asOf: null,
   anchorTerms: ["move"],
@@ -28,17 +27,16 @@ const receipt = (): RetrievalReceipt => ({
   ]
 })
 
-describe("projectRetrievalReceipt", () => {
-  it("preserves serialisable Query 1 parameters in the HTTP receipt", () => {
-    const result = projectRetrievalReceipt(receipt())
+describe("Receipt schema", () => {
+  it("accepts the retrieval receipt as-is, Query 1 parameters included", () => {
+    const result = receipt()
 
-    expect(result.query1Params).toEqual({ maxLen: 2, pathCount: 100 })
     expect(JSON.parse(JSON.stringify(result.query1Params))).toEqual(result.query1Params)
     expect(Schema.decodeUnknownEither(Receipt)(result)).toMatchObject({ _tag: "Right" })
   })
 
   it("rejects a receipt that drops the Query 1 parameters needed for replay", () => {
-    const { query1Params: _query1Params, ...withoutParameters } = projectRetrievalReceipt(receipt())
+    const { query1Params: _query1Params, ...withoutParameters } = receipt()
 
     expect(Schema.decodeUnknownEither(Receipt)(withoutParameters)._tag).toBe("Left")
   })

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { classifyHydraHttpError, HydraEngineError } from "../../src/index.js"
+import { classifyHydraHttpError } from "../../src/Classify.js"
+import { HydraEngineError } from "../../src/Errors.js"
 
 describe("classifyHydraHttpError", () => {
   it("preserves reviewed engine codes as typed, safe failures", () => {

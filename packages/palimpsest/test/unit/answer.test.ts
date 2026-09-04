@@ -1,21 +1,12 @@
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { answerV2, type AnswerOptions } from "../../src/Answer.js"
-import { ABSTAIN_TIERS } from "../../src/Sufficiency.js"
+import { answerV2, type AnswerOptions, type V2Answer } from "../../src/Answer.js"
+import type { AskOptions, AskResult, RetrievalPlan } from "../../src/Plan.js"
 import type { HydratedSpan, ReadAnswer, Reader } from "../../src/Reader.js"
-import type { AskOptions, AskResult, RetrievalPlan, Retrieve } from "../../src/Retrieve.js"
+import type { Retrieve } from "../../src/Retrieve.js"
+import { ABSTAIN_TIERS } from "../../src/Sufficiency.js"
 
-/**
- * `answerV2` with the graph, the reader and the model all stubbed, so what is
- * under test is the *loop*: when the sufficiency check runs, when it may go
- * back, and — the three cases that can only ever take an answer away — when it
- * may not turn one into an abstention.
- *
- * Every guard here was written as a guard rather than discovered as a bug, so
- * each one is asserted against the failure it was written for and not only
- * against the constant it reads.
- */
 
 const span = (over: Partial<HydratedSpan> & { id: string }): HydratedSpan => ({
   ckey: `u|c|${over.id}`,
@@ -51,8 +42,6 @@ const plan = (over: Partial<RetrievalPlan> = {}): RetrievalPlan => ({
   protectedKeys: [],
   unionSessions: ["s1"],
   ablations: {},
-  sufficiency: null,
-  budget: null,
   ...over
 })
 
@@ -63,14 +52,6 @@ const ask = (over: Partial<AskResult> = {}): AskResult =>
     evidence: [],
     receipt: {} as AskResult["receipt"],
     hash: "hash",
-    anchors: {
-      terms: [],
-      historical: false,
-      wantsCount: false,
-      timeRef: null,
-      expanded: false,
-      cached: true
-    },
     timings: { askMs: 1, graphMs: 1, stages: {} },
     plan: plan(),
     ...over
@@ -84,25 +65,17 @@ const readAnswer = (over: Partial<ReadAnswer> = {}): ReadAnswer =>
     reasoning: "",
     spans: [span({ id: "one" })],
     cached: true,
-    premiseSupported: null,
-    premiseNote: "",
     inputTokens: 100,
     outputTokens: 5,
     hydrateMs: 1,
     readMs: 1,
     spanHash: "spanhash",
     granularity: "span",
-    estimatedTokens: 25,
-    budgetDropped: 0,
-    budgetDroppedSessions: [],
-    budgetDrops: [],
-    overBudget: false,
-    charsPerToken: 4,
+    pack: null,
     recited: false,
     ...over
   }) as ReadAnswer
 
-/** What the sufficiency call returns, and how many times it was asked. */
 interface Judgement {
   readonly tier: "EXACT" | "INFERRABLE" | "PARTIAL"
   readonly missing?: string
@@ -190,19 +163,8 @@ const run = async (harness: Harness) => {
       stubLlm(harness.judgements, llmCalls)
     ) as Effect.Effect<never, never, never>
   )
-  return { result: result as unknown as Awaited<ReturnType<typeof answerV2Result>>, askedWith, readSpans, llmCalls }
+  return { result: result as unknown as V2Answer, askedWith, readSpans, llmCalls }
 }
-
-// Only for the return type above; never called.
-declare const answerV2Result: () => Promise<{
-  readonly verdict: "ANSWER" | "ABSENT"
-  readonly reason: string | null
-  readonly secondPass: boolean
-  readonly passes: number
-  readonly read: ReadAnswer | null
-  readonly ask: AskResult
-  readonly sufficiency: { readonly tier: string; readonly skipped: boolean }
-}>
 
 describe("the sufficiency loop", () => {
   it("reads once and never asks the model when the ask already abstained", async () => {
@@ -229,7 +191,7 @@ describe("the sufficiency loop", () => {
     expect(llmCalls).toEqual([])
     expect(result.verdict).toBe("ANSWER")
     expect(result.secondPass).toBe(false)
-    expect(result.ask.plan?.sufficiency?.tier).toBe("skipped")
+    expect(result.ask.plan.sufficiency.tier).toBe("skipped")
   })
 
   it("skips the check in the fast profile, which is what makes fast fast", async () => {
@@ -265,7 +227,7 @@ describe("the sufficiency loop", () => {
     expect(llmCalls).toEqual(["sufficiency"])
     expect(askedWith).toHaveLength(1)
     expect(result.verdict).toBe("ANSWER")
-    expect(result.ask.plan?.sufficiency?.tier).toBe("EXACT")
+    expect(result.ask.plan.sufficiency.tier).toBe("EXACT")
   })
 
   it("treats INFERRABLE as a complete answer, not a warning", async () => {
@@ -281,9 +243,6 @@ describe("the sufficiency loop", () => {
   })
 
   it("does not go back on PARTIAL with nothing to search for", async () => {
-    // The terms are the second pass's whole input. Re-running the same arms
-    // with the same sources would cost a graph read and two LLM calls to
-    // produce the pack that was just judged.
     const { result, askedWith } = await run({
       asks: [ask()],
       reads: [readAnswer()],
@@ -309,9 +268,7 @@ describe("the second pass runs at most once", () => {
 
     expect(askedWith).toHaveLength(2)
     expect(askedWith[0]!.extraTerms).toBeUndefined()
-    // Stemmed, de-duplicated and sorted by the sufficiency stage.
     expect(askedWith[1]!.extraTerms).toEqual(["kyoto", "mov"])
-    expect(askedWith[1]!.pipeline).toBe("v2")
     expect(result.secondPass).toBe(true)
     expect(result.passes).toBe(2)
   })
@@ -328,10 +285,6 @@ describe("the second pass runs at most once", () => {
 
     expect(askedWith).toHaveLength(2)
     expect(llmCalls).toEqual(["sufficiency", "sufficiency"])
-    // Two passes and then it stops, whatever the second one said. Whether a
-    // still-PARTIAL verdict *abstains* is `ABSTAIN_TIERS`, which the dev
-    // risk-coverage curve set to empty -- so at the shipped threshold this
-    // answers rather than refusing, and the loop is what is under test here.
     expect(result.verdict).toBe(ABSTAIN_TIERS.includes("PARTIAL") ? "ABSENT" : "ANSWER")
     expect(result.reason).toBe(
       ABSTAIN_TIERS.includes("PARTIAL") ? "INSUFFICIENT_EVIDENCE" : null
@@ -339,9 +292,6 @@ describe("the second pass runs at most once", () => {
   })
 
   it("still widens on PARTIAL even though it no longer refuses", async () => {
-    // The stage's value is the second pass, and that is triggered by PARTIAL
-    // with named terms, independently of whether the tier abstains. Emptying
-    // `ABSTAIN_TIERS` drops the refusal and keeps the widening.
     const { askedWith, result } = await run({
       asks: [ask(), ask()],
       reads: [readAnswer(), readAnswer({ answer: "Osaka, previously Kyoto" })],
@@ -368,13 +318,12 @@ describe("the second pass runs at most once", () => {
 
     expect(result.verdict).toBe("ANSWER")
     expect(result.read?.answer).toBe("Osaka, previously Kyoto")
-    expect(result.ask.plan?.sufficiency).toMatchObject({ tier: "EXACT", secondPass: true })
+    expect(result.ask.plan.sufficiency).toMatchObject({ tier: "EXACT", secondPass: true })
   })
 })
 
 describe("the three guards, each against the failure it was written for", () => {
   it("a provider error is skipped, never PARTIAL", async () => {
-    // A 500 must not be able to turn a working ask into an abstention.
     const { result, askedWith } = await run({
       asks: [ask()],
       reads: [readAnswer()],
@@ -387,9 +336,6 @@ describe("the three guards, each against the failure it was written for", () => 
   })
 
   it("a second pass that abstains keeps the first pass's answer", async () => {
-    // Widening exists to add evidence, never to remove an answer: if the wider
-    // search abstains where the narrower one did not, the widening changed the
-    // candidate set out from under the verdict.
     const { result } = await run({
       asks: [ask(), ask({ verdict: "ABSENT", reason: "A2_no_convergence" })],
       reads: [readAnswer({ answer: "Osaka" })],
@@ -416,7 +362,6 @@ describe("the three guards, each against the failure it was written for", () => 
   })
 
   it("a premise cited only to a SUPERSEDED excerpt is not a contradiction", async () => {
-    // That says the premise *used* to be false, which is often the answer.
     const { result } = await run({
       asks: [ask()],
       reads: [readAnswer({ spans: [span({ id: "one", status: "SUPERSEDED" })] })],
@@ -427,7 +372,6 @@ describe("the three guards, each against the failure it was written for", () => 
   })
 
   it("a premise cited to a CURRENT excerpt abstains without a second pass", async () => {
-    // Nothing a wider search can find makes a false presupposition true.
     const { result, askedWith } = await run({
       asks: [ask(), ask()],
       reads: [readAnswer()],
@@ -446,8 +390,38 @@ describe("the three guards, each against the failure it was written for", () => 
     expect(result.reason).toBe("CONTRADICTED_PREMISE")
     expect(result.secondPass).toBe(false)
     expect(askedWith).toHaveLength(1)
-    // The reader's spans are still reported: they are what the decision was made on.
     expect(result.read).not.toBeNull()
+  })
+
+  it("records on the plan only the cited ids that are in the pack and CURRENT", async () => {
+    const { result } = await run({
+      asks: [ask()],
+      reads: [
+        readAnswer({
+          spans: [span({ id: "old", status: "SUPERSEDED", atSession: 2 }), span({ id: "now" })]
+        })
+      ],
+      judgements: [
+        { tier: "EXACT", premise: "they own a dog", premise_contradicted_by: ["old", "now", "ghost"] }
+      ]
+    })
+
+    expect(result.verdict).toBe("ABSENT")
+    expect(result.reason).toBe("CONTRADICTED_PREMISE")
+    expect(result.ask.plan.sufficiency.premiseContradictedBy).toEqual(["now"])
+    expect(result.sufficiency.premiseCitedIds).toEqual(["old", "now", "ghost"])
+  })
+
+  it("never lets an id outside the pack reach the plan", async () => {
+    const { result } = await run({
+      asks: [ask()],
+      reads: [readAnswer({ spans: [span({ id: "one" })] })],
+      judgements: [{ tier: "EXACT", premise: "they own a dog", premise_contradicted_by: ["ghost"] }]
+    })
+
+    expect(result.verdict).toBe("ANSWER")
+    expect(result.ask.plan.sufficiency.premise).toBe("they own a dog")
+    expect(result.ask.plan.sufficiency.premiseContradictedBy).toEqual([])
   })
 })
 
@@ -464,8 +438,8 @@ describe("the plan carries the sufficiency verdict, on every path", () => {
       judgements: [{ tier: "EXACT" }]
     })
 
-    expect(ran.result.ask.plan?.sufficiency?.tier).toBe("EXACT")
-    expect(notRun.result.ask.plan?.sufficiency?.tier).toBe("skipped")
+    expect(ran.result.ask.plan.sufficiency.tier).toBe("EXACT")
+    expect(notRun.result.ask.plan.sufficiency.tier).toBe("skipped")
   })
 
   it("records the missing text and the premise the check named", async () => {
@@ -478,7 +452,7 @@ describe("the plan carries the sufficiency verdict, on every path", () => {
       ]
     })
 
-    expect(result.ask.plan?.sufficiency).toMatchObject({
+    expect(result.ask.plan.sufficiency).toMatchObject({
       tier: "PARTIAL",
       missing: "the third item",
       secondPass: true

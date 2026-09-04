@@ -1,16 +1,8 @@
 import { describe, expect, it } from "vitest"
-import {
-  ABSTAIN_TIERS,
-  MAX_REFINEMENT_PASSES,
-  SKIP_ROUTES,
-  abstains,
-  premiseContradiction,
-  renderPack,
-  runsOn,
-  skipped,
-  type HydratedSpan,
-  type SufficiencyReport
-} from "../../src/index.js"
+import type { HydratedSpan } from "../../src/Reader.js"
+import { RoutePolicy } from "../../src/Routes.js"
+import { ABSTAIN_TIERS, MAX_REFINEMENT_PASSES, abstains, premiseContradiction, renderPack, runsOn, skipped, type SufficiencyReport } from "../../src/Sufficiency.js"
+import { ROUTES } from "../../src/Understand.js"
 
 const span = (id: string, status: "CURRENT" | "SUPERSEDED"): HydratedSpan => ({
   ckey: `u|c|${id}`,
@@ -35,7 +27,7 @@ const report = (overrides: Partial<SufficiencyReport> = {}): SufficiencyReport =
   missing: "",
   missingTerms: [],
   premise: "",
-  premiseContradictedBy: [],
+  premiseCitedIds: [],
   skipped: false,
   cached: true,
   ...overrides
@@ -43,10 +35,6 @@ const report = (overrides: Partial<SufficiencyReport> = {}): SufficiencyReport =
 
 describe("the premise guard", () => {
   it("needs the model to point at an excerpt, not merely name a premise", () => {
-    // Naming a presupposition is free and a model asked about presuppositions
-    // will find one. `CONTRADICTED_PREMISE` refuses to answer a question, which
-    // is the most expensive thing this pipeline can do on a benchmark where 470
-    // of 500 questions are answerable, so it has to be paid for with evidence.
     const named = report({ premise: "the person is a manager" })
     expect(premiseContradiction(named, [span("aaaa1111", "CURRENT")])).toBeNull()
   })
@@ -54,7 +42,7 @@ describe("the premise guard", () => {
   it("accepts a premise cited to a CURRENT excerpt that is in the pack", () => {
     const cited = report({
       premise: "the person is a manager",
-      premiseContradictedBy: ["aaaa1111"]
+      premiseCitedIds: ["aaaa1111"]
     })
     expect(premiseContradiction(cited, [span("aaaa1111", "CURRENT")])).toEqual({
       premise: "the person is a manager",
@@ -63,16 +51,12 @@ describe("the premise guard", () => {
   })
 
   it("rejects a premise cited only to a SUPERSEDED excerpt", () => {
-    // A superseded excerpt says the premise *used* to be false. That is not a
-    // reason to refuse the question - it is often the answer to it.
-    const cited = report({ premise: "p", premiseContradictedBy: ["aaaa1111"] })
+    const cited = report({ premise: "p", premiseCitedIds: ["aaaa1111"] })
     expect(premiseContradiction(cited, [span("aaaa1111", "SUPERSEDED")])).toBeNull()
   })
 
   it("rejects an id that is not in the pack at all", () => {
-    // The reader is shown the pack. An id outside it is a hallucinated citation
-    // and cannot contradict anything the reader can see.
-    const cited = report({ premise: "p", premiseContradictedBy: ["bbbb2222"] })
+    const cited = report({ premise: "p", premiseCitedIds: ["bbbb2222"] })
     expect(premiseContradiction(cited, [span("aaaa1111", "CURRENT")])).toBeNull()
   })
 
@@ -83,8 +67,9 @@ describe("the premise guard", () => {
 
 describe("the skip rule", () => {
   it("skips the two routes where one excerpt is the whole answer", () => {
-    expect([...SKIP_ROUTES]).toEqual(["fact", "assistant_output"])
-    for (const route of SKIP_ROUTES) {
+    const skipRoutes = ROUTES.filter((route) => !RoutePolicy[route].sufficiency)
+    expect(skipRoutes).toEqual(["fact", "assistant_output"])
+    for (const route of skipRoutes) {
       expect(runsOn(route, [span("a", "CURRENT")], "full")).toBe(false)
     }
   })
@@ -106,29 +91,17 @@ describe("the skip rule", () => {
 
 describe("abstention", () => {
   it("abstains on exactly the tiers the constant names", () => {
-    // The rule, not the value. `ABSTAIN_TIERS` is chosen from the dev
-    // risk-coverage curve and is expected to move; what must not move is that
-    // `abstains` answers the constant and nothing else.
     for (const tier of ["EXACT", "INFERRABLE", "PARTIAL"] as const) {
       expect(abstains(report({ tier }))).toBe(ABSTAIN_TIERS.includes(tier))
     }
   })
 
   it("abstains on nothing, which is what the dev curve chose", () => {
-    // Pinned separately from the rule above, because it is a *measurement*:
-    // the `PARTIAL` gate refused 13 % of the answerable dev split and bought no
-    // abstention accuracy for it (5/6 `_abs` either way), while 46 of the 47 it
-    // did answer were correct. `results/risk-coverage-dev.md` is the table and
-    // `Sufficiency.ts` carries the reasoning. Change this line and that comment
-    // together, or neither.
     expect([...ABSTAIN_TIERS]).toEqual([])
     expect(abstains(report({ tier: "PARTIAL" }))).toBe(false)
   })
 
   it("never abstains on a check that did not run", () => {
-    // A failed provider call returns `skipped`, and this stage can only ever
-    // withhold an answer the pipeline was otherwise going to give. A 500 must
-    // not be able to turn a working ask into an abstention.
     expect(abstains(skipped("PARTIAL"))).toBe(false)
     expect(skipped().skipped).toBe(true)
   })

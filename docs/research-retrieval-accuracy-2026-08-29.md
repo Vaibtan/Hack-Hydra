@@ -1,7 +1,7 @@
 # Retrieval accuracy research — what moves LongMemEval, and what is wrong with our misses
 
 **Research cut:** 2026-08-29
-**Inputs:** the three review docs (`review-2026-08-17`, `-19`, `-20`), `results/*-60.json` replayed per question against `data/longmemeval_s_cleaned.json` and `.cache/llm/extract`, and the papers below (fetched through `pwc` / arXiv).
+**Inputs:** the three review docs (`docs/archive/review-2026-08-17`, `-19`, `-20`), `results/*-60.json` replayed per question against `data/longmemeval_s_cleaned.json` and `.cache/llm/extract`, and the papers below (fetched through `pwc` / arXiv).
 **Companion:** the 2026-08-20 landscape doc (`research-memory-context-landscape-2026-08-20.md`) covers product neighbours and evaluation validity; this document is narrower — *which algorithmic changes are most likely to raise accuracy, quality and latency on our actual failure modes*, and it ends in the spec for the next build (`spec-retrieval-v2.md`, GitHub issue #22).
 
 Evidence labels: **repo-observed** (our code/artefacts), **source-reported** (the paper's own number, not reproduced here), **proposed** (an experiment for us).

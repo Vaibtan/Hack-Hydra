@@ -1,11 +1,7 @@
 import type { ExtractedClaim } from "../../src/Extract.js"
-import {
-  createExtractionArtifact,
-  createExtractionGeneration,
-  IngestManifest,
-  IngestManifestLayerMemory,
-  parseExtractionArtifact
-} from "../../src/index.js"
+import { createExtractionArtifact, parseExtractionArtifact } from "../../src/ExtractionArtifact.js"
+import { IngestManifest, IngestManifestLayerMemory } from "../../src/IngestManifest.js"
+import { createExtractionGeneration } from "../../src/SourceIdentity.js"
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 

@@ -1,6 +1,6 @@
 import { HttpApiBuilder } from "@effect/platform"
 import { parseHaystackDate, type DatasetSession, type DatasetTurn } from "@palimpsest/dataset"
-import type { HydraError } from "@palimpsest/hydra"
+import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import {
   Ingest,
   Reader,
@@ -12,26 +12,17 @@ import {
   ingestGenerationConfig,
   prepareDerivedIndexAssertions,
   readUserStats,
+  unreadAnswer,
   warmUser,
-  sourceLinkedChainEvidence
+  sourceLinkedChainEvidence,
+  type HydratedSpan,
+  type V2Answer
 } from "@palimpsest/palimpsest"
-import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { createHash } from "node:crypto"
-import { BadRequest, GraphError, NotFound, PalimpsestApi } from "./Api.js"
-import { projectPlan, projectRetrievalReceipt } from "./ReceiptProjection.js"
+import { BadRequest, GraphError, NotFound, PalimpsestApi, type AskResponse } from "./Api.js"
+import { projectPlan } from "./ReceiptProjection.js"
 
-/**
- * The five endpoints.
- *
- * Two things are worth saying about what is *not* here. There is no auth and no
- * tenancy beyond the `uid` path segment — the spec lists both as non-goals, and
- * pretending otherwise in a demo server would be theatre. Causal bookmarks are
- * caller-held: an ask that supplies the opaque token returned by ingest runs at
- * that token's floor; an ask without one makes no read-your-writes claim.
- */
-
-/** HydraDB's own reason text is precise; propagate it rather than flattening it. */
 const graphError = (error: HydraError): GraphError =>
   new GraphError({ reason: error.reason ?? String(error) })
 
@@ -44,17 +35,34 @@ const sourceIndexState = (
   throw new Error(`Source index operation returned before INDEXED: ${state}`)
 }
 
-/**
- * A session id for content the caller did not name. Content-addressed, so
- * posting the same session twice is recognised as the same session and the
- * second post is a no-op rather than a duplicate history.
- */
+/** A content-addressed session id for a session the caller did not name. */
 const sidFor = (date: string, turns: ReadonlyArray<{ readonly content: string }>): string =>
   `live-${createHash("sha1")
     .update(date, "utf8")
     .update(turns.map((turn) => turn.content).join(""), "utf8")
     .digest("hex")
     .slice(0, 12)}`
+
+const toAskResponse = (
+  answered: V2Answer,
+  evidence: ReadonlyArray<HydratedSpan>,
+  started: number
+): typeof AskResponse.Type => {
+  const read = answered.read
+  return {
+    verdict: answered.verdict,
+    reason: answered.reason,
+    answer: answered.verdict === "ABSENT" || read === null ? null : read.answer,
+    notInMemory: answered.verdict === "ABSENT" || (read !== null && read.notInMemory),
+    reasoning: read === null ? "" : read.reasoning,
+    citedIds: read === null ? [] : read.citedIds,
+    evidence,
+    receipt: answered.ask.receipt,
+    plan: projectPlan(answered),
+    hash: answered.hash,
+    latencyMs: Date.now() - started
+  }
+}
 
 export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers) =>
   Effect.gen(function* () {
@@ -71,7 +79,6 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
       )
     )
 
-    /** Refuses to answer for a user that was never indexed, rather than abstaining. */
     const requireUser = (uid: string) =>
       readUserStats(hydra, uid).pipe(
         Effect.mapError(graphError),
@@ -104,16 +111,11 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
             text: turn.content,
             hasAnswer: false
           }))
-          // `sessionOrd` is decided by `ingestSession` from the User vertex, so
-          // it is omitted here rather than guessed.
           const session: Omit<DatasetSession, "sessionOrd"> = { sid, key: sid, date, turns }
 
           const report = yield* ingest.ingestSession(path.uid, session).pipe(
             Effect.mapError(graphError)
           )
-          // The idf denominator this process memoised for that user is now one
-          // session out of date, and the live demo's whole point is that the
-          // next ask sees what was just written.
           yield* retrieve.forgetUser(path.uid)
 
           return {
@@ -146,8 +148,6 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
           const session: DatasetSession = {
             sid,
             key: sid,
-            // The manifest atomically assigns the real per-user ordinal. This
-            // placeholder is excluded from source identity and never persisted.
             sessionOrd: 0,
             date,
             turns: payload.turns.map((turn, turnIdx) => ({
@@ -182,106 +182,33 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
           yield* requireUser(path.uid)
           const started = Date.now()
           const questionDate = payload.questionDate ?? "unknown"
-          const pipeline = payload.pipeline ?? "v1"
-
-          // v2 goes through the same orchestrator the eval uses. The demo and
-          // the benchmark must not be able to run different pipelines: the
-          // numbers in the writeup come from one and the video from the other,
-          // and a divergence between them would be invisible to both.
-          if (pipeline === "v2" && payload.retrieveOnly !== true) {
-            const answered = yield* answerV2(
-              retrieve,
-              reader,
-              path.uid,
-              payload.question,
-              questionDate,
-              {
-                ...(payload.questionDate === undefined ? {} : { questionDate: payload.questionDate }),
-                ...(payload.asOf === undefined ? {} : { asOf: payload.asOf }),
-                ...(payload.historical === undefined ? {} : { historical: payload.historical }),
-                ...(payload.premiseCheck === undefined ? {} : { premiseCheck: payload.premiseCheck }),
-                // The demo defaults to `fast`: a 5 s answer that is
-                // occasionally thinner beats an 8 s one in front of an
-                // audience, and the eval measures both.
-                profile: payload.profile ?? "fast"
-              }
-            ).pipe(Effect.mapError(graphError))
-
-            const receipt = projectRetrievalReceipt(answered.ask.receipt)
-            const spans = answered.read?.spans ?? []
-            return {
-              verdict: answered.verdict,
-              reason: answered.reason,
-              answer: answered.verdict === "ABSENT" ? null : (answered.read?.answer ?? null),
-              notInMemory: answered.verdict === "ABSENT" || (answered.read?.notInMemory ?? true),
-              reasoning: answered.read?.reasoning ?? "",
-              citedIds: answered.read?.citedIds ?? [],
-              premiseSupported: answered.read?.premiseSupported ?? null,
-              premiseNote: answered.sufficiency.premise || (answered.read?.premiseNote ?? ""),
-              evidence: spans,
-              receipt,
-              plan: projectPlan(answered),
-              hash: answered.read?.spanHash ?? answered.ask.hash,
-              latencyMs: Date.now() - started
-            }
+          const options = {
+            questionDate,
+            ...(payload.asOf === undefined ? {} : { asOf: payload.asOf }),
+            ...(payload.historical === undefined ? {} : { historical: payload.historical }),
+            profile: payload.profile ?? ("fast" as const)
           }
 
-          const result = yield* retrieve
-            .ask(path.uid, payload.question, {
-              ...(payload.questionDate === undefined ? {} : { questionDate: payload.questionDate }),
-              ...(payload.asOf === undefined ? {} : { asOf: payload.asOf }),
-              ...(payload.historical === undefined ? {} : { historical: payload.historical }),
-              pipeline
-            })
-            .pipe(Effect.mapError(graphError))
-
-          const receipt = projectRetrievalReceipt(result.receipt)
-
-          // A structural ABSENT has no evidence by construction — that is the
-          // claim it makes — so there is nothing for the reader to read.
-          if (result.verdict === "ABSENT" || payload.retrieveOnly === true) {
-            const spans =
-              result.verdict === "ABSENT"
+          if (payload.retrieveOnly === true) {
+            const ask = yield* retrieve
+              .ask(path.uid, payload.question, options)
+              .pipe(Effect.mapError(graphError))
+            const evidence =
+              ask.verdict === "ABSENT"
                 ? []
-                : yield* reader.hydrate(result.evidence).pipe(Effect.mapError(graphError))
-            return {
-              verdict: result.verdict,
-              reason: result.reason,
-              answer: null,
-              notInMemory: result.verdict === "ABSENT",
-              reasoning: "",
-              citedIds: [],
-              premiseSupported: null,
-              premiseNote: "",
-              evidence: spans,
-              receipt,
-              plan: null,
-              hash: result.hash,
-              latencyMs: Date.now() - started
-            }
+                : yield* reader.hydrate(ask.evidence).pipe(Effect.mapError(graphError))
+            return toAskResponse(unreadAnswer(ask), evidence, started)
           }
 
-          const answer = yield* reader
-            .read(payload.question, questionDate, result.evidence, {
-              ...(payload.premiseCheck === undefined ? {} : { premiseCheck: payload.premiseCheck })
-            })
-            .pipe(Effect.mapError(graphError))
-
-          return {
-            verdict: result.verdict,
-            reason: result.reason,
-            answer: answer.answer,
-            notInMemory: answer.notInMemory,
-            reasoning: answer.reasoning,
-            citedIds: answer.citedIds,
-            premiseSupported: answer.premiseSupported,
-            premiseNote: answer.premiseNote,
-            evidence: answer.spans,
-            receipt,
-            plan: null,
-            hash: result.hash,
-            latencyMs: Date.now() - started
-          }
+          const answered = yield* answerV2(
+            retrieve,
+            reader,
+            path.uid,
+            payload.question,
+            questionDate,
+            options
+          ).pipe(Effect.mapError(graphError))
+          return toAskResponse(answered, answered.read === null ? [] : answered.read.spans, started)
         })
         return payload.bookmark === undefined
           ? operation
@@ -324,15 +251,6 @@ export const UsersLive = HttpApiBuilder.group(PalimpsestApi, "users", (handlers)
           return { uid: path.uid, ...stats, contested }
         })
       )
-      /**
-       * The demo calls this on user select, so its first question is not the
-       * one that pays for a cold read.
-       *
-       * The demo used to warm through `stats`, which is a by-id read of the
-       * `User` vertex and touches none of the blocks a convergence walk reads.
-       * `warmUser` walks what an ask walks; the counts come back so a warm that
-       * reached nothing is visible rather than silent.
-       */
       .handle("warm", ({ path }) =>
         Effect.gen(function* () {
           yield* requireUser(path.uid)

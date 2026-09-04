@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest"
 import {
-  ADJUDICATED_ROUTES,
   CHARS_PER_TOKEN,
   READER_TOKEN_BUDGET,
   adjudicate,
@@ -10,6 +9,8 @@ import {
   spanHash,
   spanTuple
 } from "../../src/Pack.js"
+import { RoutePolicy } from "../../src/Routes.js"
+import { ROUTES } from "../../src/Understand.js"
 
 const claim = (
   ckey: string,
@@ -18,7 +19,6 @@ const claim = (
   tEvent = 0
 ) => ({ ckey, sessionOrd, status, tEvent })
 
-/** `me|residence` holds one value at a time; `me|hobby` holds several. */
 const RESIDENCE = new Map([
   ["a", "u|s|me|residence"],
   ["b", "u|s|me|residence"],
@@ -40,16 +40,13 @@ describe("adjudication", () => {
   })
 
   it("does the same on a fact question and nothing else", () => {
-    expect(ADJUDICATED_ROUTES).toEqual(["update", "fact"])
+    expect(ROUTES.filter((route) => RoutePolicy[route].adjudicate)).toEqual(["fact", "update"])
     expect(
       adjudicate([claim("a", 1), claim("b", 5)], RESIDENCE, "fact").map((c) => c.label)
     ).toEqual(["EARLIER STATEMENT", "CURRENT"])
   })
 
   it("leaves every current claim current on a count question", () => {
-    // The failure this prevents: `me|hobby` and "things to return" are
-    // multi-valued, and telling the reader the older ones are superseded is how
-    // a count loses half its items.
     expect(
       adjudicate([claim("a", 1), claim("b", 5), claim("c", 3)], RESIDENCE, "count").map(
         (c) => c.label
@@ -87,11 +84,6 @@ describe("adjudication", () => {
   })
 })
 
-/**
- * `highlight.start` is where the span sits inside the excerpt, so the excerpt
- * covers `[cs - highlight.start, + excerpt.length)` of the turn. Default 0,
- * i.e. the excerpt starts at the span.
- */
 const span = (
   ckey: string,
   chars: number,
@@ -146,9 +138,6 @@ describe("the token budget", () => {
   })
 
   it("names every drop with its id, reason and cost", () => {
-    // A count says how many excerpts went. A reader of a receipt asking why the
-    // answer session is not in the evidence needs to know which, and that the
-    // reason was money rather than the selector's judgement.
     const spans = [span("aaaaaaaakeep0001", 4000), span("bbbbbbbbdrop0002", 4000)]
     const report = applyBudget(spans, { budget: 1500 })
 
@@ -158,17 +147,11 @@ describe("the token budget", () => {
   })
 
   it("uses the reader's own citation form for the dropped id", () => {
-    // The id in the receipt has to be the id the reader would have cited, or a
-    // reader of the trace cannot match a drop to an excerpt.
     const report = applyBudget([span("u|c|0123456789abcdef", 40_000)], { budget: 10 })
     expect(report.drops[0]!.id).toBe("89abcdef")
   })
 
   it("flags a pack that is over budget with nothing droppable left", () => {
-    // Reachable and previously silent: a question with many probe hits produces
-    // a pack that exceeds the budget with nothing in it that may be cut. That
-    // is the right trade, but a reader-token number that quietly misses its
-    // target needs a row saying why.
     const report = applyBudget([span("probe", 400_000)], {
       budget: 10,
       protectedKeys: new Set(["probe"])
@@ -191,7 +174,6 @@ describe("the token budget", () => {
 
 describe("the span hash", () => {
   it("is over source spans, not claim keys", () => {
-    // Two different claims pointing at the same span are one row of evidence.
     const one = spanHash([span("claim-a", 10, "s1", 3, 100, 200)])
     const two = spanHash([span("claim-b", 10, "s1", 3, 100, 200)])
     expect(one).toBe(two)
@@ -204,7 +186,6 @@ describe("the span hash", () => {
   })
 
   it("separates two sessions that share an sid", () => {
-    // The `#n` suffix is the only thing that distinguishes the 13 repeated ids.
     expect(spanTuple(span("a", 10, "abc", 3, 0, 5))).not.toBe(
       spanTuple(span("a", 10, "abc#2", 3, 0, 5))
     )
@@ -221,10 +202,8 @@ describe("the span hash", () => {
 
 describe("dedupe by turn", () => {
   it("collapses claims from one turn when the text covers both", () => {
-    // Both spans sit inside the wider excerpt's window, so one excerpt is
-    // honestly one excerpt.
-    const wide = span("b", 300, "s1", 4, 5, 40, 0) // covers turn [5, 305)
-    const inner = span("a", 100, "s1", 4, 10, 20, 0) // covers turn [10, 110)
+    const wide = span("b", 300, "s1", 4, 5, 40, 0)
+    const inner = span("a", 100, "s1", 4, 10, 20, 0)
     const deduped = dedupeByTurn([wide, inner])
     expect(deduped).toHaveLength(1)
     expect([deduped[0]!.cs, deduped[0]!.ce]).toEqual([5, 40])
@@ -232,26 +211,20 @@ describe("dedupe by turn", () => {
   })
 
   it("does NOT merge two disjoint windows of the same turn", () => {
-    // The failure this pins: an assistant turn of 3 000 characters with a claim
-    // at [0,50] and another at [2000,2900]. Hydration cuts +-300, so the
-    // excerpts are turn[0..350] and turn[1700..3000] — disjoint. Merging them
-    // would show the reader only the second while `spanHash` recorded
-    // `s1|4|0|2900`, asserting bytes 0..2900 were seen.
-    const first = span("a", 350, "s1", 4, 0, 50, 0) // covers turn [0, 350)
-    const second = span("b", 1300, "s1", 4, 2000, 2900, 300) // covers turn [1700, 3000)
+    const first = span("a", 350, "s1", 4, 0, 50, 0)
+    const second = span("b", 1300, "s1", 4, 2000, 2900, 300)
     const deduped = dedupeByTurn([first, second])
     expect(deduped).toHaveLength(2)
     expect(deduped.map((s) => [s.cs, s.ce])).toEqual([
       [0, 50],
       [2000, 2900]
     ])
-    // And the hash records two spans, not one union that nobody read.
     expect(spanHash(deduped)).not.toBe(spanHash([{ ...first, cs: 0, ce: 2900 }]))
   })
 
   it("keeps the widest window when one excerpt swallows another", () => {
-    const narrow = span("a", 60, "s1", 4, 100, 110, 0) // covers [100, 160)
-    const wide = span("b", 600, "s1", 4, 120, 130, 120) // covers [0, 600)
+    const narrow = span("a", 60, "s1", 4, 100, 110, 0)
+    const wide = span("b", 600, "s1", 4, 120, 130, 120)
     const deduped = dedupeByTurn([narrow, wide])
     expect(deduped).toHaveLength(1)
     expect([deduped[0]!.cs, deduped[0]!.ce]).toEqual([100, 130])
@@ -268,7 +241,6 @@ describe("dedupe by turn", () => {
   })
 
   it("never widens a span past the text that was actually cut", () => {
-    // Property: every surviving row's [cs, ce) lies inside its own excerpt.
     const rows = dedupeByTurn([
       span("a", 350, "s1", 4, 0, 50, 0),
       span("b", 1300, "s1", 4, 2000, 2900, 300),

@@ -5,18 +5,11 @@ import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { Reader, Retrieve, Supersede } from "../../src/index.js"
+import { answerV2 } from "../../src/Answer.js"
+import { Reader } from "../../src/Reader.js"
+import { Retrieve } from "../../src/Retrieve.js"
+import { Supersede } from "../../src/Supersede.js"
 
-/**
- * The as-of trajectory — the demo's centrepiece.
- *
- * One graph, no re-ingest, no database snapshot: asking the same question as of
- * different sessions replays what the memory believed at each point, because
- * as-of is nothing but `session_ord ≤ k` and `at_session ≤ k`.
- *
- * On `852ce960` the ground truth is a pre-approval of $350 000 stated in
- * session 3 and revised to $400 000 in session 37.
- */
 const hasDataset = existsSync(datasetPath("s"))
 
 const AppLive = Retrieve.Default.pipe(
@@ -44,15 +37,14 @@ describe.skipIf(!hasDataset)("as-of trajectory", () => {
           [1, 10, 38],
           (asOf) =>
             Effect.gen(function* () {
-              const result = yield* retrieve.ask(UID, QUESTION, { asOf })
-              if (result.verdict === "ABSENT") {
-                return { asOf, answer: "ABSENT", evidence: 0 }
+              const answered = yield* answerV2(retrieve, reader, UID, QUESTION, DATE, { asOf })
+              if (answered.read === null || answered.verdict === "ABSENT") {
+                return { asOf, answer: "ABSENT", evidence: answered.ask.evidence.length }
               }
-              const answer = yield* reader.read(QUESTION, DATE, result.evidence)
               return {
                 asOf,
-                answer: answer.notInMemory ? "NOT_IN_MEMORY" : answer.answer,
-                evidence: result.evidence.length
+                answer: answered.read.notInMemory ? "NOT_IN_MEMORY" : answered.read.answer,
+                evidence: answered.ask.evidence.length
               }
             }),
           { concurrency: 3 }
@@ -62,19 +54,15 @@ describe.skipIf(!hasDataset)("as-of trajectory", () => {
 
     const [before, between, after] = answers
 
-    // Before the fact was ever stated, the memory must not leak a later value.
     expect(before!.answer).not.toContain("350,000")
     expect(before!.answer).not.toContain("400,000")
     expect(["ABSENT", "NOT_IN_MEMORY"]).toContain(before!.answer)
 
-    // Between the two statements, the first value is what was true.
     expect(between!.answer).toContain("350,000")
     expect(between!.answer).not.toContain("400,000")
 
-    // After the revision, the second.
     expect(after!.answer).toContain("400,000")
 
-    // Three distinct beliefs from one graph.
     expect(new Set(answers.map((a) => a.answer)).size).toBe(3)
   })
 
@@ -88,7 +76,6 @@ describe.skipIf(!hasDataset)("as-of trajectory", () => {
     )
     expect(evidence.length).toBeGreaterThan(0)
     expect(evidence.every((claim) => claim.sessionOrd <= 10)).toBe(true)
-    // And with the replacement not yet written, nothing reads as superseded by it.
     expect(evidence.every((claim) => claim.atSession === null || claim.atSession <= 10)).toBe(true)
   })
 })

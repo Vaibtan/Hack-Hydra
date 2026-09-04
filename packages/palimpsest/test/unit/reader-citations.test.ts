@@ -3,7 +3,8 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { NOT_IN_MEMORY, Reader, type HydratedSpan } from "../../src/index.js"
+import { Reader, type HydratedSpan } from "../../src/Reader.js"
+import { NOT_IN_MEMORY } from "../../src/Routes.js"
 
 /**
  * Citation validation and the one re-ask.

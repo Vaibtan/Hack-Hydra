@@ -1,27 +1,12 @@
 import { Either } from "effect"
 import { describe, expect, it } from "vitest"
-import { contentAddressedId } from "../../src/Client.js"
+import { contentAddressedId } from "../../src/Identity.js"
 import { edgeId, verifyStoredGraphIdentity, vertexId } from "../../src/Ids.js"
-
-/**
- * A relationship has two ids on the wire and only one of them is ours.
- *
- * `algo.MSpaths` returns the engine's own relationship identity — a small
- * counter, `1145` for the first `HAS_TURN` of a fresh graph — while the
- * content-addressed `edgeId` this client wrote lives in the `id` *property*,
- * because the engine refuses `SET r.id`. Verifying the wrong one compares a
- * counter with a hash, which fails on every path that carries an edge; that is
- * every path retrieval reads, so an ingest died at its first supersession pass
- * with `numericMismatch for numeric id 19995`.
- *
- * Vertices do not have the problem: `node.id` *is* the content-addressed id
- * (measured against a live node: `2364642823230` for the Session key below).
- */
 
 const SRC = "g3-0e5e2d1a|sess|2e53d65e_3"
 const DST = "g3-0e5e2d1a|turn|2e53d65e_3|11"
 const FULL_KEY = `${SRC}|HAS_TURN|${DST}`
-/** What the engine actually returned for this edge. */
+/** The engine's own sequential id for this edge, as `algo.MSpaths` returned it. */
 const ENGINE_RELATIONSHIP_ID = 1145
 
 describe("relationship identity from a path", () => {

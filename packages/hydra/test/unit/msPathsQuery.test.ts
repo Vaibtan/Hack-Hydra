@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { DEFAULT_PATH_COUNT, renderMsPathsQuery } from "../../src/index.js"
+import { DEFAULT_PATH_COUNT, renderMsPathsQuery } from "../../src/Cypher.js"
 
-/**
- * Oracle: the query text below is the exact statement accepted by the live
- * HydraDB 0.1.0 node during the probe run recorded in
- * `docs/review-2026-08-17-palimpsest-plan.md` §7 ("constant-property target
- * selector" row). String lists must be inlined literals; scalar config keys
- * take `$params`.
- */
+/** Oracle: the statement accepted by the live node in `docs/archive/review-2026-08-17-palimpsest-plan.md` §7. */
 describe("renderMsPathsQuery", () => {
   it("renders the convergence query with lists inlined and scalars as params", () => {
     const { query, parameters } = renderMsPathsQuery({
@@ -28,9 +22,6 @@ describe("renderMsPathsQuery", () => {
         "targetValues:['u|claim'], relTypes:['HITS','NAMES','MENTIONS'], " +
         "relDirection:$relDirection, maxLen:$maxLen}) YIELD path RETURN path"
     )
-    // A constant target selector already returns every source→target pair, and
-    // raising pathCount here only makes the engine enumerate more and answer
-    // slower — so it is left off.
     expect(parameters).toEqual({ relDirection: "outgoing", maxLen: 2 })
   })
 

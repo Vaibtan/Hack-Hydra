@@ -3,7 +3,7 @@ import { HydraClient, type HydraPath } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { Supersede, foldSupersessionEdges, type SlotClaim } from "../../src/index.js"
+import { Supersede, foldSupersessionEdges, type SlotClaim } from "../../src/Supersede.js"
 
 /**
  * The supersession pass with the model stubbed, so the *structural* rules are

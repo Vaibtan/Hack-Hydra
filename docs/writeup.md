@@ -81,7 +81,7 @@ changed a decision. They are the most interesting page in the repository.
 | **`DETACH DELETE` ~2.3 vertices/s, then refused entirely past ~1 M edges** | Deletion is not available on a working graph at any batch size. Every write is content-addressed and idempotent so re-ingest never needs a reset; a prompt change takes a fresh key prefix instead. |
 | **Write `query_id` is the idempotency key, and the server's own counter restarts with the node** | After a restart, the n-th relationship merge collides with an unrelated one from the previous run and *every* write fails with a bare 500, indefinitely, with nothing wrong in the graph. The client now sends a UUID per statement. |
 | **A writer lease cannot be reclaimed after an unclean stop** | Taking over an existing `_writer_leases/v2/<cell>` file needs `put_opts` with `PutMode::Update`, unimplemented by the LocalFileSystem object store, so a node killed mid-write comes back permanently **read-only**. Recovery is to move the stale lease file aside. |
-| **30 s query cap, arriving as a 500** | Classified by message, not status, because "your statement was too big" is retryable by splitting and "the engine is down" is not. |
+| **Query cap (30 s shipped, 120 s in both benchmark phases), arriving as a 408 `query_timeout`** | Classified by message, not status, because "your statement was too big" is retryable by splitting and "the engine is down" is not. |
 | **Second graph id 403s with the local token** | All users share `default`, partitioned by key prefix. |
 
 The last two rows cost an evening between them and are written up in `docs/run-log.md`.
@@ -132,12 +132,14 @@ so ingest→ask is read-your-writes inside one client. They are worth being prec
 is a *causal floor*, not time travel. As-of could not be built on it, which is exactly why as-of is
 data-level.
 
-**Determinism** is claimed narrowly and truthfully. Retrieval is deterministic *given a fixed
-graph*: two bounded `MSpaths` calls and pure scoring, no sampling, with an evidence hash of
-`sha256` over the sorted claim keys — N runs, one hash. **Extraction is not deterministic**; it is
-a model call. What makes a whole benchmark run reproducible is the on-disk LLM cache keyed by
-`sha256(model + system + prompt + schema)`, not the graph. Both halves of that are said out loud in
-the demo and here.
+**Determinism** is claimed narrowly and truthfully. Retrieval is *replay-deterministic*: given a
+fixed graph and a fixed LLM cache it is byte-identical — every model decision on the read path
+(understand, select, sufficiency, read) is cached by `sha256(model + prompt + schema)` with the
+rendered prompt stored beside the value and the model id in the receipt, and the evidence hash is
+`sha256` over the sorted span tuples — N replays, one hash. **First-run selection is
+model-dependent, and extraction is not deterministic either**; both are model calls. What makes a
+whole benchmark run reproducible is the on-disk cache, not the graph. Both halves of that are said
+out loud in the demo and here.
 
 ## 3. The receipt
 

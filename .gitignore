@@ -33,3 +33,7 @@ ops/hydradb/secrets/*
 .ingest-logs-*/
 .eval-logs/
 results/*.batch-*.json
+
+# Local tool scratch
+.scratch/
+.commandcode/

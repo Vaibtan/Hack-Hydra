@@ -9,21 +9,11 @@ import { ReceiptPanel } from "./components/ReceiptPanel"
 import { Scrubber } from "./components/Scrubber"
 import { Verdict } from "./components/Verdict"
 
-/**
- * The demo opens on `852ce960` and its knowledge-update question, because that
- * user has a real three-step mortgage chain in `mortgage | price` and the
- * scrubber has something to show from the first frame.
- */
 const DEMO_UID = "852ce960"
 const DEMO_QUESTION =
   "What was the amount I was pre-approved for when I got my mortgage from Wells Fargo?"
 const DEMO_DATE = "2023/12/18 (Mon) 04:17"
 
-/**
- * Questions worth having one keystroke away in a five-minute video: the chain,
- * a false premise the reader has to refuse, and a question about something this
- * user never mentioned at all.
- */
 const PRESETS: ReadonlyArray<{ readonly label: string; readonly question: string }> = [
   { label: "knowledge update", question: DEMO_QUESTION },
   { label: "false premise", question: "How many engineers do I manage at Wells Fargo?" },
@@ -35,10 +25,6 @@ export const App = () => {
   const [question, setQuestion] = useState(DEMO_QUESTION)
   const [questionDate, setQuestionDate] = useState(DEMO_DATE)
   const [asOf, setAsOf] = useState<number | undefined>(undefined)
-  const [premiseCheck, setPremiseCheck] = useState(false)
-  // v2 by default in the demo: it is the pipeline the talk is about, and the
-  // toggle is there so the two can be shown on the same question.
-  const [pipeline, setPipeline] = useState<"v1" | "v2">("v2")
   const [causalBookmark, setCausalBookmark] = useState<string | undefined>(undefined)
 
   const [result, setResult] = useState<AskResponse | null>(null)
@@ -50,17 +36,6 @@ export const App = () => {
   const loadUser = useCallback(async (who: string) => {
     setError(null)
     try {
-      // `warm` is a separate call from `stats` on purpose. `stats` is an
-      // indexed read by id off the `User` vertex and touches none of the blocks
-      // a convergence walk reads; `warm` walks what an ask walks, so the first
-      // question after selecting someone does not pay an 11 s cold convergence
-      // walk in front of an audience.
-      //
-      // **Not awaited.** It has a server-side budget of its own and can take
-      // seconds on a broad user, and blocking the session list behind it would
-      // trade a slow first question for a slow first *screen* — which is worse,
-      // because the audience is already looking at it. It resolves to null on
-      // failure and nothing here reads its value.
       void api.warm(who)
       const [rows, s] = await Promise.all([api.sessions(who), api.stats(who)])
       setSessions(rows)
@@ -86,8 +61,6 @@ export const App = () => {
         await api.ask(uid, {
           question,
           questionDate,
-          premiseCheck,
-          pipeline,
           ...(bookmark === undefined ? {} : { bookmark }),
           ...(asOf === undefined ? {} : { asOf })
         })
@@ -98,9 +71,8 @@ export const App = () => {
     } finally {
       setAsking(false)
     }
-  }, [uid, question, questionDate, asOf, premiseCheck, pipeline, causalBookmark])
+  }, [uid, question, questionDate, asOf, causalBookmark])
 
-  // Re-ask when the scrubber moves, so the slider drives the answer directly.
   useEffect(() => {
     if (result !== null) void ask()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -138,17 +110,6 @@ export const App = () => {
             style={{ flex: "0 1 220px" }}
             aria-label="question date"
           />
-          <label className="row" style={{ gap: 6, alignItems: "center" }}>
-            <span className="muted">pipeline</span>
-            <select
-              value={pipeline}
-              onChange={(event) => setPipeline(event.target.value === "v1" ? "v1" : "v2")}
-              aria-label="pipeline"
-            >
-              <option value="v2">v2 — plan</option>
-              <option value="v1">v1 — shipped</option>
-            </select>
-          </label>
         </div>
         <div className="row">
           <input
@@ -176,15 +137,6 @@ export const App = () => {
               {preset.label}
             </button>
           ))}
-          <label className="chip" style={{ cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={premiseCheck}
-              onChange={(event) => setPremiseCheck(event.target.checked)}
-              style={{ width: "auto", marginRight: 5 }}
-            />
-            premise check
-          </label>
         </div>
 
         {error !== null && <p className="error">{error}</p>}
@@ -196,20 +148,16 @@ export const App = () => {
         )}
       </div>
 
-      {result !== null && result.plan !== null && (
-        <div className="grid">
-          <PlanPanel plan={result.plan} />
-          <Evidence spans={result.evidence} cited={result.citedIds} />
-        </div>
-      )}
-
       {result !== null && (
-        <div className="grid">
-          <ReceiptPanel receipt={result.receipt} />
-          {result.plan === null && (
+        <>
+          <div className="grid">
+            <PlanPanel plan={result.plan} />
             <Evidence spans={result.evidence} cited={result.citedIds} />
-          )}
-        </div>
+          </div>
+          <div className="grid">
+            <ReceiptPanel receipt={result.receipt} />
+          </div>
+        </>
       )}
 
       <div className="grid">

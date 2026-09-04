@@ -2,7 +2,7 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { loadQuestion, type DatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
-import { Transcript } from "../src/index.js"
+import { Transcript } from "../src/Transcript.js"
 
 /**
  * `ingest-transcript --uid <question_id> [--dataset oracle|s] [--reset]`

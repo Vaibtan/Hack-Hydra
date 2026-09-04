@@ -1,16 +1,6 @@
 import { useState } from "react"
 import { api } from "../api"
 
-/**
- * The determinism widget.
- *
- * The claim is precise and the widget must not overstate it: **retrieval is
- * deterministic given a fixed graph.** The hash is `sha256` over the sorted
- * claim keys of the evidence set, so N runs of the same question against the
- * same graph produce one hash. *Extraction* is not deterministic — it is an LLM
- * call — and what makes a whole run reproducible is the disk cache, not the
- * graph. Both halves of that are said out loud here.
- */
 export const Determinism = ({
   uid,
   question,
@@ -34,8 +24,6 @@ export const Determinism = ({
     const seen: Array<string> = []
     try {
       for (let i = 0; i < runs; i++) {
-        // `retrieveOnly` so this measures retrieval, which is the thing that
-        // is deterministic — not the reader, which is another model call.
         const result = await api.ask(uid, {
           question,
           questionDate,

@@ -17,6 +17,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot "lib/hydra.psm1") -Force
 
 # This matrix never connects to, mounts, copies, or modifies the benchmark
 # HydraDB volume. Its MinIO data is an in-memory filesystem and both containers
@@ -85,19 +86,9 @@ function Wait-ForHttp {
     [int] $TimeoutSeconds = 60
   )
 
-  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-  do {
-    try {
-      $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 2
-      if ($response.StatusCode -eq 200) {
-        return
-      }
-    } catch {
-      Start-Sleep -Milliseconds 250
-    }
-  } while ([DateTime]::UtcNow -lt $deadline)
-
-  throw "Timed out waiting for $Uri"
+  if (-not (Wait-HydraReady -Uri $Uri -TimeoutSeconds $TimeoutSeconds -ProbeTimeoutSeconds 2 -IntervalMilliseconds 250)) {
+    throw "Timed out waiting for $Uri"
+  }
 }
 
 function Assert-DisabledCacheMetrics {

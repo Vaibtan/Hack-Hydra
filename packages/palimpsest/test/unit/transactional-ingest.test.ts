@@ -3,20 +3,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Deferred, Effect, Fiber } from "effect"
 import { describe, expect, it } from "vitest"
-import {
-  INGEST_EXECUTION_STAGES,
-  IngestCommitLock,
-  IngestCommitLockLive,
-  IngestCommitLockMemory,
-  IngestManifestLayerMemory,
-  createExtractionGeneration,
-  runTransactionalIngest,
-  runTransactionalIngestToStage,
-  type BeginSourceRevision,
-  type IngestExecutionStage,
-  type SourceRevision,
-  type TransactionalIngestStages
-} from "../../src/index.js"
+import { IngestCommitLock, IngestCommitLockLive, IngestCommitLockMemory } from "../../src/IngestCommitLock.js"
+import { IngestManifestLayerMemory, type BeginSourceRevision, type SourceRevision } from "../../src/IngestManifest.js"
+import { createExtractionGeneration } from "../../src/SourceIdentity.js"
+import { INGEST_EXECUTION_STAGES, runTransactionalIngest, runTransactionalIngestToStage, type IngestExecutionStage, type TransactionalIngestStages } from "../../src/TransactionalIngest.js"
 
 const extractionGeneration = createExtractionGeneration({
   extractor: { id: "test-extractor", revision: "git:test" },
@@ -47,8 +37,6 @@ describe("runTransactionalIngest", () => {
       const work = (stage: IngestExecutionStage) => (revision: SourceRevision) =>
         Effect.suspend(() => {
           calls.set(stage, (calls.get(stage) ?? 0) + 1)
-          // This models a commit-id-keyed data-plane write: it may be reissued
-          // after a process failure but has one durable effect.
           applied.add(`${revision.commitId}:${stage}`)
           if (stage === failingStage && shouldFail) {
             shouldFail = false

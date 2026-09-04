@@ -1,20 +1,7 @@
 # Runs one eval across the population in batches, restarting the node between
-# them, and taking the reported numbers from a warm pass.
-#
-# Why batches. A read costs ~750 MiB of resident memory per distinct user and
-# does not bound, so the node holds about seven of the 60 dev users before the
-# capacity gate stops it (ops/hydradb/step-load-2026-08.md). A 60-question run
-# cannot happen in one node lifetime.
-#
-# Why two passes per batch. A cold ask on this graph is 65-86 s and the second
-# ask of the same user in the same node lifetime is 0.1 s -- the whole cost is
-# pulling a user's working set out of the object store once. Nothing survives a
-# restart (the disk cache does not fill; its evictor drops the writes), so the
-# warm pass has to happen inside the same lifetime as the cold one that primed
-# it. Pass 1 is discarded; pass 2 is the results file.
-#
-# Both passes replay every LLM call from .cache/llm, so pass 2 costs $0.00 and
-# produces the same answers -- only the timings differ, which is the point.
+# them and reading each batch cold then warm in one node lifetime; the warm
+# pass is the results file. Both passes replay LLM calls from .cache/llm, so
+# only the timings differ. Why: ops/hydradb/step-load-2026-08.md.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/eval-batched.ps1 `
 #     -System palimpsest -Split dev -Batches 12
@@ -34,62 +21,21 @@ param(
   [int] $Concurrency = 2,
   # Passed through to `eval` verbatim: ablation flags, --profile, --granularity.
   [string[]] $ExtraArgs = @(),
-  # Names the merged file when an ablation run writes its own. Must match the
-  # suffix `eval` builds from the flags, or the merge finds nothing.
+  # Must match the suffix `eval` builds from the flags, or the merge finds nothing.
   [string] $Variant = "",
   [ValidateRange(1, 200)]
   [int] $FromBatch = 1,
-  # Stops early. For validating the flow on one batch before committing hours
-  # to twelve of them, and for resuming a run that died half way.
+  # 0 = run to the last batch.
   [ValidateRange(0, 200)]
   [int] $ToBatch = 0
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot "lib/hydra.psm1") -Force
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
-$opsDirectory = Join-Path $repositoryRoot "ops/hydradb"
-$composePath = Join-Path $opsDirectory "compose.benchmark.yaml"
-$envFile = Join-Path $opsDirectory ".env.benchmark"
-$logDirectory = Join-Path $repositoryRoot ".eval-logs"
+$logDirectory = Join-Path (Get-HydraRepositoryRoot) ".eval-logs"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
-
-function Get-HydraContainerId {
-  $found = @(
-    @(
-      & docker ps -a --filter "label=com.docker.compose.project=palimpsest-hydradb-benchmark" `
-        --filter "label=com.docker.compose.service=hydradb" --format "{{.ID}}"
-    ) | ForEach-Object { ([string] $_).Trim() } | Where-Object { $_.Length -gt 0 }
-  )
-  if ($found.Count -ne 1) { return $null }
-  return $found[0]
-}
-
-function Restart-NodeForEval {
-  # The eval phase: read cache on, 120 s cap. `docker restart` and not a
-  # recreate -- a recreate would also be correct but is slower and changes the
-  # container id the capacity gate resolved at startup.
-  $env:PALIMPSEST_HYDRADB_READ_CACHE = "true"
-  $env:PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS = "120000"
-  & docker compose --project-directory $opsDirectory --env-file $envFile -f $composePath up -d hydradb | Out-Null
-  $id = Get-HydraContainerId
-  if ($null -ne $id) {
-    # SIGTERM and wait: the writer lease is only released cleanly on a graceful
-    # stop, and a node killed mid-statement comes back read-only on this object
-    # store (CONTEXT.md, writer lease).
-    & docker restart --time 30 $id | Out-Null
-  }
-  for ($i = 0; $i -lt 90; $i++) {
-    try {
-      $response = Invoke-WebRequest -Uri "http://127.0.0.1:29090/readyz" -TimeoutSec 5 -UseBasicParsing
-      if ($response.StatusCode -eq 200) { return $true }
-    } catch {
-      Start-Sleep -Seconds 2
-    }
-  }
-  return $false
-}
 
 function Invoke-EvalPass {
   param(
@@ -104,33 +50,21 @@ function Invoke-EvalPass {
     "--batch", "$Batch/$Batches",
     "--concurrency", "$Concurrency"
   ) + $ExtraArgs
-  # The cold pass needs a ceiling above the engine's, or it fails every ask on
-  # the read it is there to prime. The warm pass runs at the default 25 s, which
-  # is the ceiling the product ships -- so if a warm ask ever needed more, this
-  # would fail rather than quietly report it.
+  # Cold: a ceiling above the engine's 120 s cap minus headroom, so priming can
+  # finish. Warm: the shipped 25 s default, so a slow warm read fails loudly.
   if ($Pass -eq "cold") {
     $env:PALIMPSEST_READ_TIMEOUT_MS = "115000"
   } else {
     Remove-Item Env:PALIMPSEST_READ_TIMEOUT_MS -ErrorAction SilentlyContinue
   }
-
-  # `Start-Process` with explicit redirects rather than `& npx ... *>&1`.
-  # Node writes an `ExperimentalWarning` about SQLite to stderr on every start,
-  # and under `$ErrorActionPreference = "Stop"` PowerShell turns a native
-  # command's stderr into a terminating `NativeCommandError` -- so the first run
-  # of this script killed itself on a warning, *after* the eval had succeeded
-  # and written its results file. Redirecting to files keeps stderr as text.
-  $process = Start-Process -FilePath "npx.cmd" -ArgumentList $arguments `
-    -WorkingDirectory $repositoryRoot -RedirectStandardOutput $Log `
-    -RedirectStandardError "$Log.err" -WindowStyle Hidden -PassThru -Wait
-  return $process.ExitCode
+  return Invoke-EvalProcess -ArgumentList $arguments -Log $Log
 }
 
 $lastBatch = if ($ToBatch -eq 0) { $Batches } else { [Math]::Min($ToBatch, $Batches) }
 
 $startedAt = Get-Date
 for ($batch = $FromBatch; $batch -le $lastBatch; $batch++) {
-  if (-not (Restart-NodeForEval)) {
+  if (-not (Set-HydraPhase -Phase eval -Restart -TimeoutSeconds 180).ready) {
     Write-Output "batch $batch : node did not become ready; stopping"
     exit 1
   }
@@ -150,19 +84,8 @@ for ($batch = $FromBatch; $batch -le $lastBatch; $batch++) {
   Write-Output ("batch {0}/{1} : warm pass" -f $batch, $Batches)
   $warm = Invoke-EvalPass -Batch $batch -Pass "warm" -Log $warmLog
   if ($warm -ne 0) {
-    # Retried once, and only once.
-    #
-    # The warm pass runs at the product's default 25 s ceiling on purpose, so a
-    # warm read that needs more fails here rather than being quietly reported.
-    # It fired on batch 9 of the first v2 run, on `slotClaims`. The likely cause
-    # is eviction rather than a slow query: a v2 batch's working set sits near
-    # the memory limit, so by the time the warm pass re-reads the first user's
-    # blocks the node may have dropped some of them for the fourth user's.
-    #
-    # One retry distinguishes the two. A transient eviction re-primes on the way
-    # through and the retry passes; a read that is genuinely over 25 s warm
-    # fails twice, and then the run stops and says so -- which is the finding,
-    # not an inconvenience.
+    # One retry separates a transient eviction (re-primes and passes) from a
+    # read that is genuinely over 25 s warm (fails twice; that is the finding).
     Write-Output "  warm pass exited $warm; retrying once"
     $warm = Invoke-EvalPass -Batch $batch -Pass "warm" -Log $warmLog
   }

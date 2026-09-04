@@ -1,11 +1,7 @@
 import { Effect, Either } from "effect"
 import { describe, expect, it } from "vitest"
-import {
-  createEntityCanonicalView,
-  IngestManifest,
-  IngestManifestLayerMemory,
-  resolveEntityInCanonicalView
-} from "../../src/index.js"
+import { createEntityCanonicalView, resolveEntityInCanonicalView } from "../../src/EntityCanonicalView.js"
+import { IngestManifest, IngestManifestLayerMemory } from "../../src/IngestManifest.js"
 
 describe("EntityCanonicalView", () => {
   it("keeps entity identities immutable while a later SAME_AS view resolves a bridge", () => {

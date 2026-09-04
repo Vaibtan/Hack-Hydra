@@ -3,14 +3,9 @@ import {
   createGraphIdentityRegistry,
   verifyStoredGraphIdentity,
   vertexId
-} from "../../src/index.js"
+} from "../../src/Ids.js"
 
-/**
- * Oracle: the published SHA-256 digest of "abc" is
- *   ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
- * A vertex id is the top 53 bits of that digest, so it is a safe JS integer
- * (HydraDB node ids travel as JSON numbers, which cannot carry a full u64).
- */
+/** Oracle: SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad; a vertex id is its top 53 bits. */
 const SHA256_ABC_FIRST_8_BYTES = "ba7816bf8f01cfea"
 
 describe("vertexId", () => {

@@ -1,18 +1,8 @@
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
-import { MAX_RESULT_PAGES, followCursor, type Page } from "../../src/Client.js"
-import type { Row } from "../../src/index.js"
+import { MAX_RESULT_PAGES, followCursor, type Page } from "../../src/Paging.js"
+import type { Row } from "../../src/Decode.js"
 
-/**
- * The page cap, in the abstract.
- *
- * `send` follows a read's `next_cursor` to exhaustion because ignoring it
- * truncates silently — the 1024-row wall. The cap on *how many* pages it will
- * follow used to have the same failure mode one order of magnitude up: at 200
- * pages it stopped and returned what it had, and 204 800 rows of a longer
- * result is indistinguishable from a complete one. It is an error now, and this
- * is the test that says so without needing 200 real round trips.
- */
 const row = (n: number): Row => ({ n })
 
 /** A source of `total` rows, one row per page, as the engine pages them. */
@@ -73,9 +63,6 @@ describe("followCursor", () => {
   })
 
   it("fails rather than returning a truncated result past the page cap", async () => {
-    // A cursor that never ends — a server bug, a runaway query, or simply a
-    // result larger than anything this schema can produce. Any of the three
-    // must be loud.
     const source = pager(Number.MAX_SAFE_INTEGER)
     const outcome = await Effect.runPromise(
       followCursor<never>(source.page(), () => Effect.succeed(source.page()), "MATCH (n) RETURN n").pipe(
@@ -89,7 +76,6 @@ describe("followCursor", () => {
       expect(outcome.left.reason).toContain("truncated")
       expect(outcome.left.query).toBe("MATCH (n) RETURN n")
     }
-    // It read the cap and then stopped, rather than looping.
     expect(source.seen()).toBe(MAX_RESULT_PAGES + 1)
   })
 })

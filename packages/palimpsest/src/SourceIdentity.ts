@@ -3,7 +3,6 @@ import type { DatasetSession } from "@palimpsest/dataset"
 import { Data, Either } from "effect"
 import type { BeginSourceRevision } from "./IngestManifest.js"
 
-/** JSON values accepted by the canonical serialiser. */
 export type CanonicalJson =
   | null
   | boolean
@@ -12,7 +11,6 @@ export type CanonicalJson =
   | ReadonlyArray<CanonicalJson>
   | { readonly [key: string]: CanonicalJson }
 
-/** An unknown value could not be represented in the canonical JSON domain. */
 export class InvalidCanonicalJson extends Data.TaggedError("InvalidCanonicalJson")<{
   readonly reason: "nonFiniteNumber" | "unsupportedValue" | "cyclicValue"
 }> {
@@ -21,13 +19,11 @@ export class InvalidCanonicalJson extends Data.TaggedError("InvalidCanonicalJson
   }
 }
 
-/** A fully specified model or tokenizer identity. */
 export interface VersionedDependency {
   readonly id: string
   readonly revision: string
 }
 
-/** Inputs that determine whether an extraction can be reproduced. */
 export interface ExtractionGenerationInput {
   readonly extractor: VersionedDependency
   readonly model: VersionedDependency
@@ -36,7 +32,6 @@ export interface ExtractionGenerationInput {
   readonly outputSchema: CanonicalJson
 }
 
-/** Immutable description of the exact extraction generation used by a revision. */
 export interface ExtractionGeneration {
   readonly id: string
   readonly extractor: VersionedDependency
@@ -44,11 +39,9 @@ export interface ExtractionGeneration {
   readonly tokenizer: VersionedDependency
   readonly promptTemplateSha256: string
   readonly outputSchemaSha256: string
-  /** Canonical, auditable definition whose digest is incorporated in `id`. */
   readonly canonicalJson: string
 }
 
-/** A persisted extraction-generation descriptor was malformed or mismatched its id. */
 export class InvalidExtractionGeneration extends Data.TaggedError("InvalidExtractionGeneration")<{
   readonly reason: "invalidEncoding" | "identifierMismatch"
 }> {
@@ -57,7 +50,6 @@ export class InvalidExtractionGeneration extends Data.TaggedError("InvalidExtrac
   }
 }
 
-/** Canonical durable source representation for one logical session. */
 export interface CanonicalSessionSource {
   readonly canonicalJson: string
   readonly sourceDigest: string
@@ -104,15 +96,11 @@ const parseCanonicalJsonValue = (
   return Either.left(new InvalidCanonicalJson({ reason: "unsupportedValue" }))
 }
 
-/** Parses an unknown JSON-like value into the values accepted by `canonicalJson`. */
 export const parseCanonicalJson = (
   value: unknown
 ): Either.Either<CanonicalJson, InvalidCanonicalJson> => parseCanonicalJsonValue(value, new Set())
 
-/**
- * Serialises JSON without depending on object insertion order. This makes the
- * bytes used for source and generation identities stable across callers.
- */
+/** Key-sorted JSON; the byte form every content address in the ingest plane hashes. */
 export const canonicalJson = (value: CanonicalJson): string => {
   if (value === null || typeof value === "boolean" || typeof value === "string") {
     return JSON.stringify(value)
@@ -130,10 +118,6 @@ export const canonicalJson = (value: CanonicalJson): string => {
     .join(",")}}`
 }
 
-/**
- * Selects only the immutable, verbatim session fields. Dataset answer labels
- * and allocated order are evaluation/placement metadata, never source bytes.
- */
 export const canonicalSessionSource = (session: DatasetSession): CanonicalSessionSource => {
   const canonical = canonicalJson({
     format: "palimpsest.session-source.v1",
@@ -154,11 +138,6 @@ export const canonicalSessionSource = (session: DatasetSession): CanonicalSessio
   }
 }
 
-/**
- * Captures all prompt/model/schema/tokenizer fields which change an extraction.
- * The descriptor is intentionally explicit rather than a model-name-only cache
- * key, so a provider revision cannot silently masquerade as the same output.
- */
 export const createExtractionGeneration = (
   input: ExtractionGenerationInput
 ): ExtractionGeneration => {
@@ -201,7 +180,6 @@ const dependencyFrom = (value: unknown): VersionedDependency | undefined => {
   return { id: record["id"], revision: record["revision"] }
 }
 
-/** Verifies a durable extraction-generation descriptor before it can name source output. */
 export const parseExtractionGeneration = (
   id: string,
   serialized: string
@@ -249,7 +227,6 @@ export const parseExtractionGeneration = (
   }
 }
 
-/** Creates the manifest claim input without leaking benchmark-only labels. */
 export const sourceRevisionInputForSession = (
   tenant: string,
   uid: string,

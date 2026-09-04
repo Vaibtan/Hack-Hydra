@@ -19,7 +19,6 @@ import { dirname, resolve } from "node:path"
 import {
   JUDGE_MODEL,
   SPLIT_FILE,
-  SYSTEM_NAMES,
   assertGenerationMatches,
   benchmarkSlice,
   buildIndex,
@@ -39,7 +38,7 @@ import {
 } from "../src/index.js"
 
 /**
- * `eval --system palimpsest,palimpsest-v2,bm25,fullctx,oracle-session|all`
+ * `eval --system palimpsest-v2,bm25,fullctx,oracle-session|all`
  * `     [--split dev|test | --slice 100] [--prefix g3] [--profile full|fast]`
  * `     [--batch 3/12]`
  *
@@ -167,23 +166,20 @@ const granularityOverride =
  */
 const fullCtxChars = Number(arg("fullctx-chars", process.env["PALIMPSEST_FULLCTX_CHARS"] ?? "520000"))
 
-const ALL_SYSTEMS: ReadonlyArray<SystemName> = [
-  "palimpsest",
-  "palimpsest-v2",
-  "palimpsest-premise",
-  "oracle-session",
-  "bm25",
-  "fullctx"
-]
-const requested = arg("system", "palimpsest")
+/** The v1 systems run from the `pre-cleanup-v1` tag; their result files stay readable. */
+const RETIRED_SYSTEMS: ReadonlyArray<SystemName> = ["palimpsest", "palimpsest-premise"]
+const ALL_SYSTEMS: ReadonlyArray<SystemName> = ["palimpsest-v2", "oracle-session", "bm25", "fullctx"]
+const requested = arg("system", "palimpsest-v2")
 const named = requested === "all" ? [...ALL_SYSTEMS] : requested.split(",").map((s) => s.trim())
-// An unknown name used to fall through `runOne`'s final `else` and be measured
-// as full context, so `--system palimsest` produced a plausible table for a
-// system nobody ran. Fail before anything is spent.
 const unknown = named.filter((name) => !isSystemName(name))
 if (unknown.length > 0) {
   console.error(`unknown --system value(s): ${unknown.join(", ")}`)
-  console.error(`known systems: ${SYSTEM_NAMES.join(", ")}, or "all"`)
+  console.error(`known systems: ${ALL_SYSTEMS.join(", ")}, or "all"`)
+  process.exit(2)
+}
+const retired = named.filter((name) => RETIRED_SYSTEMS.some((system) => system === name))
+if (retired.length > 0) {
+  console.error(`${retired.join(", ")}: v1 was removed; run it from the pre-cleanup-v1 tag`)
   process.exit(2)
 }
 const systems: ReadonlyArray<SystemName> = named.filter(isSystemName)
@@ -448,7 +444,7 @@ const program = Effect.gen(function* () {
       let sessionsDropped = 0
       let response = ""
       let notInMemory = false
-      let premiseSupported: boolean | null = null
+      const premiseSupported: boolean | null = null
       let premiseNote = ""
       let readerInputTokens = 0
       let readerOutputTokens = 0
@@ -473,9 +469,6 @@ const program = Effect.gen(function* () {
       let stageTimingsMs: Record<string, number> | undefined
 
       if (system === "palimpsest-v2") {
-        // v2 goes through the orchestrator, so the eval and the demo cannot
-        // drift into running different pipelines: retrieve, pack, check, one
-        // refined pass at most, read.
         const answered = yield* answerV2(retrieve, reader, uid, question.question, questionDate, {
           profile,
           ablations,
@@ -493,24 +486,18 @@ const program = Effect.gen(function* () {
         anchorsAsked = ask.receipt.anchorTerms.length
         anchorsReaching = ask.receipt.anchorsReachingClaims.length
         claimHash = ask.hash
-        hash = ask.hash
-        // Off the plan `answerV2` completed, so the row and the receipt cannot
-        // disagree about what the check decided. #29's box asks for the missing
-        // text and the premise, not only the tier: a table of `PARTIAL` counts
-        // says the check fired, and only the text says on what.
-        sufficiencyTier = plan?.sufficiency?.tier ?? (answered.sufficiency.skipped ? "skipped" : answered.sufficiency.tier)
-        sufficiencyMissing = plan?.sufficiency?.missing ?? answered.sufficiency.missing
-        sufficiencyPremise = plan?.sufficiency?.premise ?? answered.sufficiency.premise
+        hash = answered.hash
+        sufficiencyTier = plan.sufficiency.tier
+        sufficiencyMissing = plan.sufficiency.missing
+        sufficiencyPremise = plan.sufficiency.premise
         secondPass = answered.secondPass
-        if (plan !== null) {
-          route = plan.route
-          flags = Object.entries(plan.flags)
-            .filter(([, on]) => on === true)
-            .map(([name]) => name)
-            .sort()
-          selectorFallback = plan.selection.fallback
-          unionSessions = plan.unionSessions
-        }
+        route = plan.route
+        flags = Object.entries(plan.flags)
+          .filter(([, on]) => on === true)
+          .map(([name]) => name)
+          .sort()
+        selectorFallback = plan.selection.fallback
+        unionSessions = plan.unionSessions
 
         const read = answered.read
         if (read === null) {
@@ -519,62 +506,20 @@ const program = Effect.gen(function* () {
           spans = []
         } else {
           spans = read.spans
-          // An abstention decided *after* reading still reports the reader's
-          // spans, because they are what the decision was made on -- but the
-          // answer the user gets is the refusal, not the one the reader wrote.
           response = answered.verdict === "ABSENT" ? absentResponse(answered.reason) : read.answer
           notInMemory = answered.verdict === "ABSENT" || read.notInMemory
-          premiseSupported = read.premiseSupported
-          premiseNote =
-            answered.sufficiency.premise === "" ? read.premiseNote : answered.sufficiency.premise
+          premiseNote = answered.sufficiency.premise
           readerInputTokens = read.inputTokens
           readerOutputTokens = read.outputTokens
           graphMs = (graphMs ?? 0) + read.hydrateMs
           stageTimingsMs = { ...stageTimingsMs, hydrate: read.hydrateMs, read: read.readMs }
-          hash = read.spanHash
           granularity = read.granularity
-          estimatedTokens = read.estimatedTokens
-          budgetDroppedSessions = read.budgetDroppedSessions
-          budgetDropIds = read.budgetDrops.map((drop) => drop.id)
-          overBudget = read.overBudget
+          estimatedTokens = plan.budget.estimatedTokens
+          budgetDroppedSessions =
+            read.pack === null ? [] : [...new Set(read.pack.dropped.map((span) => span.sid))].sort()
+          budgetDropIds = plan.budget.dropped.map((drop) => drop.id)
+          overBudget = plan.budget.overBudget
           recited = read.recited
-        }
-      } else if (system.startsWith("palimpsest")) {
-        const ask = yield* retrieve.ask(uid, question.question, {
-          questionDate,
-          pipeline: "v1"
-        })
-        askMs = ask.timings.askMs
-        graphMs = ask.timings.graphMs
-        stageTimingsMs = { ...ask.timings.stages }
-        verdict = ask.verdict
-        reason = ask.reason
-        anchorsAsked = ask.receipt.anchorTerms.length
-        anchorsReaching = ask.receipt.anchorsReachingClaims.length
-        hash = ask.hash
-        claimHash = ask.hash
-
-        if (ask.verdict === "ABSENT") {
-          response = absentResponse(ask.reason)
-          notInMemory = true
-          spans = []
-        } else {
-          // No pack option: v1's evidence has to stay byte-identical while both
-          // pipelines read one graph, and the pack stage would change it.
-          const read = yield* reader.read(question.question, questionDate, ask.evidence, {
-            premiseCheck: system === "palimpsest-premise"
-          })
-          spans = read.spans
-          response = read.answer
-          notInMemory = read.notInMemory
-          premiseSupported = read.premiseSupported
-          premiseNote = read.premiseNote
-          readerInputTokens = read.inputTokens
-          readerOutputTokens = read.outputTokens
-          // Hydration is a HydraDB stage that happens outside `ask`, so the
-          // graph number is only whole once it is added back.
-          graphMs = (graphMs ?? 0) + read.hydrateMs
-          stageTimingsMs = { ...stageTimingsMs, hydrate: read.hydrateMs, read: read.readMs }
         }
       } else {
         const selected =

@@ -1,15 +1,6 @@
 import { useEffect, useState } from "react"
 import { api, type ContestedSlot, type SlotChain } from "../api"
 
-/**
- * The supersession chain for one slot.
- *
- * "Current" is not a flag anyone sets — it is the *absence* of an outgoing
- * `SUPERSEDED_BY` edge as of session k. So a struck-through claim here is not
- * marked stale in the data; it is stale because an edge points out of it, and
- * moving the as-of slider changes which edges are visible without touching the
- * graph.
- */
 export const Chain = ({
   uid,
   slots,
@@ -23,8 +14,6 @@ export const Chain = ({
   const [chain, setChain] = useState<SlotChain | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Default to the slot with the most claims — the one most likely to hold a
-  // real chain, which is what the demo opens on.
   useEffect(() => {
     if (slots.length === 0) return
     setSkey((current) =>

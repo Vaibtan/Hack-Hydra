@@ -1,10 +1,7 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import {
-  canonicalSessionSource,
-  createExtractionGeneration,
-  createIndexGeneration,
-  runTransactionalSourceIndex
-} from "../../src/index.js"
+import { createIndexGeneration } from "../../src/IndexGeneration.js"
+import { canonicalSessionSource, createExtractionGeneration } from "../../src/SourceIdentity.js"
+import { runTransactionalSourceIndex } from "../../src/TransactionalSourceIndex.js"
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 
@@ -56,8 +53,6 @@ describe("runTransactionalSourceIndex", () => {
         extract: () => Effect.die("must not extract"),
         classifyFailure: () => ({ code: "UNREACHABLE", retryable: false })
       }).pipe(Effect.either)
-    // This branch fails before resolving any data-plane dependency; the cast
-    // keeps the test focused on that public preflight invariant.
     const outcome = await Effect.runPromise(
       program as Effect.Effect<
         typeof program extends Effect.Effect<infer Success, infer _Failure, infer _Requirements>

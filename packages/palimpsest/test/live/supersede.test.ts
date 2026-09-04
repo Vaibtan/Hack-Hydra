@@ -5,7 +5,10 @@ import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { ClaimGraph, Ingest, Supersede, Transcript } from "../../src/index.js"
+import { ClaimGraph } from "../../src/ClaimGraph.js"
+import { Ingest } from "../../src/Ingest.js"
+import { Supersede } from "../../src/Supersede.js"
+import { Transcript } from "../../src/Transcript.js"
 
 /**
  * Supersession on a real `knowledge-update` user — the question type that only

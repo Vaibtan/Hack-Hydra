@@ -1,112 +1,40 @@
-import type { HydraPath } from "@palimpsest/hydra"
+import type { ClaimFields, ReachedRow } from "./Rows.js"
 
-/**
- * Convergence scoring and the structural verdict.
- *
- * Everything here is a pure function of the paths HydraDB returned, so the
- * decision to answer or abstain is reproducible from the receipt alone and can
- * be unit-tested without a database. That is the point: the claim is not that
- * no threshold exists anywhere, it is that the threshold is one named number,
- * printed in the receipt, applied to a structural quantity anyone can re-derive.
- */
-
-export interface ReachedClaim {
-  readonly ckey: string
-  readonly text: string
-  readonly speaker: string
-  readonly ctype: string
-  readonly sessionOrd: number
-  readonly sessionDate: number
-  readonly tEvent: number
-  readonly tPrec: string
-  readonly sid: string
-  /**
-   * The Session *key*, which is `sid` plus a `#n` suffix on the 13 haystacks
-   * that list the same session id twice at different dates. Turn keys are built
-   * from this, never from `sid` — `sid` alone does not identify a session, and
-   * hydrating a whole turn by the wrong one silently reads the other revision.
-   */
-  readonly sessionKey: string
-  readonly turnIdx: number
-  readonly cs: number
-  readonly ce: number
+export interface ReachedClaim extends ClaimFields {
   /** The distinct question anchors that reached this claim. */
   readonly anchors: ReadonlyArray<string>
   /** How many of them — the convergence score. */
   readonly convergence: number
-  /** Σ idf over those anchors. Breaks ties between equally-converged claims. */
+  /** Σ idf over those anchors. */
   readonly score: number
   /** Shortest path length that reached it: 1 direct, 2 through an Entity. */
   readonly hops: number
 }
 
-/**
- * Rare anchors say more than common ones. `df` is the number of claims a token
- * hits within this user's graph, so a token on every claim contributes almost
- * nothing and a token on two claims contributes a lot.
- */
 export const idf = (df: number, totalClaims: number): number =>
   Math.log(1 + totalClaims / Math.max(1, df))
 
-const propString = (node: HydraPath["nodes"][number] | undefined, key: string): string =>
-  node === undefined ? "" : String(node.properties[key] ?? "")
-
-const propNumber = (node: HydraPath["nodes"][number] | undefined, key: string): number =>
-  node === undefined ? 0 : Number(node.properties[key] ?? 0)
-
-/**
- * Folds the paths of Query 1 into one row per Claim.
- *
- * A path is Token→Claim or Token→Entity→Claim. The first node is always the
- * anchor the path started from, so convergence is just the number of distinct
- * first nodes that ended at the same last node.
- */
+/** Folds the decoded paths of one walk into one row per Claim; convergence is the count of distinct anchors. */
 export const scoreReached = (
-  paths: ReadonlyArray<HydraPath>,
+  rows: ReadonlyArray<ReachedRow>,
   totalClaims: number
 ): ReadonlyArray<ReachedClaim> => {
   const byClaim = new Map<
     string,
-    { claim: Omit<ReachedClaim, "anchors" | "convergence" | "score" | "hops">; anchors: Map<string, number>; hops: number }
+    { claim: ClaimFields; anchors: Map<string, number>; hops: number }
   >()
 
-  for (const path of paths) {
-    const source = path.nodes[0]
-    const target = path.nodes[path.nodes.length - 1]
-    if (source === undefined || target === undefined || source === target) continue
-
-    const ckey = propString(target, "ckey")
-    if (ckey === "") continue
-    const stem = propString(source, "stem") || propString(source, "tkey")
-    const df = propNumber(source, "df")
-
-    const existing = byClaim.get(ckey)
-    const hops = path.relationships.length
+  for (const row of rows) {
+    const existing = byClaim.get(row.claim.ckey)
     if (existing === undefined) {
-      byClaim.set(ckey, {
-        claim: {
-          ckey,
-          text: propString(target, "text"),
-          speaker: propString(target, "speaker"),
-          ctype: propString(target, "ctype"),
-          sessionOrd: propNumber(target, "session_ord"),
-          sessionDate: propNumber(target, "session_date"),
-          tEvent: propNumber(target, "t_event"),
-          tPrec: propString(target, "t_prec"),
-          sid: propString(target, "sid"),
-          // Falls back to `sid` for a graph written before the property
-          // existed; every `g3` Claim carries it.
-          sessionKey: propString(target, "source_session_id") || propString(target, "sid"),
-          turnIdx: propNumber(target, "turn_idx"),
-          cs: propNumber(target, "cs"),
-          ce: propNumber(target, "ce")
-        },
-        anchors: new Map([[stem, df]]),
-        hops
+      byClaim.set(row.claim.ckey, {
+        claim: row.claim,
+        anchors: new Map([[row.anchor, row.df]]),
+        hops: row.hops
       })
     } else {
-      if (!existing.anchors.has(stem)) existing.anchors.set(stem, df)
-      if (hops < existing.hops) existing.hops = hops
+      if (!existing.anchors.has(row.anchor)) existing.anchors.set(row.anchor, row.df)
+      if (row.hops < existing.hops) existing.hops = row.hops
     }
   }
 
@@ -119,42 +47,14 @@ export const scoreReached = (
   }))
 }
 
-/**
- * The as-of cut, applied to the reached claims **before** the verdict.
- *
- * The spec (§3.4) lists as-of as step 5, after the structural verdict and the
- * top-K cut, and that is wrong — see the erratum in the spec. A receipt
- * computed over claims the memory is not supposed to have yet is a receipt that
- * lies at every scrubber position but the last: it reports anchors resolving
- * against future claims, a convergence table of claims that do not exist, and
- * an A1/A2 decision taken on evidence the answer may not use. Worse, top-K is
- * consumed by future claims, so recall degrades for early `k` for no reason
- * anyone could see.
- *
- * The later `applyAsOf` still runs, because it does the other half: supersession
- * edges written after `k` are invisible, and the slot-mates pulled in by Query 2
- * have to be cut too.
- */
+/** The as-of cut, before the verdict: claims from sessions after `k` do not exist yet. */
 export const beforeAsOf = <A extends { readonly sessionOrd: number }>(
   claims: ReadonlyArray<A>,
   asOf?: number
 ): ReadonlyArray<A> =>
   asOf === undefined ? claims : claims.filter((claim) => claim.sessionOrd <= asOf)
 
-/**
- * Why a verdict was `ABSENT`.
- *
- * The first two are structural and belong to retrieval: nothing the question
- * named exists in this memory (`A1`), or things exist and nothing converged on
- * the question (`A2`). The second two belong to the pack and are v2's: the
- * excerpts were reached, judged short of the question, searched again, and
- * still short (`INSUFFICIENT_EVIDENCE`); or the question assumes something a
- * current excerpt contradicts (`CONTRADICTED_PREMISE`).
- *
- * The reader's `NOT_IN_MEMORY` is deliberately *not* here. That is an answer
- * the reader gave, and folding it into the verdict would make an abstention
- * that the retrieval receipt cannot explain look like one it can.
- */
+/** `A1`/`A2` are structural; the other two are the pack's. The reader's `NOT_IN_MEMORY` is an answer, not a verdict. */
 export type AbstentionReason =
   | "A1_no_anchors"
   | "A2_no_convergence"
@@ -164,28 +64,16 @@ export type AbstentionReason =
 export interface Verdict {
   readonly kind: "ANSWER" | "ABSENT"
   readonly reason: AbstentionReason | null
-  /** The convergence a claim had to reach. Printed in every receipt. */
   readonly threshold: number
   readonly candidates: ReadonlyArray<ReachedClaim>
 }
 
-/**
- * The one tunable in the whole read path: a claim must be reached by at least
- * two distinct anchors, or by every anchor there was when the question only
- * produced one. `min` rather than a flat 2 so a one-word question can still be
- * answered — otherwise "Nibbles?" would abstain by construction.
- */
+/** Two distinct anchors, or every anchor there was when the question produced only one. */
 export const convergenceThreshold = (resolvedAnchors: number): number =>
   Math.min(2, Math.max(1, resolvedAnchors))
 
 export const DEFAULT_TOP_K = 25
 
-/**
- * The structural verdict. `A1` means no anchor of the question exists in this
- * user's graph at all; `A2` means anchors exist but no claim is reached by
- * enough of them. Both are backed by the query and its result, which is what
- * makes the abstention showable rather than asserted.
- */
 export const decide = (
   reached: ReadonlyArray<ReachedClaim>,
   resolvedAnchors: number,
@@ -202,10 +90,6 @@ export const decide = (
   return { kind: "ANSWER", reason: null, threshold, candidates: rank(converged).slice(0, topK) }
 }
 
-/**
- * Most converged first, then by idf mass, then newest, then by key so the order
- * — and therefore the determinism hash — never depends on map iteration.
- */
 export const rank = (claims: ReadonlyArray<ReachedClaim>): ReadonlyArray<ReachedClaim> =>
   [...claims].sort(
     (a, b) =>
@@ -222,11 +106,7 @@ export interface AsOfLabelled extends ReachedClaim {
   readonly atSession: number | null
 }
 
-/**
- * "As of session k" is a filter over data, not a database snapshot: drop claims
- * from later sessions, ignore supersession edges written later, then label what
- * is left. HydraDB bookmarks are causal floors and cannot do this.
- */
+/** As-of is a data-level filter: later claims are dropped and later supersession edges are invisible. */
 export const applyAsOf = (
   claims: ReadonlyArray<ReachedClaim>,
   edges: ReadonlyMap<string, { readonly newer: string; readonly atSession: number }>,
@@ -245,12 +125,7 @@ export const applyAsOf = (
       }
     })
 
-/**
- * Evidence order. Superseded claims are kept — the reader may need them to
- * answer a historical question — but demoted below current ones unless the
- * question asked about history. Within a group, chronological by event time,
- * with unknown event dates last so date arithmetic reads in order.
- */
+/** CURRENT before SUPERSEDED unless the question is historical; within a group, event time ascending with unknown dates last. */
 export const orderEvidence = (
   claims: ReadonlyArray<AsOfLabelled>,
   historical: boolean

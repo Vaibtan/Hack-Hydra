@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest"
-import {
-  prepareDerivedIndexAssertions,
-  type ChainClaim,
-  type HydratedSpan
-} from "../../src/index.js"
+import { prepareDerivedIndexAssertions } from "../../src/DerivedAssertion.js"
+import type { HydratedSpan } from "../../src/Reader.js"
+import type { ChainClaim } from "../../src/Supersede.js"
 
 const claim = (overrides: Partial<ChainClaim> = {}): ChainClaim => ({
   ckey: "user-a|c|assertion-a",

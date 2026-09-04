@@ -1,36 +1,31 @@
 import { Effect } from "effect"
 
-/**
- * The model ids the read path uses, verified against the provider before a run
- * starts.
- *
- * Three ids and not one, because the three calls are different jobs: the reader
- * answers from verbatim text, the selector reads a table of index entries, and
- * the sufficiency check judges a pack. They default to the same model so that
- * setting nothing is the frozen comparison, and each is separately overridable
- * so a later experiment can move one without moving the others.
- *
- * **The reader is frozen at `gpt-5.6-luna` for the whole v1-vs-v2 comparison.**
- * That is a decision, not a default: v1's numbers were measured with it, and a
- * reader change would make every paired result a comparison of two things.
- *
- * Verification fails closed. A typo in a model id is otherwise a five-hour run
- * that produces a table of provider errors, or — worse on a provider that
- * silently substitutes — a table of real numbers from a model nobody chose.
- */
+/** The model every read-path call defaults to; the reader is frozen at it for the v1-vs-v2 comparison. */
+export const DEFAULT_MODEL = "gpt-5.6-luna"
 
+/** Reader, selector and sufficiency ids: separately overridable, defaulting to one model. */
 export interface ReadPathModels {
   readonly reader: string
   readonly select: string
   readonly sufficiency: string
 }
 
-export const readPathModels = (fallback: string): ReadPathModels => ({
-  reader: process.env["PALIMPSEST_MODEL"] ?? fallback,
-  select: process.env["PALIMPSEST_SELECT_MODEL"] ?? process.env["PALIMPSEST_MODEL"] ?? fallback,
-  sufficiency:
-    process.env["PALIMPSEST_SUFFICIENCY_MODEL"] ?? process.env["PALIMPSEST_MODEL"] ?? fallback
-})
+/** An environment variable's model id, with unset and `""` both meaning "not configured". */
+export const configuredModel = (variable: string): string | undefined => {
+  const value = process.env[variable]
+  return value === undefined || value === "" ? undefined : value
+}
+
+export const resolveReadPathModels = (fallback: string = DEFAULT_MODEL): ReadPathModels => {
+  const reader = configuredModel("PALIMPSEST_MODEL") ?? fallback
+  return {
+    reader,
+    select: configuredModel("PALIMPSEST_SELECT_MODEL") ?? reader,
+    sufficiency: configuredModel("PALIMPSEST_SUFFICIENCY_MODEL") ?? reader
+  }
+}
+
+export const readPathModels = (fallback: string): ReadPathModels => resolveReadPathModels(fallback)
 
 /** The distinct ids to verify — usually one, at most three. */
 export const distinctIds = (models: ReadPathModels, extra: ReadonlyArray<string> = []): ReadonlyArray<string> =>
@@ -51,13 +46,6 @@ export class UnknownModelError extends Error {
   }
 }
 
-/**
- * Which of `ids` the provider does not list.
- *
- * Pure, so the failure message is testable without a network call — the message
- * is the whole point of this check, and a check whose message is untested is a
- * check that will be unreadable the one time it fires.
- */
 export const unknownIds = (
   ids: ReadonlyArray<string>,
   available: ReadonlyArray<string>
@@ -86,16 +74,7 @@ export const listModels = (
     catch: () => new Error("unreachable")
   }).pipe(Effect.catchAll(() => Effect.succeed(null)))
 
-/**
- * Verifies the read-path ids, failing closed on an id the provider does not
- * list — and *only* on that.
- *
- * A provider that cannot be reached, or whose `/models` endpoint is missing or
- * empty, is not evidence that an id is wrong. It returns null, this warns and
- * proceeds, and the run fails on the first real call if the id was in fact
- * wrong. Refusing to start because a listing endpoint was down would make an
- * unrelated outage look like a configuration error.
- */
+/** Fails closed on an id the provider does not list, and only on that; an unreachable provider warns and returns `null`. */
 export const verifyModels = (
   models: ReadPathModels,
   options: {
@@ -122,52 +101,37 @@ export const verifyModels = (
     return available
   })
 
-/** The reader model the whole v1-vs-v2 comparison is frozen at. */
-export const DEFAULT_MODEL = "gpt-5.6-luna"
+export interface StartupVerifyOptions {
+  readonly fallback?: string
+  /** Ids outside the read path the process also uses, such as the eval's judge. */
+  readonly extra?: ReadonlyArray<string>
+  readonly quiet?: boolean
+}
 
-/**
- * The startup check, for a process that is about to spend money.
- *
- * The eval has verified its ids since #31; the server, the demo behind it and
- * every CLI did not, which left the check protecting the one caller least
- * likely to be run with a hand-edited `PALIMPSEST_SELECT_MODEL`. A demo in front
- * of an audience is the caller that can least afford to discover a bad id on
- * its first question.
- *
- * It **fails closed on an unknown id and only on that**. A provider that cannot
- * be reached, or whose `/models` endpoint is missing or empty, warns and
- * proceeds: an unrelated outage must not look like a configuration error. On an
- * unknown id it prints `UnknownModelError`'s message — which names every unknown
- * id, what the provider does list, and the three environment variables that fix
- * it — and exits 2, because a process that starts anyway spends real money
- * producing a table of provider errors.
- *
- * `extra` is for ids outside the read path that the process also uses, such as
- * the eval's judge.
- */
+/** The startup check for a process about to spend money; fails with `UnknownModelError` on a bad id. */
 export const verifyModelsAtStartup = (
-  options: {
-    readonly fallback?: string
-    readonly extra?: ReadonlyArray<string>
-    readonly quiet?: boolean
-  } = {}
-): Effect.Effect<void> =>
+  options: StartupVerifyOptions = {}
+): Effect.Effect<void, UnknownModelError> =>
   Effect.gen(function* () {
-    const models = readPathModels(options.fallback ?? process.env["PALIMPSEST_MODEL"] ?? DEFAULT_MODEL)
+    const models = resolveReadPathModels(options.fallback ?? DEFAULT_MODEL)
     const verified = yield* verifyModels(models, {
       ...(options.extra === undefined ? {} : { extra: options.extra })
-    }).pipe(
-      Effect.catchAll((error: UnknownModelError) =>
-        Effect.sync(() => {
-          console.error(error.message)
-          process.exit(2)
-        })
-      )
-    )
-    if (options.quiet !== true && verified !== null && verified !== undefined) {
+    })
+    if (options.quiet !== true && verified !== null) {
       console.error(
         `models       reader ${models.reader}, select ${models.select}, ` +
           `sufficiency ${models.sufficiency} — verified against the provider`
       )
     }
   })
+
+/** `verifyModelsAtStartup`, printing the error and exiting 2 instead of failing. */
+export const verifyModelsOrExit = (options: StartupVerifyOptions = {}): Effect.Effect<void> =>
+  verifyModelsAtStartup(options).pipe(
+    Effect.catchAll((error) =>
+      Effect.sync(() => {
+        console.error(error.message)
+        process.exit(2)
+      })
+    )
+  )

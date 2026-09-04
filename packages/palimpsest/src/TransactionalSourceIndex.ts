@@ -22,7 +22,6 @@ import {
 import type { IngestCommitLock, IngestCommitLockUnavailable } from "./IngestCommitLock.js"
 import { createExtractionArtifact } from "./ExtractionArtifact.js"
 
-/** The index generation must derive from the same explicit extraction generation as its source revision. */
 export class SourceIndexGenerationMismatch extends Data.TaggedError("SourceIndexGenerationMismatch")<{
   readonly sourceExtractionGeneration: string
   readonly indexExtractionGeneration: string
@@ -32,7 +31,6 @@ export class SourceIndexGenerationMismatch extends Data.TaggedError("SourceIndex
   }
 }
 
-/** A bounded source/index operation must never accidentally advance a later stage. */
 export class SourceIndexTargetExceeded extends Data.TaggedError("SourceIndexTargetExceeded")<{
   readonly stage: "ENRICHED" | "CONSOLIDATED" | "COMMITTED"
 }> {
@@ -41,7 +39,7 @@ export class SourceIndexTargetExceeded extends Data.TaggedError("SourceIndexTarg
   }
 }
 
-/** Typed failure universe passed to the caller's safe retry classifier. */
+/** Every failure a stage can hand to `classifyFailure`. */
 export type SourceIndexStageError<Error> =
   | Error
   | HydraError
@@ -50,19 +48,13 @@ export type SourceIndexStageError<Error> =
   | IndexGraphWriteRejected
   | SourceIndexTargetExceeded
 
-/** Explicit request for source durability plus isolated derived indexing. */
 export interface RunTransactionalSourceIndex<Error, Requirements> {
-  /** Caller-supplied source identity and complete extraction-generation descriptor. */
   readonly sourceRevision: BeginSourceRevision
-  /** Caller-supplied graph writer/schema generation; activation is deliberately separate. */
   readonly indexGeneration: IndexGeneration
-  /** Verbatim source bytes whose digest must match `sourceRevision`. */
   readonly session: DatasetSession
-  /** Provider call used only when the manifest has no verified extraction artifact yet. */
   readonly extract: (
     session: DatasetSession
   ) => Effect.Effect<PersistedSessionExtraction, Error, Requirements>
-  /** Maps only known typed failures to a durable retry disposition. */
   readonly classifyFailure: (input: {
     readonly stage: IngestExecutionStage
     readonly error: SourceIndexStageError<Error>
@@ -74,11 +66,7 @@ const targetExceeded = (
 ): Effect.Effect<never, SourceIndexTargetExceeded> =>
   Effect.fail(new SourceIndexTargetExceeded({ stage }))
 
-/**
- * Makes the source and isolated index durable through `INDEXED`, and no
- * further. A separate workflow must validate projections and canonical views
- * before consolidation, commit, and active-generation selection.
- */
+/** Drives a source revision through SOURCE_DURABLE and INDEXED only; later stages are refused. */
 export const runTransactionalSourceIndex = <Error, Requirements>(
   input: RunTransactionalSourceIndex<Error, Requirements>
 ): Effect.Effect<
@@ -100,8 +88,6 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
       )
     }
     const manifest = yield* IngestManifest
-    // Persist the descriptor only after `begin` has authenticated its referenced
-    // extraction generation. `storeIndexGeneration` itself is idempotent.
     yield* manifest.begin(input.sourceRevision)
     yield* manifest.storeIndexGeneration({ generation: input.indexGeneration })
     const sourceTranscript = yield* SourceTranscript

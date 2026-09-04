@@ -1,0 +1,216 @@
+import { DatabaseSync } from "node:sqlite"
+import { integer, nullableBoolean, nullableText, revisionKey, text, type DatabaseRow } from "./Rows.js"
+
+const V2_REVISION_IDENTITY =
+  "UNIQUE (tenant, uid, logical_session_id, source_digest, extraction_generation)"
+
+const TABLES = `
+  CREATE TABLE IF NOT EXISTS extraction_generations (
+    id TEXT PRIMARY KEY,
+    canonical_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS source_revisions (
+    revision_key TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    logical_session_id TEXT NOT NULL,
+    source_digest TEXT NOT NULL,
+    source_bytes INTEGER NOT NULL CHECK (source_bytes >= 0),
+    extraction_generation TEXT NOT NULL,
+    session_ordinal INTEGER NOT NULL CHECK (session_ordinal >= 1),
+    commit_id TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK (state IN ('RECEIVED', 'SOURCE_DURABLE', 'INDEXED', 'ENRICHED', 'CONSOLIDATED', 'COMMITTED')),
+    manifest_version INTEGER NOT NULL CHECK (manifest_version >= 0),
+    failure_code TEXT,
+    failure_retryable INTEGER CHECK (failure_retryable IN (0, 1)),
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    ${V2_REVISION_IDENTITY}
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS extraction_artifacts (
+    commit_id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    canonical_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (commit_id) REFERENCES source_revisions (commit_id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS projection_deltas (
+    commit_id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    expected_manifest_version INTEGER NOT NULL CHECK (expected_manifest_version >= 1),
+    canonical_delta TEXT NOT NULL,
+    applied_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (commit_id) REFERENCES source_revisions (commit_id),
+    UNIQUE (tenant, uid, expected_manifest_version)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS user_projections (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    manifest_version INTEGER NOT NULL CHECK (manifest_version >= 0),
+    last_commit_id TEXT,
+    last_reconciled_commit_id TEXT,
+    stats_json TEXT NOT NULL,
+    consistency TEXT NOT NULL CHECK (consistency IN ('consistent', 'stale', 'unknown')),
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (tenant, uid)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS projection_token_counts (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    token_key TEXT NOT NULL,
+    value INTEGER NOT NULL CHECK (value >= 0),
+    PRIMARY KEY (tenant, uid, token_key)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS projection_slot_counts (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    slot_key TEXT NOT NULL,
+    value INTEGER NOT NULL CHECK (value >= 0),
+    PRIMARY KEY (tenant, uid, slot_key)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS index_generations (
+    generation_id TEXT PRIMARY KEY,
+    extraction_generation TEXT NOT NULL,
+    canonical_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (extraction_generation) REFERENCES extraction_generations (id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS active_index_generations (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    activated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (tenant, uid),
+    FOREIGN KEY (generation_id) REFERENCES index_generations (generation_id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS entity_canonical_views (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    view_id TEXT NOT NULL,
+    canonical_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (tenant, uid, view_id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS entity_canonical_view_edges (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    view_id TEXT NOT NULL,
+    from_identity_id TEXT NOT NULL,
+    to_canonical_identity_id TEXT NOT NULL,
+    PRIMARY KEY (tenant, uid, view_id, from_identity_id),
+    FOREIGN KEY (tenant, uid, view_id)
+      REFERENCES entity_canonical_views (tenant, uid, view_id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS active_entity_canonical_views (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    view_id TEXT NOT NULL,
+    activated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (tenant, uid),
+    FOREIGN KEY (tenant, uid, view_id)
+      REFERENCES entity_canonical_views (tenant, uid, view_id)
+  ) STRICT;
+`
+
+const migrateRevisionsV1 = (database: DatabaseSync): void => {
+  const legacyRows = database
+    .prepare(`
+      SELECT tenant, uid, logical_session_id, source_digest, source_bytes,
+             extraction_generation, session_ordinal, commit_id, state, manifest_version,
+             failure_code, failure_retryable, created_at_ms, updated_at_ms
+        FROM source_revisions_v1
+    `)
+    .all() as ReadonlyArray<DatabaseRow>
+  const insert = database.prepare(`
+    INSERT INTO source_revisions (
+      revision_key, tenant, uid, logical_session_id, source_digest, source_bytes,
+      extraction_generation, session_ordinal, commit_id, state, manifest_version,
+      failure_code, failure_retryable, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const row of legacyRows) {
+    const identity = {
+      tenant: text(row, "tenant"),
+      uid: text(row, "uid"),
+      logicalSessionId: text(row, "logical_session_id"),
+      sourceDigest: text(row, "source_digest"),
+      extractionGeneration: text(row, "extraction_generation")
+    }
+    const failureRetryable = nullableBoolean(row, "failure_retryable")
+    insert.run(
+      revisionKey(identity),
+      identity.tenant,
+      identity.uid,
+      identity.logicalSessionId,
+      identity.sourceDigest,
+      integer(row, "source_bytes"),
+      identity.extractionGeneration,
+      integer(row, "session_ordinal"),
+      text(row, "commit_id"),
+      text(row, "state"),
+      integer(row, "manifest_version"),
+      nullableText(row, "failure_code"),
+      failureRetryable === null ? null : failureRetryable ? 1 : 0,
+      integer(row, "created_at_ms"),
+      integer(row, "updated_at_ms")
+    )
+  }
+  database.exec("DROP TABLE source_revisions_v1")
+}
+
+export const createDatabase = (path: string): DatabaseSync => {
+  const database = new DatabaseSync(path, {
+    enableForeignKeyConstraints: true,
+    timeout: 5_000
+  })
+  database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
+  try {
+    database.exec("BEGIN IMMEDIATE")
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS user_manifests (
+        tenant TEXT NOT NULL,
+        uid TEXT NOT NULL,
+        next_session_ordinal INTEGER NOT NULL CHECK (next_session_ordinal >= 1),
+        manifest_version INTEGER NOT NULL CHECK (manifest_version >= 0),
+        PRIMARY KEY (tenant, uid)
+      ) STRICT;
+    `)
+
+    const existing = database
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'source_revisions'")
+      .get() as { readonly sql?: unknown } | undefined
+    const oldIdentity = typeof existing?.sql === "string" && !existing.sql.includes(V2_REVISION_IDENTITY)
+    if (oldIdentity) database.exec("ALTER TABLE source_revisions RENAME TO source_revisions_v1")
+
+    database.exec(TABLES)
+    if (oldIdentity) migrateRevisionsV1(database)
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS source_revisions_logical_session
+        ON source_revisions (tenant, uid, logical_session_id, extraction_generation, created_at_ms);
+      PRAGMA user_version = 7;
+      COMMIT;
+    `)
+  } catch (cause) {
+    try {
+      database.exec("ROLLBACK")
+    } catch {
+      // no open transaction when the open itself failed
+    }
+    database.close()
+    throw cause
+  }
+  return database
+}

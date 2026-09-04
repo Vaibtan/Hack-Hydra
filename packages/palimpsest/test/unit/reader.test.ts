@@ -1,22 +1,11 @@
 import { describe, expect, it } from "vitest"
-import {
-  ROUTE_RULES,
-  TURN_ROUTES,
-  cutExcerpt,
-  granularityFor,
-  renderReaderPrompt,
-  systemFor,
-  type HydratedSpan,
-  type PackLabel
-} from "../../src/index.js"
+import type { PackLabel } from "../../src/Pack.js"
+import { cutExcerpt, renderReaderPrompt, systemFor, type HydratedSpan } from "../../src/Reader.js"
+import { RoutePolicy, granularityFor } from "../../src/Routes.js"
+import { ROUTES } from "../../src/Understand.js"
 
-/**
- * The span window. The reader is only ever shown verbatim turn text, so this
- * is the function that decides what it sees — and the highlight it returns is
- * what the UI draws over the evidence.
- */
 const TURN =
-  "Zero one two three four five six seven eight nine. " + // 51 chars
+  "Zero one two three four five six seven eight nine. " +
   "The user was pre-approved for a $350,000 loan from Wells Fargo. " +
   "Then some more text follows here to give the cut something to work with."
 
@@ -49,8 +38,6 @@ describe("cutExcerpt", () => {
   })
 
   it("survives a span that points past the end of the text", () => {
-    // A span can only be stale if the transcript changed under it, but a
-    // reader crash is a much worse outcome than a short excerpt.
     const cut = cutExcerpt("short", 3, 900, 10)
     expect(cut.excerpt).toBe("short")
     expect(cut.highlight.start).toBe(3)
@@ -73,16 +60,6 @@ describe("cutExcerpt", () => {
   })
 })
 
-/**
- * The excerpt-order label.
- *
- * `orderEvidence` puts CURRENT before SUPERSEDED unless the question is
- * historical, so the prompt's old "oldest first" was wrong exactly on the
- * knowledge-update questions — the ones where the reader has to tell the
- * replaced value from the one that replaced it. A label that misdescribes the
- * order is worse than no label: it tells the model to trust a sequence that
- * isn't there.
- */
 const span = (
   id: string,
   sessionOrd: number,
@@ -111,7 +88,6 @@ describe("renderReaderPrompt", () => {
 
   it("describes the order the excerpts are actually in", () => {
     expect(prompt).toContain("CURRENT first and then superseded, each group oldest first")
-    // The claim in the label has to hold for the list beneath it.
     expect(prompt.indexOf("[aaa]")).toBeLessThan(prompt.indexOf("[bbb]"))
     expect(prompt).not.toContain("EXCERPTS (2), oldest first")
   })
@@ -130,9 +106,6 @@ describe("renderReaderPrompt", () => {
 
 describe("granularity", () => {
   it("reads a whole turn for the routes whose answer IS the turn", () => {
-    // An assistant_output question asks what the assistant said. The Span is
-    // the one line the extractor found quotable; the answer is the list of five
-    // suggestions around it, and 300 characters either side cuts it in half.
     expect(granularityFor("assistant_output")).toBe("turn")
     expect(granularityFor("preference")).toBe("turn")
   })
@@ -143,7 +116,7 @@ describe("granularity", () => {
     }
   })
 
-  it("is span when there is no route at all, which is v1 and every baseline", () => {
+  it("is span when there is no route at all, which is every baseline", () => {
     expect(granularityFor(null)).toBe("span")
   })
 
@@ -153,7 +126,10 @@ describe("granularity", () => {
   })
 
   it("names the turn routes explicitly, so adding a route does not silently opt in", () => {
-    expect([...TURN_ROUTES]).toEqual(["assistant_output", "preference"])
+    expect(ROUTES.filter((route) => RoutePolicy[route].granularity === "turn")).toEqual([
+      "preference",
+      "assistant_output"
+    ])
   })
 })
 
@@ -170,10 +146,6 @@ describe("the pack label in the prompt", () => {
   })
 
   it("distinguishes EARLIER STATEMENT from SUPERSEDED", () => {
-    // The two are different claims and the prompt has to read like it. The
-    // memory *inferred* a supersession edge; it only *observed* that something
-    // else about the same slot was said afterwards. Telling the reader the
-    // second is the first is how a still-true fact gets discarded.
     expect(labelled("EARLIER STATEMENT", "CURRENT")).toContain(
       "EARLIER STATEMENT about the same thing"
     )
@@ -185,58 +157,45 @@ describe("the pack label in the prompt", () => {
     expect(labelled("CURRENT", "SUPERSEDED")).not.toContain("EARLIER STATEMENT")
   })
 
-  it("reads as v1 does when the pack stage did not run", () => {
-    // No label at all is v1 and every baseline, and their prompts must not move
-    // by a byte or the paired comparison is between two prompts.
+  it("reads as the baselines do when the pack stage did not run", () => {
     expect(labelled(undefined, "CURRENT")).toContain(", user, CURRENT")
   })
 })
 
 describe("the route rules block", () => {
   it("keeps the terse rule on fact and nowhere else", () => {
-    // v1's "answer in as few words as the question allows" is right for a fact
-    // and actively wrong everywhere else: it tells a count question to say
-    // "five" without saying five of what, which is the shape the judge marks
-    // wrong.
-    expect(ROUTE_RULES.fact).toContain("as few words")
+    expect(RoutePolicy.fact.rules).toContain("as few words")
     for (const route of ["count", "temporal", "update", "preference", "multi_fact"] as const) {
-      expect(ROUTE_RULES[route]).not.toContain("as few words")
+      expect(RoutePolicy[route].rules).not.toContain("as few words")
     }
   })
 
   it("tells a count question to enumerate before it numbers", () => {
-    expect(ROUTE_RULES.count).toContain("Enumerate")
-    expect(ROUTE_RULES.count).toContain("distinct")
+    expect(RoutePolicy.count.rules).toContain("Enumerate")
+    expect(RoutePolicy.count.rules).toContain("distinct")
   })
 
   it("tells an assistant-output question to quote rather than paraphrase", () => {
-    expect(ROUTE_RULES.assistant_output).toContain("verbatim")
+    expect(RoutePolicy.assistant_output.rules).toContain("verbatim")
   })
 
   it("tells an update question that EARLIER STATEMENT is not wrong", () => {
-    expect(ROUTE_RULES.update).toContain("EARLIER STATEMENT")
+    expect(RoutePolicy.update.rules).toContain("EARLIER STATEMENT")
+  })
+
+  it("tells a multi-fact question to abstain with the constant, not a paraphrase", () => {
+    expect(RoutePolicy.multi_fact.rules).toContain("answer NOT_IN_MEMORY")
   })
 
   it("appends to one system prompt rather than forking seven", () => {
-    // Seven prompts would diverge invisibly and show up as an unexplained
-    // per-route accuracy difference that nothing in the receipt could explain.
-    const base = systemFor(null, false)
-    for (const route of Object.keys(ROUTE_RULES) as Array<keyof typeof ROUTE_RULES>) {
-      expect(systemFor(route, false).startsWith(base)).toBe(true)
-      expect(systemFor(route, false)).toContain(ROUTE_RULES[route])
+    const base = systemFor(null)
+    for (const route of ROUTES) {
+      expect(systemFor(route).startsWith(base)).toBe(true)
+      expect(systemFor(route)).toContain(RoutePolicy[route].rules)
     }
   })
 
-  it("is v1's prompt byte for byte when there is no route", () => {
-    // What `--reader-route=off`, v1 and every baseline get. If this ever
-    // stopped being true, every v1 number in the tables would have to be
-    // re-measured.
-    expect(systemFor(null, false)).not.toContain("For this question in particular")
-  })
-
-  it("keeps the premise variant separate from the route rules", () => {
-    expect(systemFor(null, true)).toContain("premise_supported")
-    expect(systemFor("count", true)).toContain("premise_supported")
-    expect(systemFor("count", true)).toContain(ROUTE_RULES.count)
+  it("is the baselines' prompt byte for byte when there is no route", () => {
+    expect(systemFor(null)).not.toContain("For this question in particular")
   })
 })

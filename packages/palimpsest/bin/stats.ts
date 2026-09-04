@@ -2,7 +2,8 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { ClaimGraph, Supersede } from "../src/index.js"
+import { ClaimGraph } from "../src/ClaimGraph.js"
+import { Supersede } from "../src/Supersede.js"
 
 /** `stats --uid <question_id> [--slots] [--tokens]` — what a user's graph actually holds. */
 loadDotEnv()

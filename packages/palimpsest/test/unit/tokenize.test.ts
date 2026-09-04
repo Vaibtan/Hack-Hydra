@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { MAX_TOKENS_PER_CLAIM, claimTokens, stem, stems } from "../../src/index.js"
+import { MAX_TOKENS_PER_CLAIM, claimTokens, stem, stems } from "../../src/Tokenize.js"
 
 describe("stem", () => {
   it("makes a plural and its singular agree, which is what anchors need", () => {

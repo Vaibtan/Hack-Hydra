@@ -12,7 +12,7 @@ verdict backed by the exact query and its empty result.
 Design documents:
 
 - [`docs/spec-palimpsest.md`](docs/spec-palimpsest.md) — thesis, glossary, schema, ingest, retrieval, eval
-- [`docs/review-2026-08-17-palimpsest-plan.md`](docs/review-2026-08-17-palimpsest-plan.md) — the review that corrected the plan, plus the live-node probe table
+- [`docs/archive/review-2026-08-17-palimpsest-plan.md`](docs/archive/review-2026-08-17-palimpsest-plan.md) — the review that corrected the plan, plus the live-node probe table
 - [`CONTEXT.md`](CONTEXT.md) — the domain vocabulary used in code, tests and UI
 - [`docs/writeup.md`](docs/writeup.md) — the submission writeup: thesis, HydraDB findings, results, positioning, limitations
 - [`docs/run-log.md`](docs/run-log.md) — what each expensive run projected and what it actually cost

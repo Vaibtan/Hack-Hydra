@@ -129,21 +129,8 @@ services:
       # `writer_unavailable` mid-user.
       GRAPH_WRITER_LEASE_MS: "30000"
       RUST_MIN_STACK: "33554432"
-      # **Chosen per phase**, like the read cache above: the engine's own 30 s
-      # default while evaluating, and longer while ingesting.
-      # `PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS=120000 docker compose up -d hydradb`
-      # before a bulk ingest.
-      #
-      # The 30 s cap exists to stop a runaway *plan*. During an ingest there is
-      # no runaway plan — the statements are the same handful of shapes every
-      # time and the slowness is I/O: with the read cache off, a relationship
-      # edge scan is an object-store round trip, and it started crossing 30 s at
-      # four concurrent users. Failing there is far more expensive than waiting,
-      # because the unit that is lost is the whole *user*: minutes of correct
-      # writes, and on a cache miss real money, thrown away to save 10 seconds.
-      # The eval runs at the shipped 30 s, so no latency claim is made against a
-      # relaxed cap, and `runtime_config_sha256` records which phase produced a
-      # given result.
+      # 120 s in both benchmark phases; scripts/phase.ps1 sets and verifies it and
+      # runtime_config_sha256 records it. The bare default is the engine's 30 s.
       GRAPH_MAX_QUERY_RUNTIME_MS: "${PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS:-30000}"
       # Memory profile, tier A (#23). Free: these bound allocator fragmentation
       # and hand pages back after a hydration, and none of them shrinks a cache

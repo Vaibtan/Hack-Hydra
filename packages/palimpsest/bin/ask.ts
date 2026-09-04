@@ -1,17 +1,15 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
-import { LlmLive, loadDotEnv, verifyModelsAtStartup } from "@palimpsest/llm"
+import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { Reader, Retrieve, Supersede } from "../src/index.js"
+import { answerV2 } from "../src/Answer.js"
+import { Reader } from "../src/Reader.js"
+import { Retrieve } from "../src/Retrieve.js"
+import { Supersede } from "../src/Supersede.js"
 
 /**
  * `ask --uid <id> --question "..." [--date "2023/05/20 (Sat) 02:21"] [--as-of k]
- *      [--max-len 2] [--no-read] [--full]`
- *
- * The whole read path: verdict, receipt, evidence, and the reader's answer.
- * A structural ABSENT (A1/A2) and the reader's own NOT_IN_MEMORY are reported
- * distinctly, because they mean different things — nothing was reachable, versus
- * the right spans were reached and did not contain the answer.
+ *      [--max-len 2] [--profile full|fast] [--full]`
  */
 loadDotEnv()
 
@@ -26,7 +24,12 @@ const asOfRaw = arg("as-of", "")
 const maxLen = Number(arg("max-len", "2"))
 const full = process.argv.includes("--full")
 const questionDate = arg("date", "unknown")
-const noRead = process.argv.includes("--no-read")
+const profileArg = arg("profile", "full")
+if (profileArg !== "full" && profileArg !== "fast") {
+  console.error(`--profile must be full or fast, not ${JSON.stringify(profileArg)}`)
+  process.exit(2)
+}
+const profile = profileArg
 
 const AppLive = Retrieve.Default.pipe(
   Layer.provideMerge(Reader.Default),
@@ -37,51 +40,46 @@ const AppLive = Retrieve.Default.pipe(
 )
 
 const program = Effect.gen(function* () {
-  // Before anything is spent. A typo in `PALIMPSEST_SELECT_MODEL` is otherwise a
-  // run of provider errors -- or, on a provider that silently substitutes, real
-  // numbers from a model nobody chose. Fails closed on an unknown id and only
-  // on that: an unreachable provider warns and the command proceeds.
-  yield* verifyModelsAtStartup({ quiet: true })
+  yield* verifyModelsOrExit({ quiet: true })
   const retrieve = yield* Retrieve
   const reader = yield* Reader
   const started = Date.now()
-  const result = yield* retrieve.ask(uid, question, {
-    questionDate,
+  const answered = yield* answerV2(retrieve, reader, uid, question, questionDate, {
     maxLen,
+    profile,
     ...(asOfRaw === "" ? {} : { asOf: Number(asOfRaw) })
   })
-  const answer =
-    noRead || result.verdict === "ABSENT"
-      ? null
-      : yield* reader.read(question, questionDate, result.evidence)
-  const sourceSpans =
-    result.verdict === "ABSENT"
-      ? []
-      : answer === null
-        ? yield* reader.hydrate(result.evidence)
-        : answer.spans
+  const result = answered.ask
+  const answer = answered.read
+  const sourceSpans = answer === null ? [] : answer.spans
   const elapsed = ((Date.now() - started) / 1000).toFixed(1)
   const r = result.receipt
+  const plan = result.plan
 
   console.log(`question       ${question}`)
   console.log(`uid            ${uid}${r.asOf === null ? "" : `   as of session ${r.asOf}`}`)
   console.log("")
   const source =
-    result.verdict === "ABSENT"
-      ? `ABSENT  structural: ${result.reason}`
-      : answer === null
-        ? "ANSWER  (reader skipped)"
+    answer === null
+      ? `ABSENT  structural: ${answered.reason}`
+      : answered.verdict === "ABSENT"
+        ? `ABSENT  ${answered.reason}`
         : answer.notInMemory
           ? "ABSENT  reader: NOT_IN_MEMORY"
           : "ANSWER"
   console.log(`VERDICT        ${source}`)
-  if (answer !== null && !answer.notInMemory) {
+  if (answer !== null && answered.verdict === "ANSWER" && !answer.notInMemory) {
     console.log(`ANSWER         ${answer.answer}`)
     if (answer.reasoning.trim() !== "") console.log(`reasoning      ${answer.reasoning}`)
     console.log(`cited          ${answer.citedIds.join(" ") || "-"}`)
   }
+  console.log(`route          ${plan.route} (${plan.routeReason})`)
+  console.log(
+    `sufficiency    ${plan.sufficiency.tier}${plan.sufficiency.secondPass ? ", second pass" : ""}` +
+      `${plan.sufficiency.missing === "" ? "" : `  missing: ${plan.sufficiency.missing}`}`
+  )
   console.log(`source spans   ${sourceSpans.length}`)
-  console.log(`hash           ${result.hash.slice(0, 16)}`)
+  console.log(`hash           ${answered.hash.slice(0, 16)}`)
   console.log(`latency        ${elapsed} s`)
   console.log("")
   console.log("RECEIPT")
@@ -98,6 +96,14 @@ const program = Effect.gen(function* () {
   }
   console.log(`  query 2      ${r.query2Paths} paths${r.query2 === null ? "  (not run)" : ""}`)
   if (full && r.query2 !== null) console.log(`    ${r.query2}`)
+  console.log("")
+  console.log("  arms")
+  for (const arm of plan.arms) {
+    console.log(
+      `    ${arm.label.padEnd(28)} ${String(arm.claims).padStart(4)} claims  ${String(arm.paths).padStart(5)} paths` +
+        `${arm.timedOut ? "  timed out" : ""}`
+    )
+  }
   console.log("")
   console.log("  convergence table (top 10)")
   for (const row of r.convergence.slice(0, 10)) {

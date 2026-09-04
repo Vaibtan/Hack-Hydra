@@ -1,24 +1,12 @@
 import { LanguageModel, type AiError } from "@effect/ai"
 import { Config, Effect, JSONSchema, Layer, Ref, Schedule, Schema, Scope } from "effect"
 import { cacheKey, defaultCacheDir, readCache, writeCache } from "./Cache.js"
+import { DEFAULT_MODEL } from "./Models.js"
 import { languageModelLayer } from "./Provider.js"
-
-/**
- * The one seam onto the LLM.
- *
- * Everything above this line asks for a *typed value*, not a completion: the
- * schema constrains the provider's structured output and then validates what
- * came back. Every call is cached on disk by model + system + prompt + schema,
- * so a second run of any experiment makes zero API calls and produces exactly
- * the same graph — which is what lets the pitch say **replay-deterministic**
- * honestly. Not "deterministic": a first run's selection and reading are
- * model-dependent, and extraction always was. What the cache buys is that a
- * replay is byte-identical and free, which is the claim a judge can check.
- */
 
 /** Token prices in USD per million tokens. */
 export const PRICING: Record<string, { readonly input: number; readonly output: number }> = {
-  "gpt-5.6-luna": { input: 0.2, output: 1.2 },
+  [DEFAULT_MODEL]: { input: 0.2, output: 1.2 },
   "gpt-4o": { input: 2.5, output: 10 }
 }
 
@@ -44,25 +32,15 @@ export interface GenerateOptions<A, I extends Record<string, unknown>> {
   readonly schema: Schema.Schema<A, I>
   /** Some providers use this as extra guidance for the structured output. */
   readonly objectName: string
-  /**
-   * Use a different model for this one call, with its own transport and its own
-   * cache entries. The eval harness needs the reader on `gpt-5.6-luna` and the
-   * LongMemEval judge on `gpt-4o` in the same process, and a judge scored by a
-   * model the system under test also uses would not be a judge.
-   */
+  /** A different model for this one call, with its own transport and cache entries. */
   readonly model?: string
 }
 
 export interface Generated<A> {
   readonly value: A
   readonly cached: boolean
-  /** The model that produced this value — the override, or the default. */
   readonly model: string
-  /**
-   * What this one call cost, replayed from the cache entry on a hit. The
-   * aggregate is in `usage`; this is what lets a results row carry its own
-   * reader-token count instead of a run-wide average.
-   */
+  /** This one call's cost, replayed from the cache entry on a hit. */
   readonly inputTokens: number
   readonly outputTokens: number
 }
@@ -75,36 +53,36 @@ export interface GenerateTextOptions {
   readonly model?: string
 }
 
+/** 429, 5xx and transport failures; a 400 or a malformed input/output is the same answer on every attempt. */
+export const isTransient = (error: AiError.AiError): boolean => {
+  switch (error._tag) {
+    case "HttpRequestError":
+      return error.reason === "Transport"
+    case "HttpResponseError":
+      return error.response.status === 429 || error.response.status >= 500
+    case "MalformedOutput":
+      return true
+    default:
+      return false
+  }
+}
+
 const make = Effect.gen(function* () {
-  const model = yield* Config.string("PALIMPSEST_MODEL").pipe(Config.withDefault("gpt-5.6-luna"))
+  const model = yield* Config.string("PALIMPSEST_MODEL").pipe(Config.withDefault(DEFAULT_MODEL))
   const cacheDir = yield* Config.string("PALIMPSEST_LLM_CACHE").pipe(
     Config.withDefault(defaultCacheDir())
   )
   const concurrency = yield* Config.integer("PALIMPSEST_LLM_CONCURRENCY").pipe(Config.withDefault(8))
 
-  // Usage is per model, because a run that reads with luna and judges with
-  // gpt-4o has two prices and one number would be wrong by 10x on half of it.
   const usageRef = yield* Ref.make(new Map<string, Usage>())
-  // One semaphore for the whole process, so callers can fan out freely without
-  // any of them having to know the provider's rate limit.
   const gate = yield* Effect.makeSemaphore(concurrency)
 
-  /** Transient provider failures — 429 and 5xx — are worth a few retries. */
   const retrySchedule = Schedule.exponential("1 second", 2).pipe(
     Schedule.jittered,
     Schedule.compose(Schedule.recurs(4))
   )
 
-  /**
-   * A `LanguageModel` per overridden model name, built once.
-   *
-   * `Layer.memoize` needs the service's scope, which is why this service is
-   * `scoped` — without it every judged question would stand up a fresh HTTP
-   * client and tear it down again.
-   */
   const layers = new Map<string, Layer.Layer<LanguageModel.LanguageModel>>()
-  // The service's own scope, held so a layer built on the first judged question
-  // lives as long as the service rather than as long as that one call.
   const scope = yield* Effect.scope
   const layerFor = (name: string): Effect.Effect<Layer.Layer<LanguageModel.LanguageModel>> =>
     Effect.gen(function* () {
@@ -129,7 +107,6 @@ const make = Effect.gen(function* () {
       return next
     })
 
-  /** Runs a provider call under the right model, and under the semaphore. */
   const withModel = <A, E>(
     name: string,
     call: Effect.Effect<A, E, LanguageModel.LanguageModel>
@@ -166,8 +143,6 @@ const make = Effect.gen(function* () {
             outputTokens: cached.outputTokens
           }
         }
-        // A cache entry that no longer decodes means the schema moved; fall
-        // through and re-ask rather than silently serving a stale shape.
       }
 
       const response = yield* withModel(
@@ -179,7 +154,7 @@ const make = Effect.gen(function* () {
           ],
           schema: options.schema,
           objectName: options.objectName
-        }).pipe(Effect.retry(retrySchedule))
+        }).pipe(Effect.retry({ schedule: retrySchedule, while: isTransient }))
       )
 
       const inputTokens = response.usage.inputTokens ?? 0
@@ -201,15 +176,6 @@ const make = Effect.gen(function* () {
       return { value: response.value, cached: false, model: using, inputTokens, outputTokens }
     })
 
-  /**
-   * The free-text form, for a prompt whose answer must not be reshaped.
-   *
-   * The LongMemEval judge is exactly that: its five templates end "Answer yes
-   * or no only" and upstream scores whether "yes" appears in the lowercased
-   * reply. Wrapping that in a JSON schema would change the thing being
-   * measured, so this path exists to leave it alone. Same disk cache, same key
-   * discipline, same $0 replay.
-   */
   const generateText = (
     options: GenerateTextOptions
   ): Effect.Effect<Generated<string>, AiError.AiError, LanguageModel.LanguageModel> =>
@@ -219,7 +185,6 @@ const make = Effect.gen(function* () {
         model: using,
         system: options.system ?? "",
         prompt: options.prompt,
-        // Distinct from any structured call carrying the same prompt.
         schema: { form: "text" }
       })
 
@@ -246,7 +211,7 @@ const make = Effect.gen(function* () {
                   { role: "system" as const, content: system },
                   { role: "user" as const, content: [{ type: "text" as const, text: options.prompt }] }
                 ]
-        }).pipe(Effect.retry(retrySchedule))
+        }).pipe(Effect.retry({ schedule: retrySchedule, while: isTransient }))
       )
 
       const inputTokens = response.usage.inputTokens ?? 0
@@ -270,7 +235,6 @@ const make = Effect.gen(function* () {
     Effect.map((all): ReadonlyMap<string, Usage> => new Map(all))
   )
 
-  /** The run total, so callers that only ever see one model keep working. */
   const usage = Ref.get(usageRef).pipe(
     Effect.map((all) =>
       [...all.values()].reduce(
@@ -285,7 +249,6 @@ const make = Effect.gen(function* () {
     )
   )
 
-  /** Priced per model, which a single total cannot be once there are two. */
   const costUsd = Ref.get(usageRef).pipe(
     Effect.map((all) => [...all].reduce((total, [name, one]) => total + usageCostUsd(name, one), 0))
   )

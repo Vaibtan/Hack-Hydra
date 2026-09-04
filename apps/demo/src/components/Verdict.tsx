@@ -1,23 +1,17 @@
 import type { AskResponse } from "../api"
 
-/**
- * The verdict card.
- *
- * Three outcomes, three colours, because they mean genuinely different things
- * and the writeup's honesty depends on not blurring them:
- *
- *  - **ANSWER** (green) — claims converged and the reader read them.
- *  - **ABSENT** (violet) — *structural*. `A1`: no anchor of the question exists
- *    in this user's graph at all. `A2`: anchors exist but no claim was reached
- *    by enough of them. Backed by the query and its thin result.
- *  - **NOT_IN_MEMORY** (amber) — the right spans *were* reached and did not
- *    contain the answer. This is the reader declining, one layer later, and it
- *    is not the same claim as A1/A2.
- */
-
-const REASON: Record<string, string> = {
+const REASON: Record<NonNullable<AskResponse["reason"]>, string> = {
   A1_no_anchors: "A1 — no anchor of this question exists in this user's memory",
-  A2_no_convergence: "A2 — anchors exist, but no claim was reached by enough of them"
+  A2_no_convergence: "A2 — anchors exist, but no claim was reached by enough of them",
+  INSUFFICIENT_EVIDENCE: "the excerpts reached do not hold everything the question needs",
+  CONTRADICTED_PREMISE: "the question assumes something the excerpts contradict"
+}
+
+const SHORT: Record<NonNullable<AskResponse["reason"]>, string> = {
+  A1_no_anchors: "A1",
+  A2_no_convergence: "A2",
+  INSUFFICIENT_EVIDENCE: "INSUFFICIENT_EVIDENCE",
+  CONTRADICTED_PREMISE: "CONTRADICTED_PREMISE"
 }
 
 export const Verdict = ({ result }: { readonly result: AskResponse }) => {
@@ -25,7 +19,7 @@ export const Verdict = ({ result }: { readonly result: AskResponse }) => {
     result.verdict === "ABSENT" ? "absent" : result.notInMemory ? "notinmemory" : "answer"
   const label =
     result.verdict === "ABSENT"
-      ? `ABSENT · ${result.reason === "A1_no_anchors" ? "A1" : "A2"}`
+      ? `ABSENT · ${result.reason === null ? "" : SHORT[result.reason]}`
       : result.notInMemory
         ? "ABSENT · NOT_IN_MEMORY"
         : "ANSWER"
@@ -38,8 +32,12 @@ export const Verdict = ({ result }: { readonly result: AskResponse }) => {
         <>
           <div className="answer-text">Not in memory</div>
           <div className="why">
-            {REASON[result.reason ?? ""] ?? "structural abstention"}. The receipt below is the
-            query that was run and what it reached — the abstention is shown, not asserted.
+            {result.reason === null ? "structural abstention" : REASON[result.reason]}. The receipt
+            below is the query that was run and what it reached — the abstention is shown, not
+            asserted.
+            {result.plan.sufficiency.premise !== ""
+              ? ` Premise: ${result.plan.sufficiency.premise}`
+              : ""}
           </div>
         </>
       ) : result.notInMemory ? (
@@ -48,9 +46,6 @@ export const Verdict = ({ result }: { readonly result: AskResponse }) => {
           <div className="why">
             Retrieval reached {result.evidence.length} spans and the reader found no answer in
             them. Different from A1/A2: the right text was reached and did not contain it.
-            {result.premiseSupported === false && result.premiseNote !== ""
-              ? ` Failed premise: ${result.premiseNote}`
-              : ""}
           </div>
         </>
       ) : (

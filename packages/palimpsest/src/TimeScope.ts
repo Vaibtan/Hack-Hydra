@@ -1,19 +1,3 @@
-/**
- * Turning a question's time phrase into a window over the memory.
- *
- * The model supplies the *phrase* and nothing else — "two months ago", "last
- * March", "this weekend" — and the interval is computed here, in code. That
- * split is deliberate. Date arithmetic is the one part of understanding a
- * question that has a right answer, and a model that returns an interval
- * directly returns a plausible one; `Anchors` has been extracting `time_ref`
- * since day one and nothing ever consumed it, so the phrase was already there
- * and the arithmetic was the missing half.
- *
- * Intervals are closed-open `[start, end)` over `YYYYMMDD` integers, which is
- * the form the graph already stores dates in (`Claim.t_event`,
- * `Session.date`), so scoping is an integer comparison and never a timezone
- * question.
- */
 
 /** How coarse the phrase was. Reported, because "last year" is not a day. */
 export type TimePrecision = "day" | "week" | "month" | "year"
@@ -132,14 +116,6 @@ const normalise = (phrase: string): string =>
     .replace(/\s+/g, " ")
     .trim()
 
-/**
- * A month name, or a genuine abbreviation of one.
- *
- * `startsWith`, not a three-character equality in both directions: the latter
- * made "decade" December ("last decade" resolved to a single month), "junior"
- * June, "marathon" March and "septic" September — guesses, which this module's
- * contract forbids. A prefix still accepts "jan", "sept" and "dec".
- */
 const monthIndex = (word: string): number =>
   word.length < 3 ? -1 : MONTHS.findIndex((month) => month.startsWith(word))
 
@@ -148,16 +124,129 @@ const count = (word: string): number | null => {
   return NUMBER_WORDS[word] ?? null
 }
 
-/**
- * Resolves one phrase against the question's own date.
- *
- * Unrecognised is `null`, not a guess: an interval that is merely plausible is
- * worse than none, because the scope stage would then boost the wrong window
- * and quietly bury the right claim. The supported forms are exactly the ones
- * LongMemEval's temporal questions use, and the unit table is the contract.
- *
- * `questionDate` is `YYYYMMDD` — the form `HaystackDate.dateInt` already has.
- */
+interface ParseContext {
+  readonly questionDate: number
+  readonly year: number
+  readonly phrase: string
+}
+
+interface ParseRule {
+  readonly pattern: RegExp
+  /** `null` means the pattern matched but the words did not resolve; the next rule is tried. */
+  readonly build: (match: RegExpExecArray, ctx: ParseContext) => DayInterval | null
+}
+
+const YEAR = /^(19|20)\d{2}$/
+
+const monthOf = (year: number, month: number): number => year * 10000 + (month + 1) * 100 + 1
+
+const wholeMonthOffset = (ctx: ParseContext, offset: number): DayInterval => ({
+  start: monthStart(ctx.questionDate, offset),
+  end: monthStart(ctx.questionDate, offset + 1),
+  precision: "month",
+  phrase: ctx.phrase
+})
+
+/** Tried in order; the first rule whose pattern matches and whose `build` resolves wins. */
+const PARSE_TABLE: ReadonlyArray<ParseRule> = [
+  {
+    pattern: /^(?:today|this morning|this afternoon)$/,
+    build: (_, ctx) => singleDay(ctx.questionDate, ctx.phrase)
+  },
+  {
+    pattern: /^(?:yesterday|last night|yesterday evening)$/,
+    build: (_, ctx) => singleDay(addDays(ctx.questionDate, -1), ctx.phrase)
+  },
+  {
+    pattern: /^(?:this weekend|the weekend|last weekend)$/,
+    build: (_, ctx) => {
+      const day = toDate(ctx.questionDate).getUTCDay()
+      const saturday = addDays(ctx.questionDate, day === 6 ? 0 : -(day + 1))
+      return { start: saturday, end: addDays(saturday, 2), precision: "day", phrase: ctx.phrase }
+    }
+  },
+  {
+    pattern: /^(?:about |around |roughly |some )?(\S+) (day|days|week|weeks|month|months|year|years) ago$/,
+    build: (match, ctx) => {
+      const n = count(match[1]!)
+      if (n === null) return null
+      const unit = match[2]!
+      if (unit.startsWith("day")) return singleDay(addDays(ctx.questionDate, -n), ctx.phrase)
+      if (unit.startsWith("week")) return wholeWeek(addDays(ctx.questionDate, -7 * n), ctx.phrase)
+      if (unit.startsWith("month")) return wholeMonthOffset(ctx, -n)
+      return wholeYear(ctx.year - n, ctx.phrase)
+    }
+  },
+  {
+    pattern: /^(?:last|previous|the last|the previous) (.+)$/,
+    build: (match, ctx) => {
+      const rest = match[1]!
+      if (rest === "week") return wholeWeek(addDays(ctx.questionDate, -7), ctx.phrase)
+      if (rest === "month") return wholeMonthOffset(ctx, -1)
+      if (rest === "year") return wholeYear(ctx.year - 1, ctx.phrase)
+
+      const weekday = WEEKDAYS.findIndex((name) => name === rest)
+      if (weekday !== -1) {
+        const today = toDate(ctx.questionDate).getUTCDay()
+        const back = ((today - weekday + 6) % 7) + 1
+        return singleDay(addDays(ctx.questionDate, -back), ctx.phrase)
+      }
+
+      const month = monthIndex(rest)
+      if (month === -1) return null
+      const questionMonth = (Math.floor(ctx.questionDate / 100) % 100) - 1
+      return wholeMonth(monthOf(month < questionMonth ? ctx.year : ctx.year - 1, month), ctx.phrase)
+    }
+  },
+  { pattern: /^this month$/, build: (_, ctx) => wholeMonth(ctx.questionDate, ctx.phrase) },
+  { pattern: /^this year$/, build: (_, ctx) => wholeYear(ctx.year, ctx.phrase) },
+  { pattern: /^this week$/, build: (_, ctx) => wholeWeek(ctx.questionDate, ctx.phrase) },
+  {
+    pattern: /^(?:in |back in |during |on )?(.+)$/,
+    build: (match, ctx) => {
+      const rest = match[1]!.split(" ")
+      if (rest.length === 1 && YEAR.test(rest[0] ?? "")) return wholeYear(Number(rest[0]), ctx.phrase)
+
+      const month = monthIndex(rest[0] ?? "")
+      if (month === -1) return null
+      const explicit = rest[1] !== undefined && YEAR.test(rest[1])
+      if (rest.length === 1 || explicit) {
+        const questionMonth = (Math.floor(ctx.questionDate / 100) % 100) - 1
+        const targetYear = explicit
+          ? Number(rest[1])
+          : month <= questionMonth
+            ? ctx.year
+            : ctx.year - 1
+        return wholeMonth(monthOf(targetYear, month), ctx.phrase)
+      }
+      const day = count(rest[1] ?? "")
+      if (day === null || day < 1 || day > 31) return null
+      if (rest[2] !== undefined && YEAR.test(rest[2])) {
+        return singleDay(Number(rest[2]) * 10000 + (month + 1) * 100 + day, ctx.phrase)
+      }
+      const candidate = ctx.year * 10000 + (month + 1) * 100 + day
+      return singleDay(candidate <= ctx.questionDate ? candidate : candidate - 10000, ctx.phrase)
+    }
+  },
+  {
+    pattern: /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/,
+    build: (match, ctx) =>
+      singleDay(Number(match[1]) * 10000 + Number(match[2]) * 100 + Number(match[3]), ctx.phrase)
+  },
+  {
+    pattern: /^(\d{4})[-/](\d{1,2})$/,
+    build: (match, ctx) => wholeMonth(Number(match[1]) * 10000 + Number(match[2]) * 100 + 1, ctx.phrase)
+  },
+  {
+    pattern: /^(\d{1,2}) ([a-z]+) ((?:19|20)\d{2})$/,
+    build: (match, ctx) => {
+      const month = monthIndex(match[2]!)
+      if (month === -1) return null
+      return singleDay(Number(match[3]) * 10000 + (month + 1) * 100 + Number(match[1]), ctx.phrase)
+    }
+  }
+]
+
 export const resolveTimeInterval = (
   phrase: string | null,
   questionDate: number
@@ -165,155 +254,17 @@ export const resolveTimeInterval = (
   if (phrase === null) return null
   const text = normalise(phrase)
   if (text === "") return null
-  const year = Math.floor(questionDate / 10000)
+  const ctx: ParseContext = { questionDate, year: Math.floor(questionDate / 10000), phrase }
 
-  // today / yesterday / last night
-  if (text === "today" || text === "this morning" || text === "this afternoon") {
-    return singleDay(questionDate, phrase)
+  for (const rule of PARSE_TABLE) {
+    const match = rule.pattern.exec(text)
+    if (match === null) continue
+    const interval = rule.build(match, ctx)
+    if (interval !== null) return interval
   }
-  if (text === "yesterday" || text === "last night" || text === "yesterday evening") {
-    return singleDay(addDays(questionDate, -1), phrase)
-  }
-
-  // "this weekend" — the most recent Saturday and Sunday. A LongMemEval
-  // question is retrospective, so on a Wednesday this is the weekend just
-  // gone, not the one coming; on a Saturday or Sunday it is the current one.
-  if (text === "this weekend" || text === "the weekend" || text === "last weekend") {
-    const day = toDate(questionDate).getUTCDay()
-    const backToSaturday = day === 6 ? 0 : -(day + 1)
-    const saturday = addDays(questionDate, backToSaturday)
-    return { start: saturday, end: addDays(saturday, 2), precision: "day", phrase }
-  }
-
-  // "<n> <unit> ago"
-  const agoMatch = /^(?:about |around |roughly |some )?(\S+) (day|days|week|weeks|month|months|year|years) ago$/.exec(
-    text
-  )
-  if (agoMatch !== null) {
-    const n = count(agoMatch[1]!)
-    if (n === null) return null
-    const unit = agoMatch[2]!
-    if (unit.startsWith("day")) return singleDay(addDays(questionDate, -n), phrase)
-    if (unit.startsWith("week")) return wholeWeek(addDays(questionDate, -7 * n), phrase)
-    if (unit.startsWith("month")) {
-      return {
-        start: monthStart(questionDate, -n),
-        end: monthStart(questionDate, -n + 1),
-        precision: "month",
-        phrase
-      }
-    }
-    return wholeYear(year - n, phrase)
-  }
-
-  // "last <unit>" / "the previous <unit>"
-  const lastMatch = /^(?:last|previous|the last|the previous) (.+)$/.exec(text)
-  if (lastMatch !== null) {
-    const rest = lastMatch[1]!
-    if (rest === "week") return wholeWeek(addDays(questionDate, -7), phrase)
-    if (rest === "month") {
-      return {
-        start: monthStart(questionDate, -1),
-        end: monthStart(questionDate, 0),
-        precision: "month",
-        phrase
-      }
-    }
-    if (rest === "year") return wholeYear(year - 1, phrase)
-
-    const weekday = WEEKDAYS.findIndex((name) => name === rest)
-    if (weekday !== -1) {
-      // The most recent occurrence *strictly before* the question date.
-      const today = toDate(questionDate).getUTCDay()
-      const back = ((today - weekday + 6) % 7) + 1
-      return singleDay(addDays(questionDate, -back), phrase)
-    }
-
-    const month = monthIndex(rest)
-    if (month !== -1) {
-      // "last March" asked in May 2023 is March 2023; asked in February 2023 it
-      // is March 2022 — the most recent one that has already happened.
-      const questionMonth = (Math.floor(questionDate / 100) % 100) - 1
-      const targetYear = month < questionMonth ? year : year - 1
-      return wholeMonth(targetYear * 10000 + (month + 1) * 100 + 1, phrase)
-    }
-    return null
-  }
-
-  // "this month" / "this year"
-  if (text === "this month") return wholeMonth(questionDate, phrase)
-  if (text === "this year") return wholeYear(year, phrase)
-  if (text === "this week") return wholeWeek(questionDate, phrase)
-
-  // "in <Month> [year]" / "<Month> [year]" / "in <year>"
-  const inMatch = /^(?:in |back in |during |on )?(.+)$/.exec(text)
-  if (inMatch !== null) {
-    const rest = inMatch[1]!.split(" ")
-    const bareYear = /^(19|20)\d{2}$/.exec(rest[0] ?? "")
-    if (rest.length === 1 && bareYear !== null) return wholeYear(Number(rest[0]), phrase)
-
-    const month = monthIndex(rest[0] ?? "")
-    if (month !== -1) {
-      const explicit = rest[1] !== undefined ? /^(19|20)\d{2}$/.exec(rest[1]) : null
-      if (rest.length === 1 || explicit !== null) {
-        // Without a year, the most recent occurrence at or before the question
-        // month: a memory question does not ask about the future.
-        const questionMonth = (Math.floor(questionDate / 100) % 100) - 1
-        const targetYear =
-          explicit !== null ? Number(rest[1]) : month <= questionMonth ? year : year - 1
-        return wholeMonth(targetYear * 10000 + (month + 1) * 100 + 1, phrase)
-      }
-      // "<Month> <day>[ <year>]"
-      const day = count(rest[1] ?? "")
-      if (day !== null && day >= 1 && day <= 31) {
-        const withYear = rest[2] !== undefined ? /^(19|20)\d{2}$/.exec(rest[2]) : null
-        if (withYear !== null) {
-          return singleDay(Number(rest[2]) * 10000 + (month + 1) * 100 + day, phrase)
-        }
-        // Without a year, the most recent occurrence at or before the question
-        // date — the same rule the month-only branch above uses. Taking the
-        // question's own year unshifted put "december 3" asked in May 2023 in
-        // *December 2023*, a window no claim in the haystack can intersect, and
-        // handed the reader a date the conversation cannot contain.
-        const candidate = year * 10000 + (month + 1) * 100 + day
-        return singleDay(candidate <= questionDate ? candidate : candidate - 10000, phrase)
-      }
-    }
-  }
-
-  // Explicit dates: 2023-05-20, 2023/05/20, 2023-05, 20 May 2023.
-  const isoDay = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text)
-  if (isoDay !== null) {
-    return singleDay(
-      Number(isoDay[1]) * 10000 + Number(isoDay[2]) * 100 + Number(isoDay[3]),
-      phrase
-    )
-  }
-  const isoMonth = /^(\d{4})[-/](\d{1,2})$/.exec(text)
-  if (isoMonth !== null) {
-    return wholeMonth(Number(isoMonth[1]) * 10000 + Number(isoMonth[2]) * 100 + 1, phrase)
-  }
-  const dayMonthYear = /^(\d{1,2}) ([a-z]+) ((?:19|20)\d{2})$/.exec(text)
-  if (dayMonthYear !== null) {
-    const month = monthIndex(dayMonthYear[2]!)
-    if (month !== -1) {
-      return singleDay(
-        Number(dayMonthYear[3]) * 10000 + (month + 1) * 100 + Number(dayMonthYear[1]),
-        phrase
-      )
-    }
-  }
-
   return null
 }
 
-/**
- * The sentence the reader is given when the question carries a time reference.
- *
- * Route-independent by design: a count question with a time phrase needs the
- * window as much as a temporal one does, and the reader is the only stage that
- * can say "between these two dates" in words.
- */
 export const intervalSentence = (interval: DayInterval): string => {
   const readable = (dateInt: number): string =>
     `${Math.floor(dateInt / 10000)}-${String(Math.floor(dateInt / 100) % 100).padStart(2, "0")}-` +
@@ -324,8 +275,6 @@ export const intervalSentence = (interval: DayInterval): string => {
   )
 }
 
-// --------------------------------------------------------------- scoping
-
 /** What the scope filter needs off a candidate claim. */
 export interface TimeScopable {
   /** `YYYYMMDD`, with `YYYYMM00` for month precision and `YYYY0000` for year. `0` when unknown. */
@@ -335,23 +284,8 @@ export interface TimeScopable {
   readonly sessionDate: number
 }
 
-/**
- * How far a claim with no event date may sit from the window and still count.
- *
- * A claim whose date the extractor could not resolve is anchored only by the
- * conversation it was said in, and people talk about a weekend on the Monday
- * after it. Seven days each way is the smallest widening that catches that
- * without turning "last March" into "spring".
- */
 export const UNDATED_SESSION_SLACK_DAYS = 7
 
-/**
- * The window a claim's own `t_event` covers, given its precision.
- *
- * Month precision is stored as `YYYYMM00` and year precision as `YYYY0000`, so
- * a claim dated "March 2023" covers all of March — and a question about March
- * must reach it.
- */
 export const claimSpan = (claim: TimeScopable): { readonly start: number; readonly end: number } | null => {
   if (claim.tEvent === 0) return null
   if (claim.tPrec === "year") {
@@ -374,7 +308,6 @@ const overlaps = (
 export const inScope = (claim: TimeScopable, interval: DayInterval): boolean => {
   const span = claimSpan(claim)
   if (span !== null) return overlaps(span, interval)
-  // Undated: fall back to when it was said, widened.
   const widened = {
     start: addDays(interval.start, -UNDATED_SESSION_SLACK_DAYS),
     end: addDays(interval.end, UNDATED_SESSION_SLACK_DAYS)
@@ -382,15 +315,6 @@ export const inScope = (claim: TimeScopable, interval: DayInterval): boolean => 
   return claim.sessionDate >= widened.start && claim.sessionDate < widened.end
 }
 
-/**
- * Below this many in-scope claims, the out-of-scope ones are kept behind them.
- *
- * Scoping is a *boost*, not a filter, precisely because the extractor resolves
- * a date for well under half of the claims: a hard filter on a question whose
- * window catches three claims would throw away the evidence that answers it.
- * Once ten claims are in the window, the ones outside it are not what the
- * question is about.
- */
 export const MIN_IN_SCOPE_TO_DROP_REST = 10
 
 export interface TimeScopeReport<A> {
@@ -401,10 +325,6 @@ export interface TimeScopeReport<A> {
   readonly applied: boolean
 }
 
-/**
- * Boosts the claims inside the window ahead of the rest, keeping relative order
- * within each group so an arm's own ranking survives.
- */
 export const applyTimeScope = <A extends TimeScopable>(
   claims: ReadonlyArray<A>,
   interval: DayInterval | null

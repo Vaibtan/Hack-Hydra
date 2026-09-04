@@ -1,7 +1,7 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
-import { Transcript } from "../src/index.js"
+import { Transcript } from "../src/Transcript.js"
 
 /**
  * `turn --uid <question_id> --sid <session_id> --idx <turn_idx>`

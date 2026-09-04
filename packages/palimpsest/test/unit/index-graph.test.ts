@@ -1,12 +1,10 @@
 import type { DatasetSession } from "@palimpsest/dataset"
 import type { ExtractedClaim } from "../../src/Extract.js"
 import type { SourceRevision } from "../../src/IngestManifest.js"
-import {
-  createExtractionGeneration,
-  createIndexGeneration,
-  planIndexGraphWrite,
-  sourceTurnKey
-} from "../../src/index.js"
+import { createIndexGeneration } from "../../src/IndexGeneration.js"
+import { planIndexGraphWrite } from "../../src/IndexGraph.js"
+import { createExtractionGeneration } from "../../src/SourceIdentity.js"
+import { sourceTurnKey } from "../../src/SourceTranscript.js"
 import { canonicalSessionSource } from "../../src/SourceIdentity.js"
 import { describe, expect, it } from "vitest"
 

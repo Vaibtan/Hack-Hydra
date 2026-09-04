@@ -1,16 +1,12 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
-import { LlmLive, loadDotEnv, verifyModelsAtStartup } from "@palimpsest/llm"
+import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { prepareDerivedIndexAssertions, Reader, sourceLinkedChainEvidence, Supersede } from "../src/index.js"
+import { prepareDerivedIndexAssertions, sourceLinkedChainEvidence } from "../src/DerivedAssertion.js"
+import { Reader } from "../src/Reader.js"
+import { Supersede } from "../src/Supersede.js"
 
-/**
- * `slots --uid <question_id> [--skey <slot key>] [--as-of <k>] [--all]`
- *
- * Prints each contested slot's chain with CURRENT / SUPERSEDED labels — the
- * structural answer to "what does the memory believe now, and what did it
- * believe before". `--as-of k` replays the chain as of session k.
- */
+/** `slots --uid <question_id> [--skey <slot key>] [--as-of <k>] [--all]` */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -32,11 +28,7 @@ const AppLive = Supersede.Default.pipe(
 )
 
 const program = Effect.gen(function* () {
-  // Before anything is spent. A typo in `PALIMPSEST_SELECT_MODEL` is otherwise a
-  // run of provider errors -- or, on a provider that silently substitutes, real
-  // numbers from a model nobody chose. Fails closed on an unknown id and only
-  // on that: an unreachable provider warns and the command proceeds.
-  yield* verifyModelsAtStartup({ quiet: true })
+  yield* verifyModelsOrExit({ quiet: true })
   const supersede = yield* Supersede
   const reader = yield* Reader
   const slots =

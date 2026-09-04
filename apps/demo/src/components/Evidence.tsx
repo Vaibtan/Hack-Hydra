@@ -1,14 +1,5 @@
 import { formatDateInt, type EvidenceSpan } from "../api"
 
-/**
- * The evidence list.
- *
- * The text here is the **verbatim transcript**, not a claim's text. A Claim is
- * an index entry — a paraphrase produced by an earlier model — and showing it
- * would make the whole system a summary of a summary. What is shown is the turn
- * text around the Span, with the Span itself marked, which is the thing the
- * graph was built to point at.
- */
 export const Evidence = ({
   spans,
   cited

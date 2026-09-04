@@ -1,4 +1,6 @@
 export {
+  AbstentionReason,
+  ArmKind,
   AskRequest,
   AskResponse,
   BadRequest,
@@ -13,14 +15,22 @@ export {
   IngestTurn,
   NotFound,
   PalimpsestApi,
+  PlanArm,
+  PlanBudget,
+  PlanSelection,
+  PlanSufficiency,
+  PlanTimeScope,
   QueryParameters,
   Receipt,
+  RetrievalPlan,
+  Route,
   SessionRow,
   SourceIndexSessionResponse,
   SlotChainResponse,
   StatsResponse,
+  WarmResponse,
   users
 } from "./Api.js"
-export { projectRetrievalReceipt } from "./ReceiptProjection.js"
+export { projectPlan } from "./ReceiptProjection.js"
 export { UsersLive } from "./Handlers.js"
 export { ApiLive, ServerLive, serve } from "./Server.js"

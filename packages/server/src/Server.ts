@@ -19,16 +19,6 @@ import { createServer } from "node:http"
 import { PalimpsestApi } from "./Api.js"
 import { UsersLive } from "./Handlers.js"
 
-/**
- * The whole application, as one layer.
- *
- * One `HydraClient` owns the protocol adapter. Its causal context is fiber-
- * scoped, so callers carry a bookmark from ingest to ask rather than inheriting
- * another request's last write or relying on process affinity.
- */
-/** Legacy read stack plus the bounded transactional source/index capability. */
-// Reuse these exact layer values below. Effect memoizes one layer graph, so the
-// source-index service and legacy services receive one Hydra client.
 const HttpLive = NodeHttpClient.layerUndici
 const HydraLive = HydraClient.Default.pipe(Layer.provide(HttpLive))
 const LlmStackLive = LlmLive().pipe(Layer.provide(HttpLive))
@@ -57,7 +47,6 @@ type AppServices =
   | Supersede
   | Transcript
 
-/** Complete server capability context with no external service requirement. */
 export const AppLive: Layer.Layer<AppServices, unknown, never> = Layer.mergeAll(
   RuntimeLive,
   LegacyAppWithRuntime
@@ -68,10 +57,6 @@ export const ApiLive = HttpApiBuilder.api(PalimpsestApi).pipe(
   Layer.provide(AppLive)
 )
 
-/**
- * CORS is wide open because the demo is a local Vite dev server on a different
- * port and this API is not reachable from anywhere else.
- */
 export const ServerLive = (port: number) =>
   HttpApiBuilder.serve(HttpMiddleware.logger).pipe(
     Layer.provide(HttpApiBuilder.middlewareCors()),

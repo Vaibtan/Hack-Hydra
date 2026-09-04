@@ -1,16 +1,14 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
-import { LlmLive, loadDotEnv, verifyModelsAtStartup } from "@palimpsest/llm"
+import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { Reader, Retrieve, Supersede, Transcript } from "../src/index.js"
+import { answerV2 } from "../src/Answer.js"
+import { Reader } from "../src/Reader.js"
+import { Retrieve } from "../src/Retrieve.js"
+import { Supersede } from "../src/Supersede.js"
+import { Transcript } from "../src/Transcript.js"
 
-/**
- * `trajectory --uid <id> --question "..." [--date "..."] [--from 1] [--step 1]`
- *
- * Asks the same question as of every session in turn and prints what the memory
- * believed at each step. This is the as-of scrubber as a command: one graph, no
- * re-ingest, no snapshots — just `session_ord ≤ k` and `at_session ≤ k`.
- */
+/** `trajectory --uid <id> --question "..." [--date "..."] [--from 1] [--step 1]` */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -35,11 +33,7 @@ const AppLive = Retrieve.Default.pipe(
 )
 
 const program = Effect.gen(function* () {
-  // Before anything is spent. A typo in `PALIMPSEST_SELECT_MODEL` is otherwise a
-  // run of provider errors -- or, on a provider that silently substitutes, real
-  // numbers from a model nobody chose. Fails closed on an unknown id and only
-  // on that: an unreachable provider warns and the command proceeds.
-  yield* verifyModelsAtStartup({ quiet: true })
+  yield* verifyModelsOrExit({ quiet: true })
   const retrieve = yield* Retrieve
   const reader = yield* Reader
   const transcript = yield* Transcript
@@ -58,23 +52,21 @@ const program = Effect.gen(function* () {
     points,
     (k) =>
       Effect.gen(function* () {
-        const result = yield* retrieve.ask(uid, question, { questionDate, asOf: k })
-        if (result.verdict === "ABSENT") {
-          return { k, label: `ABSENT (${result.reason})`, evidence: 0, hash: result.hash }
+        const answered = yield* answerV2(retrieve, reader, uid, question, questionDate, { asOf: k })
+        const evidence = answered.ask.evidence.length
+        if (answered.read === null || answered.verdict === "ABSENT") {
+          return { k, label: `ABSENT (${answered.reason})`, evidence, hash: answered.hash }
         }
-        const answer = yield* reader.read(question, questionDate, result.evidence)
         return {
           k,
-          label: answer.notInMemory ? "NOT_IN_MEMORY" : answer.answer,
-          evidence: result.evidence.length,
-          hash: result.hash
+          label: answered.read.notInMemory ? "NOT_IN_MEMORY" : answered.read.answer,
+          evidence,
+          hash: answered.hash
         }
       }),
     { concurrency }
   )
 
-  // Only the steps where the belief actually changed are interesting; the rest
-  // are the memory holding still, which is the point.
   let previous: string | null = null
   const changes: Array<{ k: number; label: string }> = []
   for (const answer of answers) {

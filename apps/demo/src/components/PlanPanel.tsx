@@ -1,19 +1,5 @@
 import type { RetrievalPlan } from "../api"
 
-/**
- * The v2 plan, as stages.
- *
- * The receipt panel beside this one shows what was *read* — the exact
- * `algo.MSpaths` statement, the path counts, the convergence table. This one
- * shows what was *decided*, which is a different question and the one a viewer
- * actually has after watching an answer appear: which route did it take, which
- * arms fired, was a window applied, what did the selector throw away and why.
- *
- * Rendered as a sequence because the pipeline is one — route, arms, scope,
- * select, sufficiency, read — and a table of numbers would hide that each stage
- * only sees what the one before it left.
- */
-
 const ms = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)} s` : `${Math.round(n)} ms`)
 
 const day = (n: number): string =>
@@ -41,8 +27,6 @@ const Stage = ({
 )
 
 export const PlanPanel = ({ plan }: { readonly plan: RetrievalPlan }) => {
-  // Concurrent stages overlap, so the per-stage numbers do not sum to `askMs`.
-  // Saying so is the difference between a timing panel and a misleading one.
   const armMs = Math.max(
     0,
     ...plan.arms.map((arm) => plan.stages[arm.label] ?? 0)
@@ -199,7 +183,7 @@ export const PlanPanel = ({ plan }: { readonly plan: RetrievalPlan }) => {
           hydrated in {ms(plan.stages["hydrate"] ?? 0)} — verbatim turn text, never a claim's own
           words
         </span>
-        {plan.budget !== null && (
+        {plan.budget.estimatedTokens > 0 && (
           <div className="muted" style={{ marginTop: 6 }}>
             {plan.budget.estimatedTokens} of {plan.budget.budget} reader tokens, estimated at{" "}
             {plan.budget.charsPerToken} characters each
@@ -210,9 +194,6 @@ export const PlanPanel = ({ plan }: { readonly plan: RetrievalPlan }) => {
                 {plan.budget.dropped.length === 1 ? "" : "s"} dropped to fit
               </>
             )}
-            {/* Reachable and worth showing: probe hits are never dropped, so a
-                question that named several can exceed the budget with nothing
-                left that may be cut. */}
             {plan.budget.overBudget && (
               <> — over budget, and every excerpt left is one the question named</>
             )}

@@ -2,30 +2,6 @@ import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { userKey } from "./Keys.js"
 
-/**
- * The `User` vertex: one root per history, and the reason every per-user read
- * in this package is an id-keyed read.
- *
- * HydraDB indexes exactly two things: a vertex by `{id: …}`, and the source
- * values `algo.MSpaths` is driven from. Everything else — including
- * `MATCH (n:Label) WHERE n.uid = $uid` — is a full scan of that label's
- * **store-wide** population, at roughly 75 µs per vertex. That is invisible at
- * one user and fatal at a hundred: counting one user's Claims cost 4.4 s at
- * 58 k Claims in the store and would cost ~19 s at the 500-user scale, over the
- * engine's 30 s cap, for a number the ingest already knew.
- *
- * So the numbers `stats` used to scan for are written here at the end of the
- * ingest that produced them, and the vertex sets it used to scan for hang off
- * the user as edges:
- *
- * ```
- * (User)-[:HAS_ENTITY]->(Entity)   (User)-[:HAS_SLOT]->(Slot)   (User)-[:HAS_SESSION]->(Session)
- * ```
- *
- * which `MSpaths` walks from the single source `uid|user` in one indexed round
- * trip. Nothing derived is ever recomputed by joining the store.
- */
-
 export interface UserStats {
   readonly claims: number
   readonly entities: number
@@ -61,11 +37,6 @@ const COUNT_PROPERTIES = [
   "n_contested"
 ] as const
 
-/**
- * Users whose root vertex this process has already merged. The merge is
- * idempotent, so this is only about not paying for it once per session of a
- * 50-session ingest.
- */
 const ensured = new Set<string>()
 
 /** Merges the root vertex so the `HAS_*` edges have something to point from. */
@@ -81,11 +52,6 @@ export const ensureUser = (
     ensured.add(uid)
   })
 
-/**
- * Writes the counts an ingest already holds in memory. Every one of them was
- * accumulated while writing — nothing is read back and nothing is counted
- * twice.
- */
 export const writeUserStats = (
   hydra: HydraClient,
   uid: string,
@@ -132,10 +98,6 @@ export const readUserStats = (
     )
   )
 
-/**
- * Read-modify-write of the counts by id, for the single-session ingest the HTTP
- * API exposes. Two ~100 ms round trips, versus six label scans.
- */
 export const bumpUserStats = (
   hydra: HydraClient,
   uid: string,
@@ -161,11 +123,6 @@ export const bumpUserStats = (
 
 export type UserEdge = "HAS_ENTITY" | "HAS_SLOT" | "HAS_SESSION" | "HAS_SOURCE_REVISION"
 
-/**
- * Hangs a set of the user's vertices off the root. Content-addressed and
- * idempotent like every other write here, so a re-ingest MERGEs the same edge
- * ids over themselves.
- */
 export const linkToUser = (
   hydra: HydraClient,
   uid: string,
@@ -187,11 +144,6 @@ export const linkToUser = (
     )
   })
 
-/**
- * The vertices of one kind belonging to a user, walked from the root in one
- * `MSpaths` call. The alternative — `MATCH (e:Entity) WHERE e.uid = $uid` —
- * measured 4.9 s at 26 users and scales with the whole store.
- */
 export const readUserVertices = (
   hydra: HydraClient,
   uid: string,
@@ -199,8 +151,6 @@ export const readUserVertices = (
 ): Effect.Effect<ReadonlyArray<Readonly<Record<string, unknown>>>, HydraError> =>
   hydra
     .msPaths({
-      // No target selector: one relationship type reaches exactly one label, so
-      // naming it would only cost the query a second inlined list.
       sourceLabel: "User",
       sourceProperty: "ukey",
       sourceValues: [userKey(uid)],
@@ -221,13 +171,6 @@ export const readUserVertices = (
       })
     )
 
-/**
- * What a warm reached.
- *
- * Counts rather than nothing, because a warm that silently touched nothing is
- * indistinguishable from one that worked — which is exactly how the first
- * version of this went unnoticed, and then how the second one did.
- */
 export interface WarmReport {
   readonly entities: number
   readonly slots: number
@@ -244,30 +187,8 @@ export interface WarmReport {
   readonly ms: number
 }
 
-/**
- * How many source keys one `MSpaths` walk may carry.
- *
- * Measured on 2026-08-31 against a 51-session user: 5 entity keys returned 12
- * paths in 573 ms, 50 returned 112 in 5.8 s, and **2 292 returned nothing at
- * all** — the walk exceeded a limit and failed. The first version of this
- * function caught that failure and reported it as an empty result, so a warm
- * that touched no Token at all looked exactly like a user with no Tokens.
- *
- * 200 keeps a fan-out walk inside the row cap and well inside the per-call
- * ceiling.
- */
 export const WARM_SOURCES_PER_WALK = 200
 
-/**
- * How long a warm may take before it stops and says it stopped.
- *
- * A warm is an optimisation with a deadline: the demo calls it on user select,
- * and its entire value is in being finished before the first question. A user
- * with 2 292 entities cannot have every Token warmed inside any budget a person
- * would wait through — at the measured rate that is minutes — so the warm takes
- * what fits and **reports `truncated`** rather than running to completion or
- * pretending it did.
- */
 export const WARM_BUDGET_MS = 15_000
 
 /** Every key at the far end of a one-hop walk, in bounded batches. */
@@ -308,9 +229,6 @@ const warmHop = (
         })
       )
       if (outcome._tag === "Left") {
-        // Counted, not swallowed. A warm is best-effort — it must never be able
-        // to fail the thing it was warming for — but "best effort" is not
-        // "silently nothing", and the difference is the whole of this fix.
         failed++
         continue
       }
@@ -323,45 +241,6 @@ const warmHop = (
     return { keys: [...keys] as ReadonlyArray<string>, failed, truncated }
   })
 
-/**
- * Reads the blocks an ask will read, before the ask.
- *
- * On this runtime a cold block is an HTTP GET to the object store rather than a
- * page fault — the read cache is off while ingesting — and a first ask measured
- * 11 397 ms of `graphMs` against a warm 68 ms.
- *
- * **The first version of this touched the wrong thing.** It walked the `User`
- * root's `HAS_ENTITY` / `HAS_SLOT` / `HAS_SESSION` fan-out and stopped, and the
- * ops note recorded the consequence honestly: it did not move the cold number,
- * because the cold cost is the convergence walk `Token -HITS-> Claim` and
- * nothing there touched a Token.
- *
- * There is no `User -HAS_TOKEN-> Token` edge to walk: a Token is linked to
- * Claims by `HITS` and to Entities by `NAMES`, and to nothing else. So Tokens
- * are reached the only way that is not a store-wide label scan — **backwards
- * along `NAMES` from the entity keys the fan-out just returned**. That is a
- * subset of the user's Tokens, and it is the useful subset: a question's anchors
- * are the words it uses for the things it asks about, which are the entities.
- *
- * Levels, in the order an ask reads them:
- *
- * 1. `User` -> Entity / Slot / Session
- * 2. Session -`HAS_TURN`-> Turn (what hydration reads) · Slot <-`FILLS`- Claim
- *    (Query 2's shape) · Entity <-`NAMES`- Token
- * 3. `deep` only: Token -`HITS`-> Claim, the convergence walk itself
- *
- * Level 2 runs in that order, sequentially, so a warm that runs out of budget
- * has warmed the stages an answer cannot skip rather than a random third of all
- * of them.
- *
- * **Bounded twice, both times because the unbounded version does not work.**
- * Source keys are chunked at `WARM_SOURCES_PER_WALK`, because a single walk from
- * 2 292 entity keys fails outright; and the whole thing stops at
- * `WARM_BUDGET_MS` and reports `truncated`. `deep` is off by default because it
- * is that user's whole inverted index rather than one question's slice of it.
- *
- * Reads only, so warming twice is free and warming the wrong user is harmless.
- */
 export const warmUser = (
   hydra: HydraClient,
   uid: string,
@@ -387,29 +266,34 @@ export const warmUser = (
     ): ReadonlyArray<string> =>
       rows.map((row) => String(row[property] ?? "")).filter((key) => key !== "")
 
-    const turns = yield* warmHop(
-      hydra,
-      { label: "Session", property: "sess", values: keysOf(sessions, "sess") },
-      "HAS_TURN",
-      "outgoing",
-      "turn",
-      deadline
-    )
-    const slotClaims = yield* warmHop(
-      hydra,
-      { label: "Slot", property: "skey", values: keysOf(slots, "skey") },
-      "FILLS",
-      "incoming",
-      "ckey",
-      deadline
-    )
-    const tokens = yield* warmHop(
-      hydra,
-      { label: "Entity", property: "ekey", values: keysOf(entities, "ekey") },
-      "NAMES",
-      "incoming",
-      "tkey",
-      deadline
+    const [turns, slotClaims, tokens] = yield* Effect.all(
+      [
+        warmHop(
+          hydra,
+          { label: "Session", property: "sess", values: keysOf(sessions, "sess") },
+          "HAS_TURN",
+          "outgoing",
+          "turn",
+          deadline
+        ),
+        warmHop(
+          hydra,
+          { label: "Slot", property: "skey", values: keysOf(slots, "skey") },
+          "FILLS",
+          "incoming",
+          "ckey",
+          deadline
+        ),
+        warmHop(
+          hydra,
+          { label: "Entity", property: "ekey", values: keysOf(entities, "ekey") },
+          "NAMES",
+          "incoming",
+          "tkey",
+          deadline
+        )
+      ],
+      { concurrency: 3 }
     )
 
     const hitClaims =

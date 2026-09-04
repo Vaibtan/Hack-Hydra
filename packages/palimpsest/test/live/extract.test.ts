@@ -3,7 +3,7 @@ import { Llm, LlmLive } from "@palimpsest/llm"
 import { Effect } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { extractSession, mergeEntities } from "../../src/index.js"
+import { extractSession, mergeEntities } from "../../src/Extract.js"
 
 /**
  * Extraction against the real model and a real session. Everything asserted

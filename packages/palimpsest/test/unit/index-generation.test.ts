@@ -1,10 +1,6 @@
-import {
-  createExtractionGeneration,
-  createIndexGeneration,
-  IngestManifest,
-  IngestManifestLayerMemory,
-  parseIndexGeneration
-} from "../../src/index.js"
+import { createIndexGeneration, parseIndexGeneration } from "../../src/IndexGeneration.js"
+import { IngestManifest, IngestManifestLayerMemory } from "../../src/IngestManifest.js"
+import { createExtractionGeneration } from "../../src/SourceIdentity.js"
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 

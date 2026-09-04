@@ -1,9 +1,3 @@
-/**
- * HydraDB's HTTP response is doubly typed: result cells carry `{type, value}`
- * and vertex/edge properties carry `{String|Integer|SignedInteger|Float|Bool}`.
- * Nothing outside this module should ever see either envelope.
- */
-
 /** The five HydraDB property types, as plain TS. */
 export type Scalar = string | number | boolean
 
@@ -34,6 +28,22 @@ export interface QueryResult {
   readonly rows: ReadonlyArray<Row>
   readonly bookmark: string | null
   readonly readEpoch: number | null
+}
+
+/** One HTTP response of a paged read: a `QueryResult` plus what continuing it needs. */
+export interface QueryPage extends QueryResult {
+  readonly queryId: string | null
+  readonly nextCursor: string | number | null
+}
+
+/** The wire shape of one HydraDB query response, before any decoding. */
+export interface RawResponse {
+  readonly columns?: ReadonlyArray<string>
+  readonly rows?: ReadonlyArray<ReadonlyArray<unknown>>
+  readonly bookmark?: string | null
+  readonly read_epoch?: number | null
+  readonly query_id?: string | null
+  readonly next_cursor?: string | number | null
 }
 
 const PROPERTY_TAGS = ["String", "Integer", "SignedInteger", "Float", "Bool"] as const
@@ -82,21 +92,16 @@ const decodeCell = (raw: unknown): Cell => {
   if (raw === null || typeof raw !== "object") return raw as Cell
   const cell = raw as { type?: string; value?: unknown }
   if (cell.type === "path") return decodePath(cell.value)
-  // `vertex_id`, `integer`, `float`, `boolean`, `string`, `null` all carry a
-  // plain JSON value that already means what it says.
   return (cell.value ?? null) as Cell
 }
 
-export interface RawResponse {
-  readonly columns?: ReadonlyArray<string>
-  readonly rows?: ReadonlyArray<ReadonlyArray<unknown>>
-  readonly bookmark?: string | null
-  readonly read_epoch?: number | null
-}
+const asRawResponse = (raw: unknown): RawResponse =>
+  raw !== null && typeof raw === "object" ? (raw as RawResponse) : {}
 
-export const decodeResponse = (raw: RawResponse): QueryResult => {
-  const columns = raw.columns ?? []
-  const rows = (raw.rows ?? []).map((cells) => {
+export const decodeResponse = (raw: unknown): QueryResult => {
+  const response = asRawResponse(raw)
+  const columns = response.columns ?? []
+  const rows = (response.rows ?? []).map((cells) => {
     const row: Row = {}
     columns.forEach((column, index) => {
       row[column] = decodeCell(cells[index])
@@ -106,7 +111,16 @@ export const decodeResponse = (raw: RawResponse): QueryResult => {
   return {
     columns,
     rows,
-    bookmark: raw.bookmark ?? null,
-    readEpoch: raw.read_epoch ?? null
+    bookmark: response.bookmark ?? null,
+    readEpoch: response.read_epoch ?? null
+  }
+}
+
+export const decodePage = (raw: unknown): QueryPage => {
+  const response = asRawResponse(raw)
+  return {
+    ...decodeResponse(response),
+    queryId: response.query_id ?? null,
+    nextCursor: response.next_cursor ?? null
   }
 }

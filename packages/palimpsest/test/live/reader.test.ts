@@ -5,14 +5,13 @@ import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer, Option } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { NOT_IN_MEMORY, Reader, Retrieve, Supersede, Transcript } from "../../src/index.js"
+import { answerV2 } from "../../src/Answer.js"
+import { Reader } from "../../src/Reader.js"
+import { Retrieve } from "../../src/Retrieve.js"
+import { NOT_IN_MEMORY } from "../../src/Routes.js"
+import { Supersede } from "../../src/Supersede.js"
+import { Transcript } from "../../src/Transcript.js"
 
-/**
- * The reader, against the `852ce960` graph built by the supersession test.
- * Ground truth: the user was pre-approved for $350 000 and later $400 000, so
- * the present-tense answer is $400 000 and the as-of-session-4 answer is
- * $350 000 — from the same graph, with no re-ingest.
- */
 const hasDataset = existsSync(datasetPath("s"))
 
 const AppLive = Retrieve.Default.pipe(
@@ -38,12 +37,12 @@ describe.skipIf(!hasDataset)("reader", () => {
         const retrieve = yield* Retrieve
         const reader = yield* Reader
         const transcript = yield* Transcript
-        const result = yield* retrieve.ask(UID, QUESTION)
-        const answer = yield* reader.read(QUESTION, DATE, result.evidence)
+        const answered = yield* answerV2(retrieve, reader, UID, QUESTION, DATE)
+        const result = answered.ask
+        const answer = answered.read!
 
-        // Pull the real turn behind one span and check the excerpt came from it.
         const span = answer.spans[0]!
-        const turn = yield* transcript.readTurn(UID, span.sid, result.evidence[0]!.turnIdx)
+        const turn = yield* transcript.readTurn(UID, span.sid, span.turnIdx)
         return { result, answer, span, turn }
       })
     )
@@ -54,12 +53,9 @@ describe.skipIf(!hasDataset)("reader", () => {
     expect(answer.answer).toContain("400,000")
     expect(answer.citedIds.length).toBeGreaterThan(0)
 
-    // Every excerpt is a literal substring of a stored Turn — never a claim's
-    // paraphrase. That is the whole "index over verbatim transcript" claim.
     expect(Option.isSome(turn)).toBe(true)
     expect(Option.getOrThrow(turn).text).toContain(span.excerpt)
 
-    // And the highlight points at the Span inside the excerpt.
     const highlighted = span.excerpt.slice(span.highlight.start, span.highlight.end)
     expect(highlighted.length).toBeGreaterThan(0)
     expect(Option.getOrThrow(turn).text).toContain(highlighted)
@@ -70,11 +66,10 @@ describe.skipIf(!hasDataset)("reader", () => {
       Effect.gen(function* () {
         const retrieve = yield* Retrieve
         const reader = yield* Reader
-        const result = yield* retrieve.ask(UID, QUESTION, { asOf: 4 })
-        return yield* reader.read(QUESTION, DATE, result.evidence)
+        const answered = yield* answerV2(retrieve, reader, UID, QUESTION, DATE, { asOf: 4 })
+        return answered.read!
       })
     )
-    // Same graph, same question, different as-of: the memory's earlier belief.
     expect(answer.answer).toContain("350,000")
     expect(answer.answer).not.toContain("400,000")
   })
@@ -85,14 +80,15 @@ describe.skipIf(!hasDataset)("reader", () => {
         const retrieve = yield* Retrieve
         const reader = yield* Reader
         const question = "What is the registration number of my sailing boat?"
-        const result = yield* retrieve.ask(UID, question)
-        if (result.verdict === "ABSENT") {
-          // Structural abstention: the reader is never reached, which is a
-          // different and stronger answer than NOT_IN_MEMORY.
+        const answered = yield* answerV2(retrieve, reader, UID, question, DATE)
+        if (answered.read === null) {
           return { notInMemory: true, structural: true, answer: NOT_IN_MEMORY }
         }
-        const read = yield* reader.read(question, DATE, result.evidence)
-        return { notInMemory: read.notInMemory, structural: false, answer: read.answer }
+        return {
+          notInMemory: answered.verdict === "ABSENT" || answered.read.notInMemory,
+          structural: false,
+          answer: answered.read.answer
+        }
       })
     )
     expect(answer.notInMemory).toBe(true)

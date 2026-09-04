@@ -4,14 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { describe, expect, it } from "vitest"
-import {
-  IngestManifest,
-  IngestManifestLayerMemory,
-  IngestManifestLive,
-  createExtractionGeneration,
-  type BeginSourceRevision,
-  type IngestManifestError
-} from "../../src/index.js"
+import { IngestManifest, IngestManifestLayerMemory, IngestManifestLive, type BeginSourceRevision, type IngestManifestError } from "../../src/IngestManifest.js"
+import { createExtractionGeneration } from "../../src/SourceIdentity.js"
 
 const extractionGeneration = createExtractionGeneration({
   extractor: { id: "test-extractor", revision: "git:test" },

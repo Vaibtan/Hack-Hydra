@@ -7,19 +7,8 @@ import {
   resolveTimeInterval,
   type DayInterval
 } from "../../src/TimeScope.js"
-import { questionDateInt } from "../../src/Retrieve.js"
+import { questionDateInt } from "../../src/Plan.js"
 
-/**
- * The resolver's contract is this table.
- *
- * Every row is `phrase × question date → interval`, because the arithmetic is
- * the whole point: the model supplies the phrase and nothing else, and a wrong
- * window is worse than no window — the scope stage would boost it and bury the
- * right claim.
- *
- * `2023-05-20` is a **Saturday**; `2023-05-17` is a Wednesday. Both are used
- * below, because weekday-relative phrases resolve differently on each.
- */
 const SATURDAY = 20230520
 const WEDNESDAY = 20230517
 
@@ -37,8 +26,6 @@ describe("N units ago", () => {
   })
 
   it("resolves weeks to the whole Monday-to-Sunday week", () => {
-    // 2023-05-20 is a Saturday; one week back is 2023-05-13, whose week runs
-    // Monday 2023-05-08 to Sunday 2023-05-14.
     expect(span(at("a week ago"))).toEqual([20230508, 20230515])
     expect(at("a week ago")!.precision).toBe("week")
   })
@@ -68,18 +55,14 @@ describe("last <unit>", () => {
   })
 
   it("resolves a weekday to the most recent one strictly before the question", () => {
-    // Saturday 2023-05-20: "last Saturday" is a week earlier, not today.
     expect(span(at("last saturday"))).toEqual([20230513, 20230514])
     expect(span(at("last friday"))).toEqual([20230519, 20230520])
     expect(span(at("last sunday"))).toEqual([20230514, 20230515])
   })
 
   it("resolves a month name to the most recent one that has happened", () => {
-    // Asked in May: last March is this year's.
     expect(span(at("last march"))).toEqual([20230301, 20230401])
-    // Asked in February: last March is a year earlier.
     expect(span(at("last march", 20230210))).toEqual([20220301, 20220401])
-    // The question's own month counts as a year ago, not as itself.
     expect(span(at("last may"))).toEqual([20220501, 20220601])
   })
 
@@ -92,7 +75,6 @@ describe("named months and explicit dates", () => {
   it("resolves in <Month> to the most recent occurrence", () => {
     expect(span(at("in march"))).toEqual([20230301, 20230401])
     expect(span(at("in july"))).toEqual([20220701, 20220801])
-    // The question's own month resolves to itself, unlike "last <month>".
     expect(span(at("in may"))).toEqual([20230501, 20230601])
   })
 
@@ -123,8 +105,6 @@ describe("named months and explicit dates", () => {
   })
 
   it("does not read a month out of a word that merely starts like one", () => {
-    // A bidirectional three-character match made "last decade" a single month
-    // (December 2022) and "junior" June — guesses, which the contract forbids.
     expect(at("last decade")).toBeNull()
     expect(at("in junior")).toBeNull()
     expect(at("last marathon")).toBeNull()
@@ -132,13 +112,9 @@ describe("named months and explicit dates", () => {
   })
 
   it("shifts a bare month-and-day into the past, like the month-only form", () => {
-    // Asked in May 2023, "december 3" is 2022 — the question is retrospective,
-    // and a window after the question date can intersect no claim at all.
     expect(span(at("december 3"))).toEqual([20221203, 20221204])
     expect(span(at("august 12"))).toEqual([20220812, 20220813])
-    // A month already past this year stays this year.
     expect(span(at("march 14"))).toEqual([20230314, 20230315])
-    // The question's own day is not pushed back a year.
     expect(span(at("may 20"))).toEqual([20230520, 20230521])
   })
 })
@@ -151,10 +127,7 @@ describe("relative days and weekends", () => {
   })
 
   it("takes this weekend as the most recent Saturday and Sunday", () => {
-    // Asked on Saturday: the weekend that has started.
     expect(span(at("this weekend", SATURDAY))).toEqual([20230520, 20230522])
-    // Asked on Wednesday: the weekend just gone, because the question is
-    // retrospective.
     expect(span(at("this weekend", WEDNESDAY))).toEqual([20230513, 20230515])
   })
 
@@ -173,6 +146,19 @@ describe("no interval", () => {
     expect(at("when I was younger")).toBeNull()
     expect(at("recently")).toBeNull()
     expect(at("a while back")).toBeNull()
+  })
+
+  it.each([
+    ["decade", ["decade", "last decade", "in decade", "a decade ago"]],
+    ["junior", ["junior", "last junior", "in junior", "junior 5"]],
+    ["marathon", ["marathon", "last marathon", "in marathon", "marathon 2021"]],
+    ["septic", ["septic", "last septic", "in septic", "on septic 3"]]
+  ])("never reads a month out of %s in any frame", (_, phrases) => {
+    for (const phrase of phrases) {
+      for (const date of [SATURDAY, WEDNESDAY]) {
+        expect(at(phrase, date), phrase).toBeNull()
+      }
+    }
   })
 })
 
@@ -194,7 +180,6 @@ describe("the reader's sentence", () => {
   })
 })
 
-// ------------------------------------------------------------------ scoping
 
 const claim = (
   tEvent: number,
@@ -218,11 +203,9 @@ describe("a claim's own window", () => {
   })
 
   it("reaches a question about the month it names", () => {
-    // "in March" must reach a claim dated only "March 2023".
     expect(inScope(claim(20230300, "month"), MARCH)).toBe(true)
     expect(inScope(claim(20230314, "day"), MARCH)).toBe(true)
     expect(inScope(claim(20230414, "day"), MARCH)).toBe(false)
-    // A year-precision claim overlaps every month of that year.
     expect(inScope(claim(20230000, "year"), MARCH)).toBe(true)
   })
 
@@ -286,10 +269,6 @@ describe("the question's own date", () => {
   })
 
   it("is zero when there is no date, so no phrase is resolved against year zero", () => {
-    // The ask contract makes `questionDate` optional, and a `time_ref` of "last
-    // month" with nothing to anchor it would otherwise produce an interval in
-    // the year 0 that every claim falls outside of - silently emptying the
-    // candidate set for exactly the questions the scope exists to help.
     expect(questionDateInt(undefined)).toBe(0)
     expect(questionDateInt("some Tuesday")).toBe(0)
   })

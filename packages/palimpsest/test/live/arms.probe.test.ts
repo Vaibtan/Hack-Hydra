@@ -8,14 +8,11 @@ import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 import { claimKind, slotKey, turnKey } from "../../src/Keys.js"
 import { readUserStats } from "../../src/User.js"
-import {
-  Reader,
-  Retrieve,
-  Supersede,
-  probeArm,
-  unionArms,
-  type ReachedClaim
-} from "../../src/index.js"
+import { probeArm, unionArms } from "../../src/Arms.js"
+import { Reader } from "../../src/Reader.js"
+import { Retrieve } from "../../src/Retrieve.js"
+import type { ReachedClaim } from "../../src/Scoring.js"
+import { Supersede } from "../../src/Supersede.js"
 
 /**
  * The v2 arms, against the real graph.

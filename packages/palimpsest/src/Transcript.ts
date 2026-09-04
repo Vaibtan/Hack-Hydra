@@ -4,47 +4,7 @@ import { Effect, Option } from "effect"
 import { sessionKey, turnChunkKey, turnKey } from "./Keys.js"
 import { linkToUser, readUserVertices } from "./User.js"
 import { canonicalSessionSource } from "./SourceIdentity.js"
-
-/**
- * HydraDB stores at most 32 743 UTF-8 bytes in a string property. Four of the
- * 246 750 turns in `longmemeval_s_cleaned.json` are longer than that, and they
- * are exactly the long assistant outputs the `single-session-assistant`
- * questions ask about, so they cannot be dropped. A turn over the cap keeps its
- * first chunk on the `Turn` vertex and hangs the rest off `HAS_CHUNK`; Span
- * offsets stay absolute in the reassembled text, and nothing above `readTurn`
- * knows this happened.
- */
-const CHUNK_BYTES = 30_000
-
-const chunkText = (text: string): ReadonlyArray<string> => {
-  if (Buffer.byteLength(text, "utf8") <= CHUNK_BYTES) return [text]
-  const chunks: Array<string> = []
-  let current = ""
-  let bytes = 0
-  // Iterating the string yields whole code points, so a surrogate pair is never
-  // split across two chunks.
-  for (const codePoint of text) {
-    const size = Buffer.byteLength(codePoint, "utf8")
-    if (bytes + size > CHUNK_BYTES) {
-      chunks.push(current)
-      current = ""
-      bytes = 0
-    }
-    current += codePoint
-    bytes += size
-  }
-  chunks.push(current)
-  return chunks
-}
-
-/**
- * The verbatim transcript, in HydraDB.
- *
- * The graph is an index *over* the transcript, so the transcript has to live in
- * the same store — otherwise "HydraDB-only retrieval" would quietly mean
- * "HydraDB plus a file of turn texts". Hydration of an evidence Span is then a
- * batched read of `Turn.text`, nothing more.
- */
+import { chunkText } from "./Chunk.js"
 
 export interface StoredTurn {
   readonly sid: string
@@ -65,7 +25,6 @@ export interface StoredSession {
 export interface TranscriptReport {
   readonly sessions: number
   readonly turns: number
-  /** The causal floor to read at, so a following ask sees these writes. */
   readonly bookmark: Option.Option<string>
 }
 
@@ -88,8 +47,6 @@ const make = Effect.gen(function* () {
             session_ord: session.sessionOrd,
             date: session.date.dateInt,
             ts: session.date.ts,
-            // Denormalised so `readSessions` never has to join HAS_TURN, which
-            // measured 19.2 s at 26 users and grows with the whole store.
             n_turns: session.turns.length
           }
         }))
@@ -182,8 +139,6 @@ const make = Effect.gen(function* () {
     turnIdx: number
   ): Effect.Effect<Option.Option<StoredTurn>, HydraError> =>
     Effect.gen(function* () {
-      // By id, not `WHERE t.turn = $key`: the second is a scan of every Turn in
-      // the store (246 750 of them at full scale) for one row.
       const found = yield* hydra.getById("Turn", turnKey(uid, sid, turnIdx), [
         "sid",
         "turn_idx",
@@ -225,14 +180,6 @@ const make = Effect.gen(function* () {
       })
     })
 
-  /**
-   * The user's sessions, walked from the `User` root.
-   *
-   * The old form joined `(Session)-[:HAS_TURN]->(Turn)` under
-   * `WHERE s.uid = $uid` to count turns and measured **19.2 s** on a 26-user
-   * graph — paid by the as-of scrubber on every load. The turn count is a
-   * Session property now, and the session set is one indexed `MSpaths` hop.
-   */
   const readSessions = (uid: string): Effect.Effect<ReadonlyArray<StoredSession>, HydraError> =>
     readUserVertices(hydra, uid, "HAS_SESSION").pipe(
       Effect.map((rows) =>
@@ -248,7 +195,6 @@ const make = Effect.gen(function* () {
       )
     )
 
-  /** Drops a user's transcript. Used by tests and by a forced re-ingest. */
   const remove = (uid: string): Effect.Effect<void, HydraError> =>
     Effect.gen(function* () {
       const keys: Array<string> = []

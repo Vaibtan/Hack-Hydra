@@ -2,20 +2,16 @@ import type { DatasetSession } from "@palimpsest/dataset"
 import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
 import { Data, Effect, Either, Option } from "effect"
 import type { SourceRevision } from "./IngestManifest.js"
+import { chunkText } from "./Chunk.js"
 import { canonicalSessionSource } from "./SourceIdentity.js"
 import { linkToUser } from "./User.js"
 
-/** HydraDB's safe per-property text payload, leaving room for relation metadata. */
-const CHUNK_BYTES = 30_000
-
-/** Immutable key for a source revision's session vertex. */
 export const sourceSessionKey = (
   uid: string,
   logicalSessionId: string,
   sourceDigest: string
 ): string => `${uid}|srcsess|${sourceDigest}|${logicalSessionId}`
 
-/** Immutable key for one turn inside a source revision. */
 export const sourceTurnKey = (
   uid: string,
   logicalSessionId: string,
@@ -23,7 +19,6 @@ export const sourceTurnKey = (
   turnIdx: number
 ): string => `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|turn|${turnIdx}`
 
-/** Immutable key for one overflow chunk inside a source turn. */
 export const sourceTurnChunkKey = (
   uid: string,
   logicalSessionId: string,
@@ -32,7 +27,6 @@ export const sourceTurnChunkKey = (
   chunkIdx: number
 ): string => `${sourceTurnKey(uid, logicalSessionId, sourceDigest, turnIdx)}|chunk|${chunkIdx}`
 
-/** The caller tried to persist bytes that are not the manifest-claimed source revision. */
 export class SourceTranscriptRevisionMismatch extends Data.TaggedError(
   "SourceTranscriptRevisionMismatch"
 )<{
@@ -43,13 +37,11 @@ export class SourceTranscriptRevisionMismatch extends Data.TaggedError(
   }
 }
 
-/** One immutable source vertex write prepared before touching the graph. */
 export interface SourceTranscriptVertex {
   readonly key: string
   readonly properties: Readonly<Record<string, Scalar>>
 }
 
-/** One source-internal edge prepared before touching the graph. */
 export interface SourceTranscriptRelation {
   readonly type: "SOURCE_HAS_CHUNK" | "SOURCE_HAS_TURN"
   readonly srcLabel: "SourceSession" | "SourceTurn"
@@ -58,7 +50,6 @@ export interface SourceTranscriptRelation {
   readonly dstKey: string
 }
 
-/** The complete, immutable graph write for one manifest source revision. */
 export interface SourceTranscriptWritePlan {
   readonly sourceDigest: string
   readonly session: SourceTranscriptVertex
@@ -67,41 +58,13 @@ export interface SourceTranscriptWritePlan {
   readonly relations: ReadonlyArray<SourceTranscriptRelation>
 }
 
-/** Outcome of persisting one immutable source revision. */
 export interface SourceTranscriptReport {
   readonly sourceDigest: string
   readonly sessions: 1
   readonly turns: number
-  /** The causal floor to use for a following graph stage. */
   readonly bookmark: Option.Option<string>
 }
 
-const chunkText = (text: string): ReadonlyArray<string> => {
-  if (Buffer.byteLength(text, "utf8") <= CHUNK_BYTES) return [text]
-  const chunks: Array<string> = []
-  let current = ""
-  let bytes = 0
-  for (const codePoint of text) {
-    const size = Buffer.byteLength(codePoint, "utf8")
-    if (bytes + size > CHUNK_BYTES) {
-      chunks.push(current)
-      current = ""
-      bytes = 0
-    }
-    current += codePoint
-    bytes += size
-  }
-  chunks.push(current)
-  return chunks
-}
-
-/**
- * Creates a full immutable source write from a manifest-owned revision.
- *
- * `SourceRevision` includes extraction state today, but the source graph key
- * deliberately excludes it: re-extracting the same source must not replace or
- * duplicate its verbatim transcript.
- */
 export const planSourceTranscriptWrite = (
   revision: SourceRevision,
   session: DatasetSession
@@ -233,7 +196,6 @@ const make = Effect.gen(function* () {
   return { write } as const
 })
 
-/** Persisted, content-addressed source plane used by transactional ingest. */
 export class SourceTranscript extends Effect.Service<SourceTranscript>()("palimpsest/SourceTranscript", {
   effect: make
 }) {}

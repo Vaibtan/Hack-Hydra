@@ -5,7 +5,8 @@ import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { Retrieve, Supersede } from "../../src/index.js"
+import { Retrieve } from "../../src/Retrieve.js"
+import { Supersede } from "../../src/Supersede.js"
 
 /**
  * Retrieval against the graph built by the supersession live test, so the
