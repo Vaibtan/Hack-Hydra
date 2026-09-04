@@ -55,6 +55,17 @@ if ($V1Worktree -ne "") {
     exit 1
   }
   $V1Worktree = (Resolve-Path $V1Worktree).Path
+  foreach ($shared in @("data", ".cache", ".env", ".palimpsest")) {
+    $target = Join-Path $V1Worktree $shared
+    $source = Join-Path $repositoryRoot $shared
+    if ((Test-Path $target) -or -not (Test-Path $source)) { continue }
+    if (Test-Path $source -PathType Container) {
+      New-Item -ItemType Junction -Path $target -Target $source | Out-Null
+    } else {
+      Copy-Item $source $target
+    }
+    Write-Output ("linked {0} into the v1 worktree" -f $shared)
+  }
 }
 
 $startedAt = Get-Date

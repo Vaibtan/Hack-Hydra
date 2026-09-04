@@ -129,6 +129,8 @@ export const systemFor = (route: Route | null): string =>
 
 export interface ReadOptions {
   readonly route: Route
+  /** The route that picks granularity and adjudication when it differs from the rules route (second pass). */
+  readonly packRoute?: Route
   /** Drops the rules block from the system prompt only; granularity and adjudication still follow the route. */
   readonly noReaderRoute?: boolean
   readonly granularity?: Granularity
@@ -435,13 +437,14 @@ If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
     options: ReadOptions
   ): Effect.Effect<ReadAnswer, HydraError, LanguageModel.LanguageModel | Llm> =>
     Effect.gen(function* () {
-      const granularity = granularityFor(options.route, options.granularity)
+      const packRoute = options.packRoute ?? options.route
+      const granularity = granularityFor(packRoute, options.granularity)
 
       const hydrateStarted = Date.now()
       const hydrated = yield* hydrateAt(evidence, granularity)
       const hydrateMs = Date.now() - hydrateStarted
 
-      const labelled = adjudicate(dedupeByTurn(hydrated), options.slotOf ?? new Map(), options.route)
+      const labelled = adjudicate(dedupeByTurn(hydrated), options.slotOf ?? new Map(), packRoute)
       const budgeted = applyBudget(labelled, {
         ...(options.budgetTokens === undefined ? {} : { budget: options.budgetTokens }),
         ...(options.protectedKeys === undefined ? {} : { protectedKeys: options.protectedKeys })

@@ -46,7 +46,7 @@ $readCacheSetting = if ($ReadCache -eq "on") { "true" } else { "false" }
 
 $startedAt = Get-Date
 for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
-  $node = Set-HydraPhase -Phase ingest -ReadCache $readCacheSetting -Restart:($cycle -gt 1) -TimeoutSeconds 120
+  $node = Set-HydraPhase -Phase ingest -ReadCache $readCacheSetting -Restart:($cycle -gt 1) -TimeoutSeconds 420
   if (-not $node.ready) {
     Write-Output "cycle $cycle : node did not become ready; stopping"
     exit 1

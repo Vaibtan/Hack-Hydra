@@ -2,7 +2,7 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { HydraClient } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { answerV2 } from "../src/Answer.js"
+import { answerV2, unreadAnswer } from "../src/Answer.js"
 import { Reader } from "../src/Reader.js"
 import { Retrieve } from "../src/Retrieve.js"
 import { Supersede } from "../src/Supersede.js"
@@ -19,13 +19,14 @@ const question = arg("question", "")
 const asOfRaw = arg("as-of", "")
 const maxLen = Number(arg("max-len", "2"))
 const full = process.argv.includes("--full")
+const noRead = process.argv.includes("--no-read")
 const questionDate = arg("date", "unknown")
 const profileArg = arg("profile", "full")
 if (profileArg !== "full" && profileArg !== "fast") {
   console.error(`--profile must be full or fast, not ${JSON.stringify(profileArg)}`)
   process.exit(2)
 }
-const profile = profileArg
+const profile: "full" | "fast" = profileArg
 
 const AppLive = Retrieve.Default.pipe(
   Layer.provideMerge(Reader.Default),
@@ -40,11 +41,10 @@ const program = Effect.gen(function* () {
   const retrieve = yield* Retrieve
   const reader = yield* Reader
   const started = Date.now()
-  const answered = yield* answerV2(retrieve, reader, uid, question, questionDate, {
-    maxLen,
-    profile,
-    ...(asOfRaw === "" ? {} : { asOf: Number(asOfRaw) })
-  })
+  const answerOptions = { maxLen, profile, ...(asOfRaw === "" ? {} : { asOf: Number(asOfRaw) }) }
+  const answered = noRead
+    ? unreadAnswer(yield* retrieve.ask(uid, question, answerOptions))
+    : yield* answerV2(retrieve, reader, uid, question, questionDate, answerOptions)
   const result = answered.ask
   const answer = answered.read
   const sourceSpans = answer === null ? [] : answer.spans

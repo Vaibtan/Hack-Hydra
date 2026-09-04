@@ -55,6 +55,7 @@ const readOptionsFor = (
   options: AnswerOptions
 ): ReadOptions => ({
   route,
+  packRoute: plan.route,
   ...(options.noReaderRoute === true ? { noReaderRoute: true } : {}),
   ...(options.granularity === undefined ? {} : { granularity: options.granularity }),
   slotOf: new Map(Object.entries(plan.slots)),

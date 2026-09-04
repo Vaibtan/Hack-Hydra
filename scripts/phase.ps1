@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "lib/hydra.psm1") -Force
 
-$result = Set-HydraPhase -Phase $Phase -TimeoutSeconds 180
+$result = Set-HydraPhase -Phase $Phase -TimeoutSeconds 600
 if (-not $result.ready) { throw "node did not become ready after the switch to $Phase" }
 
 [pscustomobject]@{

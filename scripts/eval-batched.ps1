@@ -62,7 +62,7 @@ $lastBatch = if ($ToBatch -eq 0) { $Batches } else { [Math]::Min($ToBatch, $Batc
 
 $startedAt = Get-Date
 for ($batch = $FromBatch; $batch -le $lastBatch; $batch++) {
-  if (-not (Set-HydraPhase -Phase eval -Restart -TimeoutSeconds 180).ready) {
+  if (-not (Set-HydraPhase -Phase eval -Restart -TimeoutSeconds 600).ready) {
     Write-Output "batch $batch : node did not become ready; stopping"
     exit 1
   }

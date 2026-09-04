@@ -1,7 +1,7 @@
 import { LanguageModel, type AiError } from "@effect/ai"
 import { Config, Effect, JSONSchema, Layer, Ref, Schedule, Schema, Scope } from "effect"
 import { cacheKey, defaultCacheDir, readCache, writeCache } from "./Cache.js"
-import { DEFAULT_MODEL } from "./Models.js"
+import { DEFAULT_MODEL, configuredModel } from "./Models.js"
 import { languageModelLayer } from "./Provider.js"
 
 /** Token prices in USD per million tokens. */
@@ -58,8 +58,9 @@ export const isTransient = (error: AiError.AiError): boolean => {
     case "HttpRequestError":
       return error.reason === "Transport"
     case "HttpResponseError":
-      return error.response.status === 429 || error.response.status >= 500
+      return error.reason !== "StatusCode" || error.response.status === 429 || error.response.status >= 500
     case "MalformedOutput":
+    case "UnknownError":
       return true
     default:
       return false
@@ -67,7 +68,7 @@ export const isTransient = (error: AiError.AiError): boolean => {
 }
 
 const make = Effect.gen(function* () {
-  const model = yield* Config.string("PALIMPSEST_MODEL").pipe(Config.withDefault(DEFAULT_MODEL))
+  const model = configuredModel("PALIMPSEST_MODEL") ?? DEFAULT_MODEL
   const cacheDir = yield* Config.string("PALIMPSEST_LLM_CACHE").pipe(
     Config.withDefault(defaultCacheDir())
   )

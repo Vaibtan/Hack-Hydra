@@ -52,6 +52,12 @@ function Wait-HydraReady {
   return $false
 }
 
+function Get-EnvValue([string[]] $Lines, [string] $Name) {
+  $line = @($Lines | Where-Object { $_ -like "$Name=*" })
+  if ($line.Count -eq 0) { throw "container env has no $Name" }
+  return $line[0].Substring($Name.Length + 1)
+}
+
 function Set-HydraPhase {
   [CmdletBinding()]
   param(
@@ -62,7 +68,7 @@ function Set-HydraPhase {
     [string] $ReadCache = "",
     [switch] $Restart,
     [ValidateRange(1, 3600)]
-    [int] $TimeoutSeconds = 180
+    [int] $TimeoutSeconds = 300
   )
 
   $expectedCache = if ($ReadCache -ne "") { $ReadCache } elseif ($Phase -eq "ingest") { "false" } else { "true" }
@@ -82,8 +88,8 @@ function Set-HydraPhase {
   }
 
   $environment = & docker inspect $container --format '{{range .Config.Env}}{{println .}}{{end}}'
-  $cache = ($environment | Select-String -Pattern "^GRAPH_OBJECT_STORE_CACHE_ENABLED=(.*)$").Matches.Groups[1].Value
-  $runtime = ($environment | Select-String -Pattern "^GRAPH_MAX_QUERY_RUNTIME_MS=(.*)$").Matches.Groups[1].Value
+  $cache = Get-EnvValue $environment "GRAPH_OBJECT_STORE_CACHE_ENABLED"
+  $runtime = Get-EnvValue $environment "GRAPH_MAX_QUERY_RUNTIME_MS"
   if ($cache -ne $expectedCache -or $runtime -ne $expectedRuntime) {
     throw "phase switch to $Phase did not take: read cache $cache (want $expectedCache), query cap $runtime (want $expectedRuntime)"
   }

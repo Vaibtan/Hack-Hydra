@@ -23,7 +23,7 @@ $startedAt = Get-Date
 $env:PALIMPSEST_READ_TIMEOUT_MS = "115000"
 
 for ($batch = $FromBatch; $batch -le $Batches; $batch++) {
-  if (-not (Set-HydraPhase -Phase eval -Restart -TimeoutSeconds 180).ready) {
+  if (-not (Set-HydraPhase -Phase eval -Restart -TimeoutSeconds 600).ready) {
     Write-Output "batch $batch : node did not become ready; stopping"
     exit 1
   }
