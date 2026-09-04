@@ -17,22 +17,7 @@ import {
   type SplitFile
 } from "../src/index.js"
 
-/**
- * `splits [--slice 200] [--prefix g3] [--dev-from results/palimpsest-60.json] [--check]`
- *
- * Writes the predeclared dev/test split of the Retrieval v2 population.
- *
- * This has to exist, and be committed, before the first v2 result: the claim
- * "we did not tune on test" is only checkable if the id lists were fixed in the
- * history beforehand. Re-running the command is safe — it is a pure function of
- * the dataset, the slice size and the cached run's row ids — except that it
- * refuses to overwrite a gate record, because that is the one part of the file
- * that is a measurement rather than a plan.
- *
- * `--check` additionally reads the graph and records how many of the population
- * are fully ingested, which is what the capacity fallback needs: if the gate
- * trips mid-ingest, the population *is* whatever finished.
- */
+/** `splits [--slice 200] [--prefix g3] [--dev-from results/palimpsest-60.json] [--check] [--gate-tripped]` */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -66,7 +51,6 @@ const uidFor = (questionId: string): string =>
 
 const AppLive = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
-/** The question ids of the cached run whose users are already in the LLM cache. */
 const cachedIds = (): ReadonlyArray<string> => {
   const path = resolve(root, devFrom)
   const parsed = JSON.parse(readFileSync(path, "utf8")) as {
@@ -81,8 +65,6 @@ const program = Effect.gen(function* () {
   const population = benchmarkSlice(questions, sliceSize)
   const cached = cachedIds()
 
-  // A dev question outside the population would mean the two slices disagree,
-  // and every later "dev is a subset of the 200" statement would be false.
   const stray = outsidePopulation(population, cached)
   if (stray.length > 0) {
     return yield* Effect.dieMessage(
@@ -124,8 +106,6 @@ const program = Effect.gen(function* () {
     void byQuestion
   }
 
-  // The gate record is the one measurement in this file; regenerating the plan
-  // must never quietly discard it.
   const existing: SplitFile | null = existsSync(outPath)
     ? (JSON.parse(readFileSync(outPath, "utf8")) as SplitFile)
     : null

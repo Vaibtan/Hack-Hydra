@@ -2,11 +2,6 @@ import type { DatasetQuestion, DatasetSession } from "@palimpsest/dataset"
 import { describe, expect, it } from "vitest"
 import { buildIndex, fullContextSpans, topSpans } from "../../src/index.js"
 
-/**
- * B1 and B2 are only meaningful as comparisons if they differ from Palimpsest
- * in exactly one thing — which text reaches the reader. These tests pin the
- * selection; the reader prompt and the judge are shared code.
- */
 const session = (
   ord: number,
   dateInt: number,
@@ -46,22 +41,16 @@ describe("BM25 turn selection", () => {
   ])
 
   it("ranks by shared terms — which is the baseline's whole weakness", () => {
-    // "Cute name for a hamster" carries both query stems and the turn that
-    // actually holds the answer carries one, so BM25 puts the assistant's
-    // echo first. Term overlap is not aboutness; that is the comparison.
     const spans = topSpans(q, buildIndex(q), 1)
     expect(spans).toHaveLength(1)
     expect(spans[0]!.excerpt).toBe("Cute name for a hamster")
 
-    // Both are in reach at k = 10, which is why the baseline gets ten turns.
     expect(topSpans(q, buildIndex(q), 10).map((span) => span.excerpt)).toContain(
       "My hamster is called Nibbles"
     )
   })
 
   it("scores turns, not sessions, and gives the reader whole turns", () => {
-    // BM25 selects turns; cutting a window out of one would invent a span the
-    // baseline never produced.
     const spans = topSpans(q, buildIndex(q), 2)
     expect(spans.map((span) => span.excerpt)).toEqual([
       "My hamster is called Nibbles",
@@ -103,8 +92,6 @@ describe("full-context selection", () => {
   })
 
   it("drops the oldest sessions when it does not, and says how many", () => {
-    // Dropping the newest would flatter this baseline on exactly the
-    // knowledge-update questions it should find hard.
     const full = fullContextSpans(q, 250)
     expect(full.sessionsDropped).toBe(1)
     expect(full.spans.map((span) => span.sessionOrd)).toEqual([2, 3])

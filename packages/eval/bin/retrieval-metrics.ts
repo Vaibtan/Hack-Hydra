@@ -6,14 +6,7 @@ import { ClaimGraph, Retrieve, Supersede } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
 import { benchmarkSlice, gateByType, gateReport, scoreQuestion } from "../src/index.js"
 
-/**
- * `retrieval-metrics --slice 20 [--prefix g2] [--max-len 2] [--top-k 25] [--misses]`
- *
- * The day-3 gate: SessionRecall@K ≥ 85 % and false-abstention ≤ 10 % on the
- * answerable questions of the slice, plus abstention precision/recall on the
- * `_abs` ones. Every anchor call is cached, so a re-run is free and prints the
- * same numbers.
- */
+/** `retrieval-metrics --slice 20 [--prefix g2] [--max-len 2] [--top-k 25] [--misses]` */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -50,9 +43,6 @@ const program = Effect.gen(function* () {
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const slice = benchmarkSlice(questions, sliceSize)
 
-  // A user with no claims would score as A1_no_anchors and be counted as a
-  // false abstention — a missing ingest quietly reported as a retrieval
-  // failure. Refuse to measure rather than publish a wrong number.
   const missing = yield* Effect.forEach(
     slice,
     (question) =>

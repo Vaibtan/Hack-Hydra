@@ -1,9 +1,3 @@
-# Runs the population ingest in cycles, restarting the node with the ingest
-# phase settings whenever it reaches -RestartAtPercent of its memory limit
-# (ops/hydradb/step-load-2026-08.md). `--skip-existing` makes a cycle cheap:
-# every write is a content-addressed MERGE, so an interrupted user completes on
-# the next pass.
-#
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ingest-cycling.ps1 `
 #     -Slice 200 -Prefix g3 -Users 3 -RestartAtPercent 70 [-Split dev]
 
@@ -12,18 +6,14 @@ param(
   [int] $Slice = 200,
   [string] $Prefix = "g3",
   [int] $Users = 3,
-  # Below the capacity gate's 90 % so the restart is scheduled, not an incident.
   [ValidateRange(10, 89)]
   [int] $RestartAtPercent = 70,
   [ValidateRange(5, 600)]
   [int] $SampleIntervalSeconds = 15,
   [ValidateRange(1, 100)]
   [int] $MaxCycles = 40,
-  # Object-store read cache during the ingest. Off is the measured default;
-  # on trades more frequent restarts for fewer MinIO round trips (unmeasured).
   [ValidateSet("on", "off")]
   [string] $ReadCache = "off",
-  # `dev` first gets the first number in ~90 min instead of ~11 h.
   [ValidateSet("", "dev", "test")]
   [string] $Split = "",
   [string] $LogDirectory
@@ -56,8 +46,6 @@ $readCacheSetting = if ($ReadCache -eq "on") { "true" } else { "false" }
 
 $startedAt = Get-Date
 for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
-  # Cycle 1 takes the node as found; every later cycle exists because the
-  # previous one hit the ceiling, so it restarts.
   $node = Set-HydraPhase -Phase ingest -ReadCache $readCacheSetting -Restart:($cycle -gt 1) -TimeoutSeconds 120
   if (-not $node.ready) {
     Write-Output "cycle $cycle : node did not become ready; stopping"
@@ -90,8 +78,6 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
     $used = Convert-DockerMemoryToBytes -Value (([string] $usage[0]).Split("/")[0].Trim())
     if ($used -ge $ceiling) {
       Write-Output ("cycle {0} : {1:n0} bytes >= ceiling, stopping the ingest and cycling the node" -f $cycle, $used)
-      # The writer is stopped first so the node has no statement in flight
-      # and releases its writer lease cleanly.
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
       $cycledForMemory = $true
       break
@@ -103,7 +89,6 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
   foreach ($line in $tail) { Write-Output "  | $line" }
 
   if (-not $cycledForMemory) {
-    # `wall clock` is the last line ingest-slice prints on completion.
     if (($tail -join "`n") -match "wall clock") {
       $elapsed = ((Get-Date) - $startedAt).TotalMinutes
       Write-Output ("done after {0} cycle(s), {1:n1} min" -f $cycle, $elapsed)

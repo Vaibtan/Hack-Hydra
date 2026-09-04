@@ -8,25 +8,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { benchmarkSlice, SPLIT_FILE, type SplitFile } from "../src/index.js"
 
-/**
- * `ingest-slice --slice 20 [--dataset s] [--users 3] [--prefix g2] [--skip-existing]`
- * `             [--split dev|test]`
- *
- * Ingests the deterministic stratified slice, so the retrieval gate measures on
- * the same questions every time. Users run concurrently; sessions within a user
- * are written in order. Ingest is idempotent, so re-running is a cheap no-op.
- *
- * `--prefix` re-keys every user, which is how a clean graph is obtained after an
- * extraction-prompt change (the graph is additive and deletes are impractical).
- *
- * `--skip-existing` is what makes a *step load* — 20, then 60, then 200 — cost
- * only the users each step adds. Idempotent is not the same as free: every
- * earlier user's ~4 000 vertices and ~12 000 edges would be re-`MERGE`d, which
- * is minutes of writes per step and pointless load on the node the step is
- * meant to be measuring. The check is one ~100 ms read by id of the `User`
- * root: a user whose stored `n_sessions` already equals the question's session
- * count finished its ingest, because the counts are written last.
- */
+/** `ingest-slice --slice 20 [--dataset s] [--users 3] [--prefix g2] [--skip-existing] [--split dev|test] [--retries 1]` */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -50,32 +32,7 @@ const dataset = arg("dataset", "s") as DatasetName
 const userConcurrency = Number(arg("users", "3"))
 const prefix = arg("prefix", "")
 const skipExisting = process.argv.includes("--skip-existing")
-/**
- * How many times a user may be re-attempted after a *capacity* failure.
- *
- * A 30 s runtime refusal or a lost writer lease is a statement about the node
- * at that moment, not about the user, and the whole user is lost to it — tens
- * of correct writes and, on a cache miss, real money. `ingestUser` is
- * idempotent, so a retry re-`MERGE`s what landed and continues; the pause is
- * there so the retry does not join the same pile-up that caused the refusal.
- * Parse, schema and identity failures are not retried: those are the same
- * answer every time.
- */
 const retries = Number(arg("retries", "1"))
-/**
- * `--split dev|test` narrows the slice to the committed id list.
- *
- * The population is ingested in `benchmarkSlice` order, and the dev half is
- * scattered through it — it is *whatever was already cached from the `g2` run*,
- * not a prefix. That ordering costs nothing when the whole population fits in
- * one sitting and a great deal when it does not: every result this project
- * produces before the gate comes from the dev half, so ingesting the dev users
- * first turns an eleven-hour wait into a ninety-minute one, with the test half
- * loading afterwards while nothing is blocked on it.
- *
- * It changes no key and no claim. `--skip-existing` still applies, so running
- * `--split dev` and then the whole slice ingests each user exactly once.
- */
 const splitName = arg("split", "")
 const RETRY_PAUSE_MS = 30_000
 
@@ -136,9 +93,6 @@ const program = Effect.gen(function* () {
       Effect.gen(function* () {
         const uid = uidFor(question.questionId, prefix)
         if (skipExisting) {
-          // Not wrapped in `either`: a failed read by id means the node is
-          // unavailable or read-only, and pushing 200 users through that is
-          // worse than stopping.
           const stored = yield* readUserStats(hydra, uid)
           if (Option.isSome(stored) && stored.value.sessions === question.sessions.length) {
             done++
@@ -150,9 +104,6 @@ const program = Effect.gen(function* () {
             return null
           }
         }
-        // One user's failure must not discard the rest of the run: a slice is
-        // an hour of API calls and the cache only helps if the process lives
-        // long enough to write it.
         let outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
         for (let attempt = 0; attempt < retries && outcome._tag === "Left"; attempt++) {
           const tag = outcome.left._tag
@@ -167,9 +118,6 @@ const program = Effect.gen(function* () {
         }
         done++
         if (outcome._tag === "Left") {
-          // The statement, not just the message: a 30 s runtime refusal is
-          // useless without knowing which read or write hit it, and the error
-          // has carried the query all along.
           const failure = outcome.left as { message: string; query?: string }
           console.log(
             `[${String(done).padStart(3)}/${slice.length}] ${uid.padEnd(22)} FAILED  ${failure.message}` +

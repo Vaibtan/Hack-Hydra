@@ -1,6 +1,3 @@
-# One eval over the population in batches: the node restarts per batch and
-# each batch is read cold then warm in one lifetime; the warm pass is the file.
-#
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/eval-batched.ps1 `
 #     -System palimpsest-v2 -Split dev -Batches 15
 #   ... -ExtraArgs "--no-select" -Variant no-select
@@ -18,15 +15,11 @@ param(
   [ValidateRange(1, 16)]
   [int] $Concurrency = 2,
   [string[]] $ExtraArgs = @(),
-  # Must equal the variant suffix `eval` derives from the flags, or the merge finds nothing.
   [string] $Variant = "",
-  # A different checkout to run eval and merge from (the pre-cleanup-v1 worktree).
   [string] $WorkingDirectory = "",
-  # Where that checkout writes and merges its results; defaults to its own results/.
   [string] $ResultsDir = "",
   [ValidateRange(1, 200)]
   [int] $FromBatch = 1,
-  # 0 = run to the last batch.
   [ValidateRange(0, 200)]
   [int] $ToBatch = 0
 )
@@ -57,8 +50,6 @@ function Invoke-EvalPass {
     "--batch", "$Batch/$Batches",
     "--concurrency", "$Concurrency"
   ) + $ExtraArgs
-  # Cold: below the engine's 120 s cap so priming finishes; eval records it as pass "cold".
-  # Warm: the shipped 25 s default, so a slow warm read fails loudly.
   if ($Pass -eq "cold") {
     $env:PALIMPSEST_READ_TIMEOUT_MS = "115000"
   } else {
@@ -91,7 +82,6 @@ for ($batch = $FromBatch; $batch -le $lastBatch; $batch++) {
   Write-Output ("batch {0}/{1} : warm pass" -f $batch, $Batches)
   $warm = Invoke-EvalPass -Batch $batch -Pass "warm" -Log $warmLog
   if ($warm -ne 0) {
-    # One retry: a transient eviction re-primes and passes; a genuinely slow warm read fails twice.
     Write-Output "  warm pass exited $warm; retrying once"
     $warm = Invoke-EvalPass -Batch $batch -Pass "warm" -Log $warmLog
   }

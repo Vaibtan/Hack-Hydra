@@ -1,25 +1,14 @@
 import type { DatasetQuestion } from "@palimpsest/dataset"
 import type { AskResult } from "@palimpsest/palimpsest"
 
-/**
- * Retrieval metrics that need no judge.
- *
- * LongMemEval gives `answer_session_ids` for every answerable question and
- * marks the 30 unanswerable ones with an `_abs` suffix, so both halves of the
- * day-3 gate — did the evidence contain a session that holds the answer, and
- * did we abstain when we shouldn't have — are computable from labels alone.
- */
-
 export interface QuestionRetrieval {
   readonly questionId: string
   readonly questionType: string
   readonly isAbstention: boolean
   readonly verdict: AskResult["verdict"]
   readonly reason: AskResult["reason"]
-  /** Distinct sessions the evidence came from. */
   readonly evidenceSessions: ReadonlyArray<string>
   readonly answerSessions: ReadonlyArray<string>
-  /** An answer-bearing session appears in the evidence. */
   readonly sessionHit: boolean
   readonly evidence: number
   readonly anchorsAsked: number
@@ -54,14 +43,10 @@ export const scoreQuestion = (
 
 export interface GateReport {
   readonly answerable: number
-  /** Answerable questions whose evidence included an answer-bearing session. */
   readonly sessionRecall: number
-  /** Answerable questions we refused to answer. The gate's second half. */
   readonly falseAbstention: number
   readonly abstentionQuestions: number
-  /** Of the `_abs` questions, how many we correctly refused. */
   readonly abstentionRecall: number | null
-  /** Of everything we refused, how many should have been refused. */
   readonly abstentionPrecision: number | null
   readonly a1: number
   readonly a2: number

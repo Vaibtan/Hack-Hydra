@@ -16,21 +16,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { benchmarkSlice, readRuntimeConfig, SPLIT_FILE, type SplitFile } from "../src/index.js"
 
-/**
- * `step-load --slice 60 [--prefix g3] [--asks 5]`
- *
- * One row of the step-load curve: how big the graph is after this step, and
- * how long a warm ask's HydraDB stages take on it.
- *
- * Both numbers are read **without a store-wide scan**, which is not a detail:
- * `MATCH (n:Token) RETURN count(*)` took 15.8 s of engine time at 27 000
- * Tokens, and the four users being ingested at that moment all died on the
- * engine's 30 s query cap. The size comes from summing each user's own `User`
- * vertex — every count on it was written by the ingest that produced it — and
- * every read here is by id or an `MSpaths` hop from one.
- *
- * `docker stats` is the operator's half; this is the graph's half.
- */
+/** `step-load --slice 60 [--prefix g3] [--asks 5] [--edges N]` — one row of the step-load curve, with no store-wide scan. */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -42,27 +28,7 @@ const sliceSize = Number(arg("slice", "20"))
 const dataset = arg("dataset", "s") as DatasetName
 const prefix = arg("prefix", "g3")
 const askCount = Number(arg("asks", "5"))
-/**
- * How many users to count edges on. Zero — off — by default.
- *
- * #23's box asks for edge counts and the honest options were always two: a
- * store-wide scan, which this engine refuses past 250 000 candidates of a
- * label, or a counter at write time, which `UserStats` does not keep and which
- * cannot be added mid-population without half the users having it. This is the
- * third: **count them exactly, on a sample, from source-driven `MSpaths` walks**
- * — the same read shape the product path uses, driven from keys the user's own
- * root already yields, and therefore indexed rather than scanned.
- *
- * It is a sample because it is not cheap: `HITS` alone is up to
- * `MAX_TOKENS_PER_CLAIM` = 24 paths per claim, which is tens of thousands of
- * rows and dozens of cursor pages for one user. Five users is minutes; two
- * hundred would be an hour of read load for a number that is a constant times
- * the claim count.
- *
- * **Never while an ingest is running.** Not because it scans a label — it does
- * not — but because it is real read load on a node whose object store is
- * already the bottleneck.
- */
+// Edge sample size; see docs/design-rationale.md ("Edge sampling"). Never while an ingest runs.
 const edgeSample = Number(arg("edges", "0"))
 
 const workspaceRoot = (): string => {
@@ -105,19 +71,6 @@ const median = (values: ReadonlyArray<number>): number => {
   return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!
 }
 
-/**
- * One user's edges, counted exactly.
- *
- * Every walk is source-driven — from the user's `Claim.kind` constant, from the
- * entity keys the root yields, from the session keys it yields — so every one
- * is an indexed read and none of them is a label scan. `HAS_ENTITY`,
- * `HAS_SLOT`, `HAS_SESSION`, `HAS_TURN` and `SUPERSEDED_BY` are not walked at
- * all: the ingest wrote one per Entity, Slot, Session, Turn and supersession
- * respectively, and `UserStats` already holds those counts.
- *
- * `HAS_CHUNK` is the one edge nothing knows, because a chunk exists only for a
- * turn over HydraDB's 32 743-byte string cap. It is walked from the turn keys.
- */
 const countEdges = (
   hydra: HydraClient,
   uid: string
@@ -138,9 +91,6 @@ const countEdges = (
           Effect.catchAll(() => Effect.succeed(-1))
         )
 
-    // Sequential, not concurrent: this engine degrades under read concurrency
-    // (6.0 -> 3.8 -> 2.9 statements/s at 3 -> 4 -> 8 writers, and reads behave
-    // the same way), and nothing is waiting on this number.
     const evidence = yield* fromClaims("EVIDENCE")
     const mentions = yield* fromClaims("MENTIONS")
     const fills = yield* fromClaims("FILLS")
@@ -178,7 +128,6 @@ const program = Effect.gen(function* () {
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const population = benchmarkSlice(questions, sliceSize)
 
-  // ---- size ------------------------------------------------------------
   const perUser = yield* Effect.forEach(
     population,
     (question: DatasetQuestion) =>
@@ -203,32 +152,10 @@ const program = Effect.gen(function* () {
     EMPTY
   )
 
-  // Vertices, from the counts the ingest itself wrote. `TurnChunk` is the one
-  // label not represented: it exists only for turns over HydraDB's 32 743-byte
-  // string cap and nothing counts them, so this is a floor, not an exact count.
   const vertices =
     total.sessions + total.turns + total.claims + total.entities + total.slots + total.tokens +
     present.length
 
-  // **Edges are counted on a sample, or not at all.**
-  //
-  // An earlier version of this file printed a formula, and that number went into
-  // ops/hydradb/step-load-2026-08.md as a measured graph size. It was wrong by
-  // roughly an order of magnitude: it charged two edges per claim, when
-  // `ClaimGraph.writeSession` writes one `EVIDENCE`, one `FILLS`, one `MENTIONS`
-  // per distinct mentioned entity, **one `HITS` per token** (up to
-  // `MAX_TOKENS_PER_CLAIM` = 24) and one `NAMES` per entity-name token, plus
-  // `Transcript` writes one `HAS_CHUNK` per spilled chunk.
-  //
-  // Two options were considered and rejected: a store-wide scan, which the
-  // engine refuses past 250 000 candidates of a label, and a write-time counter
-  // on `UserStats`, which cannot be added part-way through a population without
-  // half the users having it. `--edges N` is the third — count them exactly on
-  // N users with source-driven `MSpaths` walks, which are indexed reads, and
-  // report the population total as `ratio x claims`, labelled as the
-  // extrapolation it is.
-
-  // ---- warm ask latency -------------------------------------------------
   const splitPath = resolve(workspaceRoot(), SPLIT_FILE)
   const dev: ReadonlyArray<string> = existsSync(splitPath)
     ? (JSON.parse(readFileSync(splitPath, "utf8")) as SplitFile).dev
@@ -243,10 +170,6 @@ const program = Effect.gen(function* () {
   const coldGraphMs: Array<number> = []
   for (const { question } of subjects) {
     const uid = uidFor(question.questionId)
-    // `pnpm warm` touches the root and its fan-out; it does **not** warm the
-    // convergence walk, and on this profile that is the whole cost — a cold
-    // block is an object-store round trip, not a page fault. So the first ask
-    // is measured and reported as the cold number rather than discarded.
     yield* Effect.all(
       [
         readUserVertices(hydra, uid, "HAS_ENTITY"),
@@ -266,10 +189,6 @@ const program = Effect.gen(function* () {
     askMs.push(warm.timings.askMs)
   }
 
-  // Which runtime this row was measured on. A step-load row taken with the read
-  // cache off (the ingest phase) and one taken with it on (the eval phase) are
-  // not the same measurement — 11 397 ms cold against 68 ms warm — so the row
-  // carries the hash of the configuration it came from.
   const runtimeConfig = readRuntimeConfig()
   console.log(`prefix        ${prefix}`)
   console.log(
@@ -292,7 +211,6 @@ const program = Effect.gen(function* () {
   console.log(`supersessions ${total.supersessions}`)
   console.log(`vertices      >=${vertices}   (TurnChunk not counted)`)
 
-  // ---- edges, on a sample -----------------------------------------------
   let edgeLine = "edges         not counted (pass --edges N to sample N users)"
   let edgeTableCell = "not counted"
   if (edgeSample > 0) {
@@ -309,8 +227,6 @@ const program = Effect.gen(function* () {
     let sampledClaims = 0
     let sampledEdges = 0
     for (const { row, edges } of counted) {
-      // The per-user edges the walks did not have to make: the ingest wrote one
-      // per Entity, Slot, Session, Turn and supersession.
       const known =
         row.stats!.entities +
         row.stats!.slots +
@@ -332,9 +248,6 @@ const program = Effect.gen(function* () {
       )
     }
     perClaim = sampledClaims === 0 ? 0 : sampledEdges / sampledClaims
-    // Extrapolated and labelled as such. The ratio is the measurement; the
-    // population total is the ratio times a claim count, and saying otherwise
-    // would repeat the mistake the corrected table above records.
     const estimate = Math.round(perClaim * total.claims)
     edgeLine =
       `edges         ${sampledEdges} exact over ${sample.length} user(s) ` +

@@ -35,13 +35,7 @@ import {
   type ReaderAbRow
 } from "../src/index.js"
 
-/**
- * `reader-ab [--split dev] [--types single-session-preference,knowledge-update]`
- * `          [--profile full|fast] [--concurrency 6] [--batch 2/5 | --merge]`
- *
- * #30's reader-route rules against v1's single prompt on identical packed
- * evidence: retrieve and pack once, read twice, judge both.
- */
+/** `reader-ab [--split dev] [--types a,b] [--profile full|fast] [--concurrency 6] [--batch 2/5 | --merge]` */
 loadDotEnv()
 
 const split = orExit(() => parseSplit(arg("split", "dev"))) ?? "dev"

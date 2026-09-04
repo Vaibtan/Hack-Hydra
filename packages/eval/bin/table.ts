@@ -26,12 +26,7 @@ import {
   type SystemName
 } from "../src/index.js"
 
-/**
- * `table [--split dev | --slice 60] [--results results] [--out <path>]`
- *
- * Rebuilds every published table from results JSON alone, selecting files by
- * their envelope. Batch and reader-ab files are skipped on purpose.
- */
+/** `table [--split dev | --slice 60] [--results results] [--out <path>]` */
 const root = workspaceRoot()
 const resultsDir = resolve(root, arg("results", "results"))
 const slice = arg("slice", "")

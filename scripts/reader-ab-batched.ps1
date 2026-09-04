@@ -1,6 +1,3 @@
-# The reader A/B in batches, restarting the node between them. No warm pass:
-# the A/B reports no latency, so each batch is read once at the cold ceiling.
-#
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/reader-ab-batched.ps1
 
 [CmdletBinding()]

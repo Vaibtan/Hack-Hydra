@@ -4,12 +4,7 @@ import { extractSession, mergeEntities, type ExtractedEntity, type SessionExtrac
 import { Effect } from "effect"
 import { byType, questionRecall, stratifiedSlice, summarise } from "../src/index.js"
 
-/**
- * `extract --slice 20 [--dataset oracle|s] [--concurrency 6] [--misses]`
- *
- * The day-1 gate: extraction recall against `has_answer`. Every call is cached,
- * so re-running costs nothing and prints the same numbers.
- */
+/** `extract --slice 20 [--dataset oracle|s] [--concurrency 6] [--misses]` */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {
@@ -26,8 +21,6 @@ const pct = (value: number): string => `${(value * 100).toFixed(1)} %`
 
 const extractQuestion = (question: DatasetQuestion) =>
   Effect.gen(function* () {
-    // Sessions run in order because each one is prompted with the entities the
-    // earlier ones established — that is what keeps canon keys stable.
     let known: ReadonlyArray<ExtractedEntity> = []
     const extractions: Array<SessionExtraction> = []
     for (const session of question.sessions) {

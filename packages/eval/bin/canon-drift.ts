@@ -5,12 +5,7 @@ import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, extractSession, slotKey } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
 
-/**
- * `canon-drift --uid <question_id>` — reconciles a user's extraction twice, once
- * from an empty graph and once from the graph as it stands, and prints the slot
- * keys that differ. This is the diagnostic for "re-ingest changed the slot
- * count": it names the entity whose canon moved.
- */
+/** `canon-drift --uid <question_id>` — slot keys that differ between an empty-graph and an as-is reconcile. */
 loadDotEnv()
 
 const arg = (name: string, fallback: string): string => {

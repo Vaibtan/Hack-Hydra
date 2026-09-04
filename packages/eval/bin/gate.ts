@@ -17,12 +17,7 @@ import {
   type SplitFile
 } from "../src/index.js"
 
-/**
- * `gate [--v1 results/palimpsest-dev.json] [--v2 results/palimpsest-v2-dev.json] [--write]`
- *
- * Reads the adoption gate on dev; `--write` records it in the split file once,
- * pass or fail. Nothing here re-runs a model.
- */
+/** `gate [--v1 results/palimpsest-dev.json] [--v2 results/palimpsest-v2-dev.json] [--write]` */
 const root = workspaceRoot()
 const write = flag("write")
 const v1File = arg("v1", "results/palimpsest-dev.json")

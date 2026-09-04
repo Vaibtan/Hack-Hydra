@@ -1,7 +1,5 @@
 [CmdletBinding()]
 param(
-  # Zero is reserved for deterministic fault-injection tests; the benchmark
-  # profile itself supplies the operational 90% threshold.
   [ValidateRange(0, 100)]
   [int] $StopAtPercent,
 
@@ -104,9 +102,6 @@ for ($sample = 1; $sample -le $Samples; $sample++) {
     if ($DryRun) {
       $result.action = "would_stop_new_ingestion"
     } else {
-      # `stop` sends SIGTERM and waits, allowing the S3-backed runtime to
-      # finish its durable shutdown path. It never removes the object-store
-      # volume or claims an uncommitted source as committed.
       & docker stop --time $ShutdownTimeoutSeconds $ContainerId | Out-Null
       Assert-LastDockerCommand -Operation "gracefully stop capacity-breached HydraDB container"
       $result.action = "stopped_new_ingestion"

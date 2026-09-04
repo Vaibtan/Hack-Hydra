@@ -19,7 +19,6 @@ export const isSystemName = (value: string): value is SystemName =>
 
 type AbstentionReason = NonNullable<V2Answer["reason"]>
 type SufficiencyTier = V2Answer["ask"]["plan"]["sufficiency"]["tier"]
-/** `true` only when the list names every member of the union it mirrors. */
 type Complete<Union, Listed> = [Exclude<Union, Listed>] extends [never] ? true : Exclude<Union, Listed>
 
 export const ABSTENTION_REASONS = [
@@ -112,7 +111,6 @@ export const EvalEnvelope = Schema.Struct({
   prefix: Schema.String,
   split: opt(Schema.NullOr(Schema.Literal("dev", "test"))),
   profile: opt(Schema.Literal("full", "fast")),
-  /** Non-default profile, ablations and granularity, sorted; the filename suffix. */
   variant: opt(Strings),
   /** `cold` is a priming pass under a raised read timeout; the gate refuses it. */
   pass: opt(Schema.Literal("cold", "warm")),
@@ -190,7 +188,6 @@ const assertEnvelope: (input: unknown) => asserts input is EvalEnvelope = Schema
   errors: "first"
 })
 
-/** Validates and returns the parsed object itself, so key order and unknown fields survive a rewrite. */
 export const decodeEnvelope = (input: unknown): EvalEnvelope => {
   assertEnvelope(input)
   return input

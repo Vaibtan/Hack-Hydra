@@ -1,7 +1,3 @@
-# Switches the benchmark node between the ingest phase (read cache off) and the
-# eval phase (read cache on); the query cap is 120 s in both. Settings and the
-# reasons: ops/hydradb/step-load-2026-08.md.
-#
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/phase.ps1 -Phase eval
 
 [CmdletBinding()]

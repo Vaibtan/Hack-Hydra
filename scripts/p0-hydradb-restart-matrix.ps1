@@ -19,9 +19,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "lib/hydra.psm1") -Force
 
-# This matrix never connects to, mounts, copies, or modifies the benchmark
-# HydraDB volume. Its MinIO data is an in-memory filesystem and both containers
-# are uniquely named and removed by default.
+# Never touches the benchmark HydraDB volume: in-memory MinIO, uniquely named containers.
 $MinioImage = "minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
 $McImage = "minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727"
 $WriterLeaseMilliseconds = 3000
@@ -48,8 +46,6 @@ function New-TestToken {
   return -join ($bytes | ForEach-Object { $_.ToString("x2") })
 }
 
-# The harness makes a unique credential set for every disposable environment.
-# It deliberately never reads project, Docker, or user credentials.
 $TestAccessKey = "p0$(New-TestToken -ByteCount 12)"
 $TestSecretKey = New-TestToken -ByteCount 32
 $TestAuthToken = New-TestToken -ByteCount 32
@@ -68,10 +64,6 @@ function Get-PublishedUri {
     [Parameter(Mandatory)][int] $ContainerPort
   )
 
-  # Docker reports a randomly assigned host port as a line such as
-  # "127.0.0.1:63147". Materialize that native-command output before calling
-  # string members: a parenthesized pipeline can otherwise yield $null under
-  # StrictMode even though `docker port` succeeded.
   $bindings = @(& docker port $Container "$($ContainerPort)/tcp")
   $binding = if ($bindings.Count -gt 0) { ([string] $bindings[0]).Trim() } else { $null }
   if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($binding)) {
@@ -117,9 +109,6 @@ function Assert-ImageProvenance {
 
   $reportedImageIds = @()
   foreach ($container in $provenanceContainerNames) {
-    # `docker create` keeps the test read-only with respect to the image and
-    # object store while proving each fresh container inherits the expected
-    # image id and OCI source labels.
     & docker create --name $container --label "palimpsest.scope=p0-restart-matrix" $HydraImage | Out-Null
     Assert-Docker -Operation "create provenance container $container"
     $record = (& docker container inspect $container | ConvertFrom-Json)[0]
@@ -211,9 +200,6 @@ function Wait-ForWriterRecovery {
     [Parameter(Mandatory)][int] $Ordinal
   )
 
-  # A killed process leaves a valid writer lease for its short TTL. A correct
-  # restart must fail closed during that interval, then take over through S3's
-  # conditional update rather than requiring lease-file surgery.
   $deadline = [DateTime]::UtcNow.AddMilliseconds($WriterLeaseMilliseconds * 4)
   do {
     try {

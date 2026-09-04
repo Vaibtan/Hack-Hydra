@@ -1,21 +1,9 @@
-# The whole dev programme in ticket order. Graph-touching runs go through
-# scripts/eval-batched.ps1; the dataset-only baselines run unbatched, twice
-# (the warm pass is the latency column, replayed from cache).
-#
-# The v1 systems (palimpsest, palimpsest-premise) no longer exist in this
-# checkout. Their steps are skipped unless -V1Worktree names a checkout of the
-# pre-cleanup-v1 tag:  git worktree add ..\palimpsest-v1 pre-cleanup-v1
-#
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-programme.ps1
-#   ... -From 4                       # resume at the fourth run
-#   ... -List                         # print the plan and exit
-#   ... -V1Worktree ..\palimpsest-v1  # run the v1 steps from the tag
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-programme.ps1 [-From 4] [-List] [-V1Worktree ..\palimpsest-v1]
 
 [CmdletBinding()]
 param(
   [ValidateRange(1, 99)]
   [int] $From = 1,
-  # 15 x 4 users: v2 peaked at 5.19 GiB of 5.5 at five users a batch.
   [ValidateRange(1, 99)]
   [int] $Batches = 15,
   [ValidateRange(1, 16)]
@@ -34,8 +22,6 @@ $batched = Join-Path $PSScriptRoot "eval-batched.ps1"
 $logDirectory = Join-Path $repositoryRoot ".eval-logs"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 
-# `variant` must equal the suffix `eval` derives from the flags (`noTimeScope`
-# -> `no-timescope`, `--profile fast` -> `profile-fast`), or the merge finds no files.
 $runs = @(
   @{ name = "palimpsest";            system = "palimpsest";    graph = $true;  v1 = $true;  args = @();                 variant = "" }
   @{ name = "palimpsest-v2 full";    system = "palimpsest-v2"; graph = $true;  args = @();                              variant = "" }

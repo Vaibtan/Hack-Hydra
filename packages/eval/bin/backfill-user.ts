@@ -14,21 +14,8 @@ import { stratifiedSlice } from "../src/index.js"
 
 /**
  * `backfill-user --prefix g2 [--slice 20] [--dataset s] [--uid a,b] [--users 2]`
- *
- * Gives an already-ingested user the `User` vertex and the `HAS_ENTITY` /
- * `HAS_SLOT` / `HAS_SESSION` edges that every per-user read now goes through.
- *
- * This is the one place left that runs the store-wide label scans on purpose:
- * a graph written before the `User` vertex existed is the only source for its
- * own entity and slot sets. That costs ~10 s per user at 26 users and still
- * works, which is exactly why the backfill has to happen *before* the next
- * ingest and not after. The alternative — re-keying to a fresh prefix — costs
- * the same wall clock and no LLM spend, but detaches every number in the
- * handoff from the keys it was measured on.
- *
- * Session turn counts come from the dataset file rather than from
- * `(Session)-[:HAS_TURN]->(Turn)`, which is a 19 s join and would be the
- * slowest thing here by an order of magnitude.
+ * Gives a pre-`User`-vertex user its root and `HAS_*` edges. Store-wide label scans on purpose;
+ * see docs/design-rationale.md ("Backfill").
  */
 loadDotEnv()
 
@@ -62,8 +49,6 @@ const program = Effect.gen(function* () {
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const byId = new Map(questions.map((question) => [question.questionId, question]))
 
-  // The prefixed slice, plus any bare uids named on the command line — the demo
-  // users were ingested without a prefix and need the same treatment.
   const targets: Array<Target> = [
     ...stratifiedSlice(questions, sliceSize).map((question) => ({
       uid: prefix === "" ? question.questionId : `${prefix}-${question.questionId}`,
@@ -133,8 +118,6 @@ const program = Effect.gen(function* () {
           contested.map((slot) => slot.skey)
         )
 
-        // Turn counts come from the file, so `readSessions` stops needing the
-        // HAS_TURN join. Merging by the same ids leaves every other property.
         yield* hydra.batchMerge(
           "Session",
           question.sessions.map((session) => ({

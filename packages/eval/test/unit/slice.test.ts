@@ -2,15 +2,6 @@ import type { DatasetQuestion } from "@palimpsest/dataset"
 import { describe, expect, it } from "vitest"
 import { benchmarkSlice, evalSlice, stratifiedSlice } from "../../src/index.js"
 
-/**
- * The slice the answer-accuracy harness runs on.
- *
- * `stratifiedSlice` round-robins the six `question_type`s in `question_id`
- * order, and the `_abs` questions carry their base type, so a 100-slice picks
- * up whichever `_abs` ids happen to sort early — the 20-slice got 2 of 30.
- * Abstention is the property this benchmark exists to test; measuring it on an
- * arbitrary 2 of 30 is not a measurement. `evalSlice` takes all 30.
- */
 const TYPES = [
   "knowledge-update",
   "multi-session",
@@ -33,7 +24,6 @@ const question = (id: string, type: string): DatasetQuestion => ({
   isAbstention: id.endsWith("_abs")
 })
 
-/** 500 questions shaped like the real file: 470 answerable, 30 `_abs`. */
 const corpus: ReadonlyArray<DatasetQuestion> = [
   ...Array.from({ length: 470 }, (_, i) =>
     question(`q${String(i).padStart(3, "0")}`, TYPES[i % TYPES.length]!)
@@ -52,8 +42,6 @@ describe("evalSlice", () => {
   })
 
   it("takes all 30 where the stratified slice of the same size takes few", () => {
-    // The bug, made executable: the ids here sort after the answerable ones, so
-    // a plain stratified 100 sees none of them at all.
     const stratified = stratifiedSlice(corpus, 100).filter((q) => q.isAbstention)
     expect(stratified.length).toBeLessThan(30)
   })
@@ -84,8 +72,6 @@ describe("evalSlice", () => {
 
 describe("benchmarkSlice", () => {
   it("is the gate's stratified slice below the abstention count", () => {
-    // The day-1 and day-3 numbers were measured with `stratifiedSlice`, so
-    // `--slice 20` has to keep meaning exactly what it meant.
     expect(benchmarkSlice(corpus, 20).map((q) => q.questionId)).toEqual(
       stratifiedSlice(corpus, 20).map((q) => q.questionId)
     )
@@ -103,9 +89,6 @@ describe("benchmarkSlice", () => {
   })
 
   it("means the same questions to ingest, to the gate and to the harness", () => {
-    // The bug this prevents: ingesting a stratified 100 and then asking about
-    // an abstention-complete 100 would query users that were never written,
-    // and every one of them would score as a retrieval failure.
     const a = benchmarkSlice(corpus, 100).map((q) => q.questionId)
     const b = benchmarkSlice(corpus, 100).map((q) => q.questionId)
     expect(b).toEqual(a)

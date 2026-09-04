@@ -3,30 +3,10 @@ import type { DatasetQuestion } from "@palimpsest/dataset"
 import { Llm } from "@palimpsest/llm"
 import { Effect } from "effect"
 
-/**
- * The official LongMemEval judge.
- *
- * The five templates below are copied **verbatim** from
- * `src/evaluation/evaluate_qa.py` in `github.com/xiaowu0162/LongMemEval`
- * (fetched, not typed from memory), including their whitespace and their
- * trailing "Answer yes or no only." Scoring is upstream's:
- * `'yes' in response.lower()`.
- *
- * Which template applies is a property of the question, not of the system under
- * test, so all three systems are scored by the same judge on the same prompt —
- * that is the only way the comparison means anything.
- *
- * Deviations from upstream, both stated in the writeup:
- *
- *  - upstream pins `gpt-4o-2024-08-06`; this asks for whatever the account's
- *    `gpt-4o` alias resolves to, and records the model in every results row;
- *  - upstream caps the reply at `max_tokens: 10`. The reply is free text here
- *    and is scored the same way, so a longer reply containing "yes" scores the
- *    same as upstream's truncated one would.
- */
+/** Upstream pins `gpt-4o-2024-08-06`; the alias is used and the resolved model recorded per row. */
 export const JUDGE_MODEL = "gpt-4o"
 
-/** Which of the five templates a question is scored by. */
+/** Which LongMemEval `evaluate_qa.py` template a question is scored by. */
 export type JudgeTemplate =
   | "default"
   | "temporal-reasoning"
@@ -51,13 +31,11 @@ export const judgeTemplate = (question: {
     case "multi-session":
       return "default"
     default:
-      // Upstream raises NotImplementedError here. A silent fallback would score
-      // an unknown type by the wrong rubric and never say so.
       throw new Error(`no LongMemEval judge template for question type ${question.questionType}`)
   }
 }
 
-/** `get_anscheck_prompt`, one branch per template, verbatim. */
+/** Upstream `get_anscheck_prompt`, verbatim. */
 export const judgePrompt = (
   template: JudgeTemplate,
   question: string,
@@ -78,7 +56,7 @@ export const judgePrompt = (
   }
 }
 
-/** Upstream's scoring rule, and nothing more clever than it. */
+/** Upstream's rule: `"yes" in response.lower()`. */
 export const judgeLabel = (reply: string): boolean => reply.toLowerCase().includes("yes")
 
 export interface Judgement {
@@ -89,12 +67,6 @@ export interface Judgement {
   readonly cached: boolean
 }
 
-/**
- * Scores one response. Cached on disk under the `judge` kind by
- * model + prompt, so a re-run of any table costs $0 and returns the same
- * labels — which matters more here than anywhere else, because a judge that
- * drifts makes two runs of the same system incomparable.
- */
 export const judge = (
   question: DatasetQuestion,
   response: string,

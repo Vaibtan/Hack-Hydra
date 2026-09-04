@@ -7,13 +7,6 @@ import {
   type ReaderAbRow
 } from "../../src/index.js"
 
-/**
- * The A/B's only job is to make a 25-question comparison readable without
- * overclaiming from it. So the tests are about the two things that would let it
- * overclaim: a summary that hides which arm won which question, and a table
- * that reads as a result when the arms actually agreed everywhere.
- */
-
 const arm = (correct: boolean, answer: string, outputTokens = 20) => ({
   answer,
   correct,
@@ -49,8 +42,6 @@ const file = (rows: ReadonlyArray<ReaderAbRow>): ReaderAbFile => ({
 
 describe("summary", () => {
   it("splits the four paired outcomes, not just two totals", () => {
-    // Two totals cannot tell "the rules fixed four and broke none" from "the
-    // rules fixed four and broke four", and those are opposite findings.
     const rows = [
       row({ questionId: "a", withRoute: arm(true, "x"), withoutRoute: arm(true, "y") }),
       row({ questionId: "b", withRoute: arm(true, "x"), withoutRoute: arm(false, "y") }),
@@ -85,8 +76,6 @@ describe("summary", () => {
   })
 
   it("reports output tokens, because the route rules ask for longer answers", () => {
-    // "Name the facts you are building on" is an instruction to say more, and a
-    // rules block that only made answers longer would be worth knowing about.
     const rows = [
       row({ questionId: "a", withRoute: arm(true, "x", 90), withoutRoute: arm(true, "y", 8) })
     ]

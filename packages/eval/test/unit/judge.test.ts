@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { judgeLabel, judgePrompt, judgeTemplate } from "../../src/index.js"
 
-/**
- * The judge is the measuring instrument, so the thing to test is fidelity to
- * upstream, not cleverness. The strings below were copied out of
- * `src/evaluation/evaluate_qa.py` in `github.com/xiaowu0162/LongMemEval` at the
- * same time as the port; if either drifts, this fails.
- */
 const question = (type: string, abs = false) => ({
   questionType: type,
   isAbstention: abs
@@ -26,8 +20,6 @@ describe("judgeTemplate", () => {
   })
 
   it("routes every abstention question to the abstention template, whatever its type", () => {
-    // The 30 `_abs` questions carry their base type, so the abstention branch
-    // has to win — upstream decides on `'_abs' in question_id` alone.
     for (const type of ["multi-session", "temporal-reasoning", "knowledge-update"]) {
       expect(judgeTemplate(question(type, true))).toBe("abstention")
     }
@@ -80,9 +72,6 @@ describe("judgeLabel", () => {
   })
 
   it("inherits upstream's quirk rather than correcting it", () => {
-    // "yes" inside a longer sentence counts, which is why the templates end
-    // "Answer yes or no only". Silently fixing this would make our numbers
-    // incomparable to every published LongMemEval result.
     expect(judgeLabel("I would not say yes to this")).toBe(true)
   })
 })

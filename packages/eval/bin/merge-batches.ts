@@ -15,12 +15,7 @@ import {
   type EvalEnvelope
 } from "../src/index.js"
 
-/**
- * `merge-batches --system palimpsest-v2 --split dev [--variant no-select] [--results results]`
- *
- * Joins one system's batch files into the whole-population file, refusing any
- * set that is not one whole measurement.
- */
+/** `merge-batches --system palimpsest-v2 --split dev [--variant no-select] [--results results]` */
 const root = workspaceRoot()
 const resultsDir = resolve(root, arg("results", "results"))
 const systemArg = arg("system", "")

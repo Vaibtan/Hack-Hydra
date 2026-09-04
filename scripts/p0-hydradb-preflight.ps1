@@ -48,10 +48,6 @@ if ($dockerMemory -lt $requiredMemory) {
   throw "Docker has $dockerMemory bytes but the benchmark profile requires $requiredMemory bytes including headroom"
 }
 
-# Configuration shape must be verifiable before an operator creates local
-# credentials. Substitute tracked non-secret fixtures only for `config`; the
-# runtime still defaults to the ignored credential paths and this command never
-# starts a container.
 $previousEnvFile = $env:PALIMPSEST_HYDRADB_ENV_FILE
 $previousAuthTokenFile = $env:PALIMPSEST_HYDRADB_AUTH_TOKEN_FILE
 try {

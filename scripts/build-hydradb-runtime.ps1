@@ -22,10 +22,7 @@ if ($actualRevision -ne $ExpectedSourceRevision) {
   throw "Vendored HydraDB revision $actualRevision does not match required $ExpectedSourceRevision"
 }
 
-# The reviewed runtime includes a deliberately uncommitted remediation patch.
-# The base Git revision alone would therefore be insufficient provenance. Hash
-# the binary-safe diff with a line-ending-independent Git view and bind it to
-# the OCI image as an explicit local-patch identity.
+# The runtime carries an uncommitted patch, so the image identity is commit + diff hash.
 $patchLines = @(& git -c core.autocrlf=false -C $sourceDirectory diff --binary --no-ext-diff)
 if ($LASTEXITCODE -ne 0) {
   throw "Could not calculate the vendored HydraDB remediation patch fingerprint"

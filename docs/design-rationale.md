@@ -482,3 +482,60 @@ it reports no latency.
 **Stats `--tokens`** (`bin/stats.ts`). The only remaining store-wide scan, opt-in: there is no
 `HAS_TOKEN` edge, so a top-`df` listing reads the Token label — 8.7 s at 26 users. Nothing on the
 product path does this.
+
+**Slices** (`src/Slice.ts`). `stratifiedSlice` round-robins the six `question_type`s in `question_id`
+order; the 30 `_abs` questions carry their base type, so a plain 100-slice took whichever `_abs` ids
+sorted early (the 20-slice got 2 of 30). `evalSlice` takes all 30 plus a stratified remainder, sorted
+by id so results files diff line for line. `benchmarkSlice(N)` is what `--slice N` means everywhere
+(ingest, gate, harness): below 30 it is the untouched `stratifiedSlice`, so the day-1 and day-3
+numbers keep their meaning; at or above the file size it is the whole benchmark.
+
+**BM25 baseline** (`src/Bm25.ts`). Dependency-free so the comparison isolates the index structure:
+same `stems()` tokenizer, reader prompt and judge as Palimpsest; whole turns as spans (cutting a
+window would invent a span the baseline never produced), returned chronological like the graph
+path, all `CURRENT` because a term index has no supersession — that absence is the comparison.
+
+**Judge** (`src/Judge.ts`). Templates copied verbatim from LongMemEval `src/evaluation/evaluate_qa.py`
+(fetched, not typed). Deviations: upstream pins `gpt-4o-2024-08-06`, this uses the `gpt-4o` alias and
+records the resolved model per row; upstream caps at `max_tokens: 10`, the reply is free text and
+scored by the same `'yes' in response.lower()`. An unknown question type throws (upstream raises
+`NotImplementedError`). Judgements are cached by model + prompt so a table re-run is $0 and stable.
+
+**Oracle ceiling** (`src/Oracle.ts`). `answer_session_ids` matches `session.sid`, not `key`, so the 13
+haystacks with a duplicated sid include both revisions — the generous reading, right for a ceiling.
+
+**`step-load --edges N`** (`bin/step-load.ts`). Edge counts are exact on an N-user sample from
+source-driven `MSpaths` walks (indexed, never a label scan) and extrapolated as `ratio × claims`,
+labelled as such. A sample because `HITS` alone is up to 24 paths per claim — five users is minutes,
+two hundred an hour of read load. Walks run sequentially (reads degrade under concurrency like
+writes do) and never while an ingest runs. `HAS_ENTITY`/`HAS_SLOT`/`HAS_SESSION`/`HAS_TURN`/
+`SUPERSEDED_BY` are not walked: `UserStats` holds those counts. The row carries
+`runtime_config_sha256` because a cache-off and a cache-on row are not the same measurement.
+
+**`ingest-slice` retries** (`bin/ingest-slice.ts`, `--retries 1`, `RETRY_PAUSE_MS = 30 000`). Only
+`HydraLimitError`/`HydraUnavailable`/`HydraEngineError` are retried — a 30 s refusal or a lost lease
+describes the node, not the user; parse, schema and identity failures return the same answer every
+time. The pause keeps the retry out of the pile-up that caused the refusal. `--skip-existing` is one
+~100 ms read by id, *not* wrapped in `either`: a failed read means the node is down or read-only and
+pushing 200 users through that is worse than stopping. Without it every earlier user's ~4 000
+vertices and ~12 000 edges would be re-`MERGE`d per step.
+
+**Backfill** (`bin/backfill-user.ts`). The one place that runs store-wide label scans on purpose: a
+graph written before the `User` vertex existed is the only source for its own entity and slot sets
+(~10 s per user at 26 users), which is why it must run *before* the next ingest. Re-keying to a
+fresh prefix would cost the same wall clock and detach every handoff number from its keys. Turn
+counts come from the dataset file, not the 19 s `HAS_TURN` join.
+
+**Splits are committed before the first v2 result** (`bin/splits.ts`). "We did not tune on test" is
+only checkable if the id lists were fixed in history first. Re-running is a pure function of dataset,
+slice and cached row ids, except it never overwrites a gate record; `--check` records how many of the
+population are fully ingested, because if the capacity gate trips mid-ingest the population *is*
+whatever finished. A cached dev id outside `benchmarkSlice` dies rather than making "dev ⊂ 200" false.
+
+**Driver parameters** (`scripts/`). `ingest-cycling -RestartAtPercent 70` (range 10–89) sits below
+the capacity gate's 90 % so the restart is scheduled, not an incident; `-ReadCache off` is the
+measured default, `on` trades more restarts for fewer MinIO round trips (unmeasured).
+`p0-hydradb-capacity-gate` threshold 0 is reserved for fault-injection tests. Under `StrictMode` a
+one-element pipeline is a bare string with no `.Count` and a parenthesised native pipeline can yield
+`$null` — hence the `@(...)` wraps in `hydra.psm1` and the materialised `docker port` output in the
+restart matrix.

@@ -1,20 +1,7 @@
 import type { DatasetQuestion, DatasetSession } from "@palimpsest/dataset"
 import { stems, type HydratedSpan } from "@palimpsest/palimpsest"
 
-/**
- * B1: BM25 over the user's turns.
- *
- * The point of this baseline is to isolate *the index structure*, so it shares
- * everything else with Palimpsest: the same `stems()` tokenizer on both sides,
- * the same reader prompt, the same judge. What differs is only how the ten
- * pieces of text handed to the reader were chosen — a term-frequency ranking
- * over turns, against anchor convergence over a claim graph.
- *
- * Dependency-free on purpose: a BM25 library would bring its own tokenizer and
- * the comparison would quietly become about that instead.
- */
-
-/** Okapi BM25's usual constants; `b` is full length normalisation. */
+/** Okapi BM25 defaults. */
 export const K1 = 1.5
 export const B = 0.75
 
@@ -60,7 +47,6 @@ export const buildIndex = (question: DatasetQuestion): Bm25Index => {
   return { docs, df, avgLength: docs.length === 0 ? 1 : total / docs.length }
 }
 
-/** Robertson/Sparck Jones idf, the form that stays positive for common terms. */
 const idf = (df: number, n: number): number => Math.log(1 + (n - df + 0.5) / (df + 0.5))
 
 export const score = (index: Bm25Index, doc: Doc, queryTerms: ReadonlyArray<string>): number => {
@@ -77,14 +63,7 @@ export const score = (index: Bm25Index, doc: Doc, queryTerms: ReadonlyArray<stri
   return total
 }
 
-/**
- * The top-`k` turns, as spans the shared reader can read.
- *
- * The whole turn is the excerpt — BM25 selects turns, not spans, and cutting a
- * window out of one would mean inventing a span the baseline never produced.
- * Everything is labelled CURRENT because a term index has no notion of
- * supersession; that absence is the comparison.
- */
+/** Top-`k` whole turns as spans, chronological, all CURRENT. */
 export const topSpans = (
   question: DatasetQuestion,
   index: Bm25Index,
@@ -102,8 +81,6 @@ export const topSpans = (
     )
     .slice(0, k)
 
-  // Chronological for the reader, exactly as the graph path orders its
-  // evidence, so the only difference stays *which* text was chosen.
   return [...ranked]
     .sort(
       (a, b) =>
@@ -130,15 +107,7 @@ const asSpan = (doc: Doc): HydratedSpan => ({
   highlight: { start: 0, end: 0 }
 })
 
-/**
- * B2: the whole haystack, oldest turn first.
- *
- * `maxChars` is the truncation policy and it is documented rather than hidden:
- * when a haystack does not fit, the **oldest sessions are dropped** and the
- * results row records how many. Dropping the newest would flatter the baseline
- * on knowledge-update questions, which are exactly the ones it should find
- * hard.
- */
+/** B2: the whole haystack; over `maxChars` the oldest sessions are dropped. */
 export interface FullContext {
   readonly spans: ReadonlyArray<HydratedSpan>
   readonly sessionsDropped: number
@@ -153,8 +122,6 @@ export const fullContextSpans = (
 
   let chars = 0
   const kept: Array<DatasetSession> = []
-  // Walk newest first so the sessions that survive are the newest ones, then
-  // put them back in order.
   for (const session of [...sessions].reverse()) {
     const size = session.turns.reduce((n, turn) => n + turn.text.length, 0)
     if (kept.length > 0 && chars + size > maxChars) break

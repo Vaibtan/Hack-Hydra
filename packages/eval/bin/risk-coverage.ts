@@ -11,12 +11,7 @@ import {
   type EvalRow
 } from "../src/index.js"
 
-/**
- * `risk-coverage --file results/palimpsest-v2-dev.json [--out results/risk-coverage-dev.md]`
- *
- * The curve `ABSTAIN_TIERS` is chosen from: coverage and risk per candidate set
- * of refused sufficiency tiers, on dev, once.
- */
+/** `risk-coverage --file results/palimpsest-v2-dev.json [--out results/risk-coverage-dev.md]` */
 const root = workspaceRoot()
 const file = resolve(root, arg("file", "results/palimpsest-v2-dev.json"))
 if (!existsSync(file)) {

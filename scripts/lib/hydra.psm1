@@ -1,12 +1,4 @@
-# Shared runtime for the benchmark HydraDB node. Behaviour and numbers:
-# ops/hydradb/step-load-2026-08.md.
-#
-# Native processes go through Start-Process with explicit file redirects, never
-# `& npx ... *>&1`. Node prints an ExperimentalWarning (SQLite) on stderr at
-# every start, and under $ErrorActionPreference = "Stop" PowerShell turns a
-# native command's stderr into a terminating NativeCommandError, which killed
-# a driver after its eval had already succeeded. Redirecting to files keeps
-# stderr as text; the exit code is the only signal.
+# Shared runtime for the benchmark HydraDB node: ops/hydradb/step-load-2026-08.md, "Driver scripts".
 
 Set-StrictMode -Version Latest
 
@@ -23,17 +15,12 @@ $script:ContainerFilters = @(
 function Get-HydraRepositoryRoot { return $script:RepositoryRoot }
 
 function Get-HydraContainerId {
-  # Returns the id of the single benchmark HydraDB container, or $null when
-  # there is not exactly one. -IncludeStopped also matches exited containers
-  # (for `docker restart`); without it only a running node is found.
   [CmdletBinding()]
   param([switch] $IncludeStopped)
 
   $psArgs = @("ps")
   if ($IncludeStopped) { $psArgs += "-a" }
   $psArgs += $script:ContainerFilters + @("--format", "{{.ID}}")
-  # `@(...)` wraps the whole pipeline: one container would otherwise come back
-  # as a bare string with no `.Count` under StrictMode.
   $found = @(
     @(& docker @psArgs) | ForEach-Object { ([string] $_).Trim() } | Where-Object { $_.Length -gt 0 }
   )
@@ -42,7 +29,6 @@ function Get-HydraContainerId {
 }
 
 function Wait-HydraReady {
-  # Polls until HTTP 200 or the deadline; returns $true / $false.
   [CmdletBinding()]
   param(
     [string] $Uri = $script:ReadyzUri,
@@ -67,10 +53,6 @@ function Wait-HydraReady {
 }
 
 function Set-HydraPhase {
-  # Brings the node up with the phase's settings, optionally restarts it, and
-  # verifies from the container's own env that the switch took (`compose up -d`
-  # is a no-op on unchanged config). Throws on a mismatch; returns an object
-  # whose `ready` says whether /readyz answered within -TimeoutSeconds.
   [CmdletBinding()]
   param(
     [Parameter(Mandatory)]
@@ -95,10 +77,6 @@ function Set-HydraPhase {
   if ($null -eq $container) { throw "expected exactly one benchmark HydraDB container" }
 
   if ($Restart) {
-    # --time 30 is SIGTERM and wait: the writer lease is only released on a
-    # graceful stop (CONTEXT.md, writer lease). Not a recreate: that changes
-    # the container id and reapplies the Compose mem_limit over a live
-    # `docker update`.
     & docker restart --time 30 $container | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "docker restart failed with exit code $LASTEXITCODE" }
   }
@@ -120,8 +98,6 @@ function Set-HydraPhase {
 }
 
 function Invoke-EvalProcess {
-  # Runs a native command to completion with stdout in $Log and stderr in
-  # "$Log.err" (see the header); returns the exit code.
   [CmdletBinding()]
   param(
     [Parameter(Mandatory)][string[]] $ArgumentList,
