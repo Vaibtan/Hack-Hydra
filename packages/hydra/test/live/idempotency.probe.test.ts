@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest"
 import { HydraClient, vertexId } from "../../src/index.js"
 
 const UID = "probe-idem"
+const baseUrl = process.env.HYDRA_URL ?? "http://127.0.0.1:8443"
+const token = process.env.HYDRA_TOKEN ?? "local-development-token-32-bytes"
 
 const layer = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
@@ -18,10 +20,10 @@ const vertex = (n: number) => ({
 describe("write request ids", () => {
   it("honours a client-supplied request id, and conflicts when one is reused", async () => {
     const post = async (body: unknown): Promise<{ status: number; json: any }> => {
-      const response = await fetch("http://127.0.0.1:8443/v1/graphs/default/query", {
+      const response = await fetch(`${baseUrl}/v1/graphs/default/query`, {
         method: "POST",
         headers: {
-          Authorization: "Bearer local-development-token-32-bytes",
+          Authorization: `Bearer ${token}`,
           "X-Graph-Namespace": "default",
           "Content-Type": "application/json"
         },
