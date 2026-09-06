@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { locateSpan, mergeEntities, parseEventDate } from "../../src/Extract.js"
+import { QUOTED_VERSE_NOTE, locateSpan, mergeEntities, parseEventDate, withQuotedVerseNote } from "../../src/Extract.js"
 import type { ExtractedClaim } from "../../src/Extract.js"
 
 const TURN =
@@ -93,5 +93,15 @@ describe("mergeEntities", () => {
       claim([{ canon: "hamster", etype: "pet", aliases: [] }])
     ])
     expect(merged.map((e) => e.canon)).toEqual(["hamster", "moma"])
+  })
+})
+
+describe("withQuotedVerseNote", () => {
+  it("appends the note after the transcript so the base prompt and its cache key are untouched", () => {
+    const prompt = "SESSION DATE: x\n\nTRANSCRIPT:\n[turn 0 | user]\nlyrics here"
+    const withNote = withQuotedVerseNote(prompt)
+    expect(withNote.startsWith(`${prompt}\n`)).toBe(true)
+    expect(withNote.endsWith(QUOTED_VERSE_NOTE)).toBe(true)
+    expect(QUOTED_VERSE_NOTE).toContain("at most eight words")
   })
 })

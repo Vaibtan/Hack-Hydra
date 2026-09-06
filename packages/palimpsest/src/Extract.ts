@@ -72,7 +72,7 @@ const RawClaim = Schema.Struct({
   keywords: Schema.Array(Schema.String)
 })
 
-const RawExtraction = Schema.Struct({ claims: Schema.Array(RawClaim) })
+export const RawExtraction = Schema.Struct({ claims: Schema.Array(RawClaim) })
 
 export type RawClaim = typeof RawClaim.Type
 
@@ -270,7 +270,7 @@ export const createRuntimeExtractionGeneration = (
     outputSchema: extractionOutputSchema
   })
 
-const renderPrompt = (
+export const renderPrompt = (
   session: DatasetSession,
   knownEntities: ReadonlyArray<ExtractedEntity>
 ): string => {
@@ -298,21 +298,39 @@ const renderPrompt = (
   ].join("\n")
 }
 
+/**
+ * Appended to a session's prompt when the provider cut the structured output (`content_filter`):
+ * the model was reproducing published verse from the transcript. Only that session's cache key changes.
+ */
+export const QUOTED_VERSE_NOTE = [
+  "",
+  "NOTE: This transcript quotes song lyrics, poetry or other published verse, and the output filter",
+  "cuts a response that reproduces them. Keep every evidence_quote to at most eight words, prefer a",
+  "fragment that names the work or carries the speaker's own words over the verse itself, and never",
+  "write more than one line of any lyric or poem anywhere in the output."
+].join("\n")
+
+export const withQuotedVerseNote = (prompt: string): string => `${prompt}\n${QUOTED_VERSE_NOTE}`
+
 export const extractSession = (
   session: DatasetSession,
   knownEntities: ReadonlyArray<ExtractedEntity> = []
 ): Effect.Effect<SessionExtraction, never, Llm | LanguageModel.LanguageModel> =>
   Effect.gen(function* () {
     const llm = yield* Llm
-    const generated = yield* llm
-      .generateObject({
+    const request = (prompt: string) =>
+      llm.generateObject({
         kind: "extract",
         system: EXTRACTION_SYSTEM_PROMPT,
-        prompt: renderPrompt(session, knownEntities),
+        prompt,
         schema: RawExtraction,
         objectName: "claims"
       })
-      .pipe(Effect.orDie)
+    const prompt = renderPrompt(session, knownEntities)
+    const generated = yield* request(prompt).pipe(
+      Effect.catchTag("MalformedOutput", () => request(withQuotedVerseNote(prompt))),
+      Effect.orDie
+    )
 
     const claims: Array<ExtractedClaim> = []
     const dropped: Array<DroppedClaim> = []
