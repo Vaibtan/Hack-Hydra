@@ -610,7 +610,7 @@ is slower, gives the container a **new id** — which the capacity gate resolved
 once at startup — and reapplies the Compose `mem_limit` over any live
 `docker update`. `--time 30` is SIGTERM-and-wait: the writer lease is released
 only on a graceful stop (CONTEXT.md, writer lease). The ingest process is
-killed before the node for the same reason.
+killed before the node for the same reason — as a **process tree** (`taskkill /T`). `Stop-Process` on the `pnpm` wrapper leaves the `tsx` child alive; on 2026-09-06 a cycle-4 child survived the node restart through the client's transient-error retry and wrote alongside cycle 5, and three users hit the 120 s statement cap under the doubled load.
 
 **Cycling** (`scripts/ingest-cycling.ps1`). The first cycle takes the node as
 it finds it; every later one restarts, because it is a cycle *because* the

@@ -78,7 +78,7 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
     $used = Convert-DockerMemoryToBytes -Value (([string] $usage[0]).Split("/")[0].Trim())
     if ($used -ge $ceiling) {
       Write-Output ("cycle {0} : {1:n0} bytes >= ceiling, stopping the ingest and cycling the node" -f $cycle, $used)
-      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      & taskkill /PID $process.Id /T /F 2>&1 | Out-Null
       $cycledForMemory = $true
       break
     }
