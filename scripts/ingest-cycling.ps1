@@ -12,6 +12,8 @@ param(
   [int] $SampleIntervalSeconds = 15,
   [ValidateRange(1, 100)]
   [int] $MaxCycles = 40,
+  [ValidateRange(1, 60)]
+  [int] $DrainMinutes = 15,
   [ValidateSet("on", "off")]
   [string] $ReadCache = "off",
   [ValidateSet("", "dev", "test")]
@@ -61,9 +63,12 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
 
   $log = Join-Path $LogDirectory ("cycle-{0:d2}.log" -f $cycle)
   $errLog = Join-Path $LogDirectory ("cycle-{0:d2}.err.log" -f $cycle)
+  $stopFile = Join-Path $LogDirectory ("cycle-{0:d2}.stop" -f $cycle)
+  Remove-Item $stopFile -ErrorAction SilentlyContinue
   $process = Start-Process -FilePath "pnpm.cmd" `
     -ArgumentList (@(
-      "ingest-slice", "--slice", "$Slice", "--prefix", "$Prefix", "--users", "$Users", "--skip-existing"
+      "ingest-slice", "--slice", "$Slice", "--prefix", "$Prefix", "--users", "$Users", "--skip-existing",
+      "--stop-file", $stopFile
     ) + $(if ($Split -ne "") { @("--split", $Split) } else { @() })) `
     -WorkingDirectory $repositoryRoot -RedirectStandardOutput $log -RedirectStandardError $errLog `
     -WindowStyle Hidden -PassThru
@@ -77,8 +82,24 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
     if ($LASTEXITCODE -ne 0 -or $usage.Count -eq 0) { continue }
     $used = Convert-DockerMemoryToBytes -Value (([string] $usage[0]).Split("/")[0].Trim())
     if ($used -ge $ceiling) {
-      Write-Output ("cycle {0} : {1:n0} bytes >= ceiling, stopping the ingest and cycling the node" -f $cycle, $used)
-      & taskkill /PID $process.Id /T /F 2>&1 | Out-Null
+      Write-Output ("cycle {0} : {1:n0} bytes >= ceiling, asking the ingest to finish its in-flight users" -f $cycle, $used)
+      Set-Content -Path $stopFile -Value "stop"
+      $hardCeiling = [Int64] ($limitBytes * 0.9)
+      $deadline = (Get-Date).AddMinutes($DrainMinutes)
+      while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds $SampleIntervalSeconds
+        $sample = @(& docker stats --no-stream --format "{{.MemUsage}}" $containerId)
+        if ($LASTEXITCODE -eq 0 -and $sample.Count -gt 0) {
+          $used = Convert-DockerMemoryToBytes -Value (([string] $sample[0]).Split("/")[0].Trim())
+          if ($used -ge $hardCeiling) { Write-Output ("cycle {0} : {1:n0} bytes >= 90 %, not waiting" -f $cycle, $used); break }
+        }
+      }
+      if ($process.HasExited) {
+        Write-Output ("cycle {0} : drained; cycling the node" -f $cycle)
+      } else {
+        Write-Output ("cycle {0} : still running after the drain window; killing the ingest tree" -f $cycle)
+        & taskkill /PID $process.Id /T /F 2>&1 | Out-Null
+      }
       $cycledForMemory = $true
       break
     }

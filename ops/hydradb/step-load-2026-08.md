@@ -614,7 +614,7 @@ killed before the node for the same reason — as a **process tree** (`taskkill 
 
 **Cycling** (`scripts/ingest-cycling.ps1`). The first cycle takes the node as
 it finds it; every later one restarts, because it is a cycle *because* the
-previous one hit the ceiling. Completion is detected by `ingest-slice`'s last
+previous one hit the ceiling. At the ceiling the driver writes a stop file that `ingest-slice --stop-file` checks before each user; in-flight users finish (up to `-DrainMinutes`, or 90 % of the limit), then the node restarts. Before 2026-09-06 the tree was killed at the ceiling and the three in-flight users' partial work was redone next cycle — at ~12 min per cycle on the test half that was roughly a third of the wall clock. Completion is detected by `ingest-slice`'s last
 line, `wall clock`; an exit without it is reported as "exited without a
 summary". `-Split dev` runs first: the dev half is scattered through
 `benchmarkSlice` order rather than a prefix of it, and ingesting it first turns

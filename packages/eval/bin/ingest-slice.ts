@@ -34,6 +34,7 @@ const prefix = arg("prefix", "")
 const skipExisting = process.argv.includes("--skip-existing")
 const retries = Number(arg("retries", "1"))
 const splitName = arg("split", "")
+const stopFile = arg("stop-file", "")
 const RETRY_PAUSE_MS = 30_000
 
 export const uidFor = (questionId: string, tag: string): string =>
@@ -87,6 +88,7 @@ const program = Effect.gen(function* () {
   const started = Date.now()
   let done = 0
   let skipped = 0
+  let deferred = 0
   const reportsOrNull = yield* Effect.forEach(
     slice,
     (question) =>
@@ -103,6 +105,12 @@ const program = Effect.gen(function* () {
             )
             return null
           }
+        }
+        if (stopFile !== "" && existsSync(stopFile)) {
+          done++
+          deferred++
+          console.log(`[${String(done).padStart(3)}/${slice.length}] ${uid.padEnd(22)} deferred: stop requested`)
+          return null
         }
         let outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
         for (let attempt = 0; attempt < retries && outcome._tag === "Left"; attempt++) {
@@ -145,7 +153,8 @@ ${" ".repeat(10)}query: ${failure.query.slice(0, 300)}`)
   console.log("")
   console.log(`ingested   ${reports.length} users this run`)
   console.log(`skipped    ${skipped} already present`)
-  console.log(`failed     ${slice.length - reports.length - skipped} users`)
+  console.log(`deferred   ${deferred} users (stop file present)`)
+  console.log(`failed     ${slice.length - reports.length - skipped - deferred} users`)
   console.log(`claims     ${reports.reduce((n, r) => n + r.stats.claims, 0)}`)
   console.log(`contested  ${reports.reduce((n, r) => n + r.stats.contestedSlots, 0)} slots`)
   console.log(`supersede  ${reports.reduce((n, r) => n + r.supersessions.edges, 0)} edges`)
