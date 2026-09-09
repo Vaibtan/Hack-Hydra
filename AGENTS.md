@@ -11,3 +11,5 @@ Use the canonical five-label triage vocabulary. See `docs/agents/triage-labels.m
 ### Domain docs
 
 This is a single-context repository. See `docs/agents/domain.md`.
+
+Whenever committing changes, use the `commit-work` skill to review, stage, verify, and commit only the intended scope.
