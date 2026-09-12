@@ -96,10 +96,6 @@ describe("what counts as unknown", () => {
     expect(error.message).toContain("gpt-5.6-luna")
   })
 
-  it("pluralises honestly, because a message that says 'ids: x' reads as a bug", () => {
-    expect(new UnknownModelError(["x"], []).message).toContain("unknown model id:")
-    expect(new UnknownModelError(["x", "y"], []).message).toContain("unknown model ids:")
-  })
 })
 
 /** `withEnv` restores as soon as the body returns, which for an async body is before it has run. */

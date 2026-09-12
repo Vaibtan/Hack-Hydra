@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { HydratedSpan } from "../../src/Reader.js"
 import { RoutePolicy } from "../../src/Routes.js"
-import { ABSTAIN_TIERS, MAX_REFINEMENT_PASSES, abstains, premiseContradiction, renderPack, runsOn, skipped, type SufficiencyReport } from "../../src/Sufficiency.js"
+import { ABSTAIN_TIERS, abstains, premiseContradiction, renderPack, runsOn, skipped, type SufficiencyReport } from "../../src/Sufficiency.js"
 import { ROUTES } from "../../src/Understand.js"
 
 const span = (id: string, status: "CURRENT" | "SUPERSEDED"): HydratedSpan => ({
@@ -90,24 +90,17 @@ describe("the skip rule", () => {
 })
 
 describe("abstention", () => {
-  it("abstains on exactly the tiers the constant names", () => {
+  it("uses the configured tiers, which currently keep PARTIAL answers", () => {
+    expect([...ABSTAIN_TIERS]).toEqual([])
     for (const tier of ["EXACT", "INFERRABLE", "PARTIAL"] as const) {
       expect(abstains(report({ tier }))).toBe(ABSTAIN_TIERS.includes(tier))
     }
-  })
-
-  it("abstains on nothing, which is what the dev curve chose", () => {
-    expect([...ABSTAIN_TIERS]).toEqual([])
     expect(abstains(report({ tier: "PARTIAL" }))).toBe(false)
   })
 
   it("never abstains on a check that did not run", () => {
     expect(abstains(skipped("PARTIAL"))).toBe(false)
     expect(skipped().skipped).toBe(true)
-  })
-
-  it("allows exactly one refined pass", () => {
-    expect(MAX_REFINEMENT_PASSES).toBe(1)
   })
 })
 

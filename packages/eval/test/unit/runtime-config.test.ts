@@ -30,55 +30,47 @@ const EVAL_ENV = [
   "RUST_MIN_STACK=33554432"
 ]
 
-describe("what the hash covers", () => {
-  it("separates the ingest phase from the eval phase", () => {
-    expect(fromInspected(container(INGEST_ENV)).sha256).not.toBe(
-      fromInspected(container(EVAL_ENV)).sha256
-    )
+describe("runtime fingerprint", () => {
+  it("is order-stable and changes for every runtime setting that affects measurements", () => {
+    const baseline = fromInspected(container(EVAL_ENV)).sha256
+    expect(fromInspected(container([...EVAL_ENV].reverse())).sha256).toBe(baseline)
+
+    const variants: ReadonlyArray<readonly [string, InspectedContainer]> = [
+      ["ingest phase", container(INGEST_ENV)],
+      ["runtime image", container(EVAL_ENV, { Image: "sha256:different" })],
+      [
+        "memory limit",
+        container(EVAL_ENV, {
+          HostConfig: { Memory: 6 * 1024 ** 3, NanoCpus: 4_000_000_000 }
+        })
+      ],
+      [
+        "storage buffer",
+        container([
+          ...EVAL_ENV.filter((entry) => !entry.startsWith("GRAPH_MAX_UNFLUSHED_BYTES")),
+          "GRAPH_MAX_UNFLUSHED_BYTES=67108864"
+        ])
+      ]
+    ]
+    for (const [name, variant] of variants) {
+      expect(fromInspected(variant).sha256, name).not.toBe(baseline)
+    }
   })
 
-  it("is stable across a restart that changed nothing", () => {
-    expect(fromInspected(container(EVAL_ENV)).sha256).toBe(
-      fromInspected(container([...EVAL_ENV].reverse())).sha256
-    )
-  })
-
-  it("changes when the runtime image is rebuilt", () => {
-    expect(fromInspected(container(EVAL_ENV, { Image: "sha256:different" })).sha256).not.toBe(
-      fromInspected(container(EVAL_ENV)).sha256
-    )
-  })
-
-  it("changes when the container's memory limit moves", () => {
-    const raised = container(EVAL_ENV, {
-      HostConfig: { Memory: 6 * 1024 ** 3, NanoCpus: 4_000_000_000 }
-    })
-    expect(fromInspected(raised).sha256).not.toBe(fromInspected(container(EVAL_ENV)).sha256)
-  })
-
-  it("changes when a storage buffer moves", () => {
-    const tuned = container([
-      ...EVAL_ENV.filter((entry) => !entry.startsWith("GRAPH_MAX_UNFLUSHED_BYTES")),
-      "GRAPH_MAX_UNFLUSHED_BYTES=67108864"
+  it("ignores credentials and unrelated environment while selecting engine settings", () => {
+    const before = container([
+      ...EVAL_ENV,
+      "AWS_SECRET_ACCESS_KEY=one",
+      "PATH=/usr/bin",
+      "GRAPH_AUTH_TOKEN_FILE=/run/secrets/a"
     ])
-    expect(fromInspected(tuned).sha256).not.toBe(fromInspected(container(EVAL_ENV)).sha256)
-  })
-})
-
-describe("what the hash deliberately ignores", () => {
-  it("does not change when object-store credentials are rotated", () => {
-    const before = container([...EVAL_ENV, "AWS_SECRET_ACCESS_KEY=one", "PATH=/usr/bin"])
-    const after = container([...EVAL_ENV, "AWS_SECRET_ACCESS_KEY=two", "PATH=/bin"])
+    const after = container([
+      ...EVAL_ENV,
+      "AWS_SECRET_ACCESS_KEY=two",
+      "PATH=/bin",
+      "GRAPH_AUTH_TOKEN_FILE=/run/secrets/b"
+    ])
     expect(fromInspected(before).sha256).toBe(fromInspected(after).sha256)
-  })
-
-  it("does not change when the auth-token file moves", () => {
-    const before = container([...EVAL_ENV, "GRAPH_AUTH_TOKEN_FILE=/run/secrets/a"])
-    const after = container([...EVAL_ENV, "GRAPH_AUTH_TOKEN_FILE=/run/secrets/b"])
-    expect(fromInspected(before).sha256).toBe(fromInspected(after).sha256)
-  })
-
-  it("selects only the engine's own variables", () => {
     expect(
       configEnv([
         "GRAPH_WRITER_LEASE_MS=30000",
@@ -95,40 +87,29 @@ describe("what the hash deliberately ignores", () => {
       RUST_MIN_STACK: "33554432"
     })
   })
-})
 
-describe("the phase, in the clear beside the hash", () => {
-  it("reports the ingest phase's two settings without a Docker daemon", () => {
+  it("reports phase settings and engine defaults beside the hash", () => {
     const config = fromInspected(container(INGEST_ENV))
     expect(config.readCacheEnabled).toBe(false)
     expect(config.queryRuntimeMs).toBe(120_000)
+    expect(fromInspected(container(["MALLOC_ARENA_MAX=2"]))).toMatchObject({
+      readCacheEnabled: true,
+      queryRuntimeMs: 30_000
+    })
   })
 
-  it("reports the engine's own defaults when neither variable is set", () => {
-    const config = fromInspected(container(["MALLOC_ARENA_MAX=2"]))
-    expect(config.readCacheEnabled).toBe(true)
-    expect(config.queryRuntimeMs).toBe(30_000)
-  })
-})
-
-describe("the canonical preimage", () => {
-  it("sorts the environment so map order cannot change a hash", () => {
-    expect(
-      canonicalise({
-        imageId: "sha256:a",
-        memoryLimitBytes: 1,
-        nanoCpus: 2,
-        env: { B: "2", A: "1" }
-      })
-    ).toBe(
+  it("hashes the exact canonical, environment-sorted preimage", () => {
+    const input = {
+      imageId: "sha256:a",
+      memoryLimitBytes: 1,
+      nanoCpus: 2,
+      env: { B: "2", A: "1" }
+    }
+    expect(canonicalise(input)).toBe(
       '{"env":{"A":"1","B":"2"},"imageId":"sha256:a","memoryLimitBytes":1,"nanoCpus":2,' +
         '"schema":"hydradb-runtime-config/v1"}'
     )
-  })
-
-  it("is a sha256 of exactly that string", () => {
-    const input = { imageId: "sha256:a", memoryLimitBytes: 1, nanoCpus: 2, env: { A: "1" } }
     expect(hashRuntimeConfig(input)).toMatch(/^[0-9a-f]{64}$/)
-    expect(hashRuntimeConfig(input)).toBe(hashRuntimeConfig({ ...input, env: { A: "1" } }))
+    expect(hashRuntimeConfig(input)).toBe(hashRuntimeConfig({ ...input, env: { A: "1", B: "2" } }))
   })
 })

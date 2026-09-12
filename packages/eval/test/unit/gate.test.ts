@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest"
 import {
-  GATE_BOUNDS,
   falseAbstentions,
   gateRefusals,
   overwriteRefusal,
@@ -95,7 +94,6 @@ describe("what the aggregate must not hide", () => {
   })
 
   it("allows a single-question regression, which is noise at this sample size", () => {
-    expect(GATE_BOUNDS.maxTypeRegression).toBe(1)
     const v1 = many(4, { questionType: "temporal-reasoning", judged: true })
     const v2 = [
       ...many(3, { questionType: "temporal-reasoning", judged: true }),

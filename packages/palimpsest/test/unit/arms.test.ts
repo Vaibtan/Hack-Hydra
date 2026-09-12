@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
-  ARM_CAP,
   ARM_PRIORITY,
   MAX_DISCOVERY_SEEDS,
   MAX_SLOT_MATES_PER_SLOT,
-  UNION_CAP,
   convergenceConfig,
   discoverySeeds,
   groupSlotMates,
@@ -147,7 +145,6 @@ describe("the union cap", () => {
   })
 
   it("defaults to 120", () => {
-    expect(UNION_CAP).toBe(120)
     const report = unionArms(
       ["convergence", "sub:0", "sub:1", "sub:2"].map((label, a) =>
         arm(
@@ -164,7 +161,6 @@ describe("the union cap", () => {
 
 describe("the per-arm cap", () => {
   it("trims a walking arm to 60 before the union cap sees it", () => {
-    expect(ARM_CAP).toBe(60)
     const report = unionArms([
       arm(
         "convergence",

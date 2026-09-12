@@ -7,25 +7,24 @@ const question = (type: string, abs = false) => ({
 })
 
 describe("judgeTemplate", () => {
-  it("routes the three plain types to the default template", () => {
-    expect(judgeTemplate(question("single-session-user"))).toBe("default")
-    expect(judgeTemplate(question("single-session-assistant"))).toBe("default")
-    expect(judgeTemplate(question("multi-session"))).toBe("default")
-  })
-
-  it("gives temporal, knowledge-update and preference their own", () => {
-    expect(judgeTemplate(question("temporal-reasoning"))).toBe("temporal-reasoning")
-    expect(judgeTemplate(question("knowledge-update"))).toBe("knowledge-update")
-    expect(judgeTemplate(question("single-session-preference"))).toBe("single-session-preference")
-  })
-
-  it("routes every abstention question to the abstention template, whatever its type", () => {
-    for (const type of ["multi-session", "temporal-reasoning", "knowledge-update"]) {
-      expect(judgeTemplate(question(type, true))).toBe("abstention")
+  it("routes every supported question type to its rubric", () => {
+    const cases = [
+      ["single-session-user", "default"],
+      ["single-session-assistant", "default"],
+      ["multi-session", "default"],
+      ["temporal-reasoning", "temporal-reasoning"],
+      ["knowledge-update", "knowledge-update"],
+      ["single-session-preference", "single-session-preference"]
+    ] as const
+    for (const [type, template] of cases) {
+      expect(judgeTemplate(question(type)), type).toBe(template)
     }
   })
 
-  it("refuses an unknown type rather than scoring it by the wrong rubric", () => {
+  it("routes abstentions explicitly and refuses unknown types", () => {
+    for (const type of ["multi-session", "temporal-reasoning", "knowledge-update"]) {
+      expect(judgeTemplate(question(type, true))).toBe("abstention")
+    }
     expect(() => judgeTemplate(question("something-new"))).toThrow(/no LongMemEval judge template/)
   })
 })
@@ -37,41 +36,34 @@ describe("judgePrompt", () => {
     )
   })
 
-  it("keeps the temporal template's off-by-one tolerance", () => {
-    expect(judgePrompt("temporal-reasoning", "Q", "A", "R")).toContain(
-      "do not penalize off-by-one errors for the number of days"
-    )
-  })
-
-  it("keeps the knowledge-update template's allowance for the previous value", () => {
-    expect(judgePrompt("knowledge-update", "Q", "A", "R")).toContain(
-      "If the response contains some previous information along with an updated answer"
-    )
-  })
-
-  it("labels the preference template's answer field a rubric, as upstream does", () => {
-    const prompt = judgePrompt("single-session-preference", "Q", "A", "R")
-    expect(prompt).toContain("Rubric: A")
-    expect(prompt).not.toContain("Correct Answer:")
-  })
-
-  it("labels the abstention template's answer field an explanation", () => {
-    const prompt = judgePrompt("abstention", "Q", "A", "R")
-    expect(prompt).toContain("I will give you an unanswerable question")
-    expect(prompt).toContain("Explanation: A")
-    expect(prompt).toContain("Does the model correctly identify the question as unanswerable?")
+  it("preserves each specialized upstream rubric", () => {
+    const cases: ReadonlyArray<readonly [Parameters<typeof judgePrompt>[0], ReadonlyArray<string>]> = [
+      ["temporal-reasoning", ["do not penalize off-by-one errors for the number of days"]],
+      ["knowledge-update", ["If the response contains some previous information along with an updated answer"]],
+      ["single-session-preference", ["Rubric: A"]],
+      [
+        "abstention",
+        [
+          "I will give you an unanswerable question",
+          "Explanation: A",
+          "Does the model correctly identify the question as unanswerable?"
+        ]
+      ]
+    ]
+    for (const [template, fragments] of cases) {
+      const prompt = judgePrompt(template, "Q", "A", "R")
+      for (const fragment of fragments) expect(prompt, template).toContain(fragment)
+    }
+    expect(judgePrompt("single-session-preference", "Q", "A", "R")).not.toContain("Correct Answer:")
   })
 })
 
 describe("judgeLabel", () => {
-  it("is upstream's rule: yes appears in the lowercased reply", () => {
+  it("keeps upstream's substring rule, including its known false positive", () => {
     expect(judgeLabel("Yes")).toBe(true)
     expect(judgeLabel("yes.")).toBe(true)
     expect(judgeLabel("No")).toBe(false)
     expect(judgeLabel("no, the response is wrong")).toBe(false)
-  })
-
-  it("inherits upstream's quirk rather than correcting it", () => {
     expect(judgeLabel("I would not say yes to this")).toBe(true)
   })
 })
