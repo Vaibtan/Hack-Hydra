@@ -26,8 +26,177 @@
   },
   "population": {
     "requested": 200,
-    "ingested": 200,
-    "capacityGateTripped": false
+    "ingested": {
+      "state": "verified",
+      "count": 164,
+      "evidenceKind": "legacy-query-visible",
+      "verifiedAt": "2026-09-10T20:33:17.392Z",
+      "witness": "data/splits/retrieval-v2.reconcile.json"
+    },
+    "capacityGateTripped": true,
+    "selected": 200,
+    "completion": "capacity-capped",
+    "datasetSha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+    "answerable": 170,
+    "abstention": 30,
+    "exclusions": [
+      {
+        "questionId": "60d45044",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6222b6eb",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "65240037",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6613b389",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "66f24dbb",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6ade9755",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6ae235be",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6b168ec8",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6b7dfb22",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6e984301",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6e984302",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "70b3e69b",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "71017276",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "71017277",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "7161e7e2",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "71a3fd6b",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "75832dbd",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "75f70248",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "8077ef71",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "8a2466db",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "8c18457d",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "95228167",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "982b5123",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "993da5e2",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "9a707b81",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "9a707b82",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "a3045048",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "a3838d2b",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "a89d7624",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "af082822",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "afdc33df",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "b0479f84",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "b29f3365",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "b6025781",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "caf03d32",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "d24813b1",
+        "reason": "missing-source"
+      }
+    ],
+    "observed": {
+      "dev": true,
+      "test": true,
+      "note": "both splits have committed result files; treat as held-out but not blind"
+    },
+    "commands": [
+      "pnpm splits --check --gate-tripped",
+      "pnpm population --split dev",
+      "pnpm population --split test"
+    ],
+    "generatedAt": "2026-09-10T20:35:04.510Z",
+    "verifiedAt": "2026-09-10T20:33:17.392Z"
   },
   "dev": [
     "001be529",

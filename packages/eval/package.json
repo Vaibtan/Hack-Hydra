@@ -15,6 +15,7 @@
     "backfill-user": "tsx bin/backfill-user.ts",
     "eval": "tsx bin/eval.ts",
     "splits": "tsx bin/splits.ts",
+    "population": "tsx bin/population.ts",
     "table": "tsx bin/table.ts",
     "merge-batches": "tsx bin/merge-batches.ts",
     "step-load": "tsx bin/step-load.ts",

@@ -28,6 +28,7 @@
     "backfill-user": "pnpm --filter @palimpsest/eval run backfill-user",
     "eval": "pnpm --filter @palimpsest/eval run eval",
     "splits": "pnpm --filter @palimpsest/eval run splits",
+    "population": "pnpm --filter @palimpsest/eval run population",
     "table": "pnpm --filter @palimpsest/eval run table",
     "merge-batches": "pnpm --filter @palimpsest/eval run merge-batches",
     "risk-coverage": "pnpm --filter @palimpsest/eval run risk-coverage",

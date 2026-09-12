@@ -1,9 +1,10 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
+import { datasetPath, loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
-import { readUserStats } from "@palimpsest/palimpsest"
-import { Effect, Layer, Option } from "effect"
+import { readUserVertices, sessionKey } from "@palimpsest/palimpsest"
+import { Effect, Layer } from "effect"
+import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
@@ -11,9 +12,24 @@ import {
   BENCHMARK_EXTRACTION_DEPENDENCIES,
   SPLIT_FILE,
   benchmarkSlice,
+  buildReconciledUser,
+  completionFromWitness,
+  datasetSha256,
+  normaliseIngested,
+  observedSplits,
+  parseReconcileWitness,
+  readEnvelope,
+  readSplitFile,
+  reconcileWitnessFailures,
+  RECONCILE_FILE,
+  splitByCached,
+  splitMembershipSha256,
   liveExtractionGeneration,
   outsidePopulation,
-  splitByCached,
+  witnessQuestionIds,
+  type Exclusion,
+  type PopulationSection,
+  type ReconcileWitness,
   type SplitFile
 } from "../src/index.js"
 
@@ -53,10 +69,34 @@ const AppLive = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndic
 
 const cachedIds = (): ReadonlyArray<string> => {
   const path = resolve(root, devFrom)
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as {
-    rows: ReadonlyArray<{ questionId: string }>
+  return readEnvelope(path).rows.map((row) => row.questionId)
+}
+
+/** The split halves with committed result files; the split is "observed" once either exists. */
+const observedFromResults = (): ReturnType<typeof observedSplits> => {
+  const has = (name: string): boolean => {
+    const relative = `results/${name}`
+    if (!existsSync(resolve(root, relative))) return false
+    try {
+      execFileSync("git", ["ls-files", "--error-unmatch", "--", relative], {
+        cwd: root,
+        stdio: "ignore"
+      })
+      return true
+    } catch {
+      return false
+    }
   }
-  return parsed.rows.map((row) => row.questionId)
+  return observedSplits({
+    dev: has("palimpsest-dev.json") || has("palimpsest-v2-dev.json"),
+    test: has("bm25-test.json") || has("fullctx-test.json") || has("oracle-session-test.json")
+  })
+}
+
+const readWitness = (): ReconcileWitness | null => {
+  const path = resolve(root, RECONCILE_FILE)
+  if (!existsSync(path)) return null
+  return parseReconcileWitness(JSON.parse(readFileSync(path, "utf8")))
 }
 
 const program = Effect.gen(function* () {
@@ -77,38 +117,135 @@ const program = Effect.gen(function* () {
   const { dev, test } = splitByCached(population, cached)
   const generation = liveExtractionGeneration()
 
-  let ingested = population.length
+  const existing: SplitFile | null = existsSync(outPath) ? readSplitFile(outPath) : null
+  const witness = check ? null : readWitness()
+  const datasetHash = yield* Effect.promise(() => datasetSha256(datasetPath(dataset)))
+  const membershipHash = splitMembershipSha256({ dataset, slice: sliceSize, prefix, dev, test })
+  const expectedUsers = population.map((question) => {
+    const uid = uidFor(question.questionId)
+    return {
+      questionId: question.questionId,
+      uid,
+      expectedSessionKeys: question.sessions.map((session) => sessionKey(uid, session.key))
+    }
+  })
+
+  // Live read-only reconciliation — run only with --check, only with runtime authorization.
+  let ingested: PopulationSection["ingested"]
+  let exclusions: ReadonlyArray<Exclusion> = []
+  let completion: PopulationSection["completion"] = "unknown"
+  let verifiedAt: string | null = null
+
   if (check) {
-    const byQuestion = new Map(population.map((q) => [q.questionId, q] as const))
-    const results = yield* Effect.forEach(
+    const users = yield* Effect.forEach(
       population,
-      (question: DatasetQuestion) =>
-        readUserStats(hydra, uidFor(question.questionId)).pipe(
-          Effect.map((stats) =>
-            Option.isSome(stats) && stats.value.sessions === question.sessions.length
-              ? question.questionId
-              : null
+      (question: DatasetQuestion) => {
+        const uid = uidFor(question.questionId)
+        return readUserVertices(hydra, uid, "HAS_SESSION").pipe(
+          Effect.map((rows) =>
+            buildReconciledUser({
+              questionId: question.questionId,
+              uid,
+              expectedSessionKeys: question.sessions.map((session) => sessionKey(uid, session.key)),
+              visibleSessionKeys: rows.map((row) => String(row["sess"] ?? "")).filter((key) => key !== "")
+            })
           )
-        ),
+        )
+      },
       { concurrency: 8 }
     )
-    const complete = results.filter((id): id is string => id !== null)
-    ingested = complete.length
-    const missing = population.filter((q) => !complete.includes(q.questionId))
-    console.log(`ingested   ${ingested}/${population.length} users fully written under ${prefix}`)
-    if (missing.length > 0) {
-      console.log(
-        `missing    ${missing.length}: ${missing.slice(0, 12).map((q) => q.questionId).join(", ")}` +
-          `${missing.length > 12 ? " …" : ""}`
-      )
+    const now = new Date().toISOString()
+    const reconcile: ReconcileWitness = {
+      schemaVersion: 1,
+      dataset,
+      datasetSha256: datasetHash,
+      membershipSha256: membershipHash,
+      prefix,
+      verifiedAt: now,
+      evidenceKind: "legacy-query-visible",
+      graph: { kind: "legacy-prefix", prefix, snapshotId: null },
+      command: `pnpm splits --check${gateTripped ? " --gate-tripped" : ""}`,
+      users
     }
-    console.log(`  (dev users among them: ${dev.filter((id) => complete.includes(id)).length}/${dev.length})`)
-    void byQuestion
+    const witnessFailures = reconcileWitnessFailures(reconcile, {
+      dataset,
+      datasetSha256: datasetHash,
+      membershipSha256: membershipHash,
+      prefix,
+      expectedUsers
+    })
+    if (witnessFailures.length > 0) {
+      return yield* Effect.dieMessage(`invalid reconciliation witness: ${witnessFailures.join("; ")}`)
+    }
+    const summary = witnessQuestionIds(reconcile)
+    yield* Effect.promise(() =>
+      mkdir(dirname(resolve(root, RECONCILE_FILE)), { recursive: true }).then(() =>
+        writeFile(
+          resolve(root, RECONCILE_FILE),
+          `${JSON.stringify(reconcile, null, 2)}\n`,
+          "utf8"
+        )
+      )
+    )
+    ingested = {
+      state: "verified",
+      count: summary.complete.length,
+      evidenceKind: "legacy-query-visible",
+      verifiedAt: now,
+      witness: RECONCILE_FILE
+    }
+    const recordedCapacityGate = gateTripped || (existing?.population.capacityGateTripped ?? false)
+    completion = completionFromWitness(summary.complete.length, population.length, recordedCapacityGate)
+    exclusions = [
+      ...summary.missing.map((questionId) => ({ questionId, reason: "missing-source" as const })),
+      ...summary.partial.map((questionId) => ({ questionId, reason: "ingest-failed" as const }))
+    ]
+    verifiedAt = now
+    console.log(`ingested   ${summary.complete.length}/${population.length} users fully query-visible under ${prefix}`)
+    console.log(`partial    ${summary.partial.length}   missing ${summary.missing.length}`)
+    console.log(`witness    ${RECONCILE_FILE}`)
+    console.log(`  (dev users complete: ${dev.filter((id) => summary.complete.includes(id)).length}/${dev.length})`)
+  } else if (witness !== null) {
+    const witnessFailures = reconcileWitnessFailures(witness, {
+      dataset,
+      datasetSha256: datasetHash,
+      membershipSha256: membershipHash,
+      prefix,
+      expectedUsers
+    })
+    if (witnessFailures.length > 0) {
+      return yield* Effect.dieMessage(`stale or invalid reconciliation witness: ${witnessFailures.join("; ")}`)
+    }
+    const summary = witnessQuestionIds(witness)
+    ingested = {
+      state: "verified",
+      count: summary.complete.length,
+      evidenceKind: witness.evidenceKind,
+      verifiedAt: witness.verifiedAt,
+      witness: RECONCILE_FILE
+    }
+    const recordedCapacityGate = gateTripped || (existing?.population.capacityGateTripped ?? false)
+    completion = completionFromWitness(summary.complete.length, population.length, recordedCapacityGate)
+    exclusions = [
+      ...summary.missing.map((questionId) => ({ questionId, reason: "missing-source" as const })),
+      ...summary.partial.map((questionId) => ({ questionId, reason: "ingest-failed" as const }))
+    ]
+    verifiedAt = witness.verifiedAt
+  } else {
+    // No reconciliation has run. Record the truth: the ingested count is unknown, not the request.
+    ingested =
+      existing === null
+        ? { state: "unknown", count: null, evidenceKind: "unknown", verifiedAt: null, witness: null }
+        : normaliseIngested(existing.population.ingested)
+    if (ingested.state === "verified") {
+      ingested = { state: "unknown", count: null, evidenceKind: "unknown", verifiedAt: null, witness: null }
+    }
+    completion = "unknown"
   }
 
-  const existing: SplitFile | null = existsSync(outPath)
-    ? (JSON.parse(readFileSync(outPath, "utf8")) as SplitFile)
-    : null
+  const capacityGateTripped =
+    completion === "complete" ? false : gateTripped || (existing?.population.capacityGateTripped ?? false)
+  const reconciliationCommand = `pnpm splits --check${capacityGateTripped ? " --gate-tripped" : ""}`
 
   const file: SplitFile = {
     schemaVersion: 1,
@@ -129,7 +266,17 @@ const program = Effect.gen(function* () {
     population: {
       requested: population.length,
       ingested,
-      capacityGateTripped: gateTripped || (existing?.population.capacityGateTripped ?? false)
+      capacityGateTripped,
+      selected: population.length,
+      completion,
+      datasetSha256: datasetHash,
+      answerable: population.filter((q) => !q.isAbstention).length,
+      abstention: population.filter((q) => q.isAbstention).length,
+      exclusions,
+      observed: observedFromResults(),
+      commands: [reconciliationCommand, "pnpm population --split dev", "pnpm population --split test"],
+      generatedAt: new Date().toISOString(),
+      verifiedAt
     },
     dev,
     test,
@@ -144,6 +291,10 @@ const program = Effect.gen(function* () {
   console.log(`dev        ${dev.length} (${abs(dev)} _abs, ${dev.length - abs(dev)} answerable)`)
   console.log(`test       ${test.length} (${abs(test)} _abs, ${test.length - abs(test)} answerable)`)
   console.log(`generation ${generation.id}`)
+  console.log(
+    `ingested   ${ingested.state}${ingested.count === null ? "" : ` (${ingested.count})`}` +
+      `${ingested.witness === null ? "" : ` via ${ingested.witness}`}`
+  )
   console.log(`gate       ${file.gate === null ? "not read yet" : `${file.gate.passed ? "passed" : "failed"} on ${file.gate.readAt}`}`)
   console.log(`wrote      ${outPath}`)
 })

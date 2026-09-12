@@ -39,16 +39,65 @@ export type { TypeSummary } from "./Results.js"
 export { median, pct, quantile, ratio } from "./Stats.js"
 export {
   BENCHMARK_EXTRACTION_DEPENDENCIES,
+  COMPLETIONS,
+  EXCLUSION_REASONS,
+  Exclusion,
   ExtractionGenerationDrift,
   GateRecord,
+  INGESTION_EVIDENCE_KINDS,
+  INGESTION_STATES,
+  IngestedPopulation,
+  PopulationSection,
   SPLIT_FILE,
   SplitFile,
   assertGenerationMatches,
+  isVerifiedIngestion,
   liveExtractionGeneration,
+  normaliseIngested,
+  normalisePopulation,
   outsidePopulation,
   splitByCached
 } from "./Splits.js"
-export type { SplitName } from "./Splits.js"
+export type {
+  Completion,
+  ExclusionReason,
+  IngestionEvidenceKind,
+  IngestionState,
+  NormalisedPopulation,
+  PopulationCount,
+  SplitName
+} from "./Splits.js"
+export {
+  PopulationRecord,
+  RECONCILIATION_STATUSES,
+  RECONCILE_FILE,
+  ReconcileWitness,
+  ReconciledUser,
+  buildPopulationRecord,
+  buildReconciledUser,
+  completionFromWitness,
+  datasetSha256,
+  exclusionReasons,
+  exclusionsFrom,
+  ingestionFailures,
+  membershipFailures,
+  membershipOf,
+  observedSplits,
+  parseReconcileWitness,
+  populationGateFailures,
+  reconcileWitnessFailures,
+  splitMembershipSha256,
+  sha256Text,
+  witnessQuestionIds
+} from "./PopulationAudit.js"
+export type {
+  BuildReconciledUserInput,
+  BuildPopulationRecordInput,
+  PopulationGateInput,
+  PopulationMembership,
+  ReconcileWitnessContext,
+  ReconciliationStatus
+} from "./PopulationAudit.js"
 export {
   batchOf,
   leakedTestIds,

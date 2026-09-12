@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest"
 import {
   batchOf,
   leakedTestIds,
+  normaliseIngested,
+  normalisePopulation,
   readSplitFile,
   splitFilePath,
   splitQuestions,
@@ -28,6 +30,23 @@ describe("the committed split file", () => {
     expect(file.dev.length).toBe(60)
     expect(file.test.length).toBe(140)
     expect(file.gate?.passed).toBe(true)
+  })
+
+  it("never treats a legacy scalar ingestion declaration as verified evidence", () => {
+    const ingested = normaliseIngested(200)
+    expect(ingested.state).toBe("declared")
+    expect(ingested.count).toBeNull()
+  })
+
+  it("records the audited capacity-capped g3 population", () => {
+    const population = normalisePopulation(file.population)
+    expect(population.ingested).toMatchObject({
+      state: "verified",
+      count: 164,
+      evidenceKind: "legacy-query-visible"
+    })
+    expect(population.completion).toBe("capacity-capped")
+    expect(population.exclusions).toHaveLength(36)
   })
 
   it("selects a split's questions in id order and says how many it wanted", () => {
