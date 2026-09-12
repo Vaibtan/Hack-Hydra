@@ -7,6 +7,7 @@ import {
   FULL_KEY_PROPERTY,
   MAX_STRING_PROPERTY_BYTES,
   renderGetByIdQuery,
+  renderGraphIdentityLookupQuery,
   renderMsPathsQuery,
   renderRelMergeStatement,
   renderVertexMergeStatement,
@@ -22,6 +23,7 @@ import {
 } from "./Errors.js"
 import { identityEffect, makeIdentity } from "./Identity.js"
 import { edgeId, vertexId } from "./Ids.js"
+import { verifyStoredGraphIdentity } from "./Ids.js"
 import { makeTransport, type QueryOptions } from "./Transport.js"
 
 export type { QueryOptions } from "./Transport.js"
@@ -114,6 +116,34 @@ const make = Effect.gen(function* () {
       if (row === undefined) return Option.none()
       yield* identityEffect(identity.verifyVertexRow(key, id, row))
       return Option.some(row)
+    })
+
+  /**
+   * Read and verify every graph record already using a reduced id. This is
+   * label/type agnostic because Hydra vertex ids are global and relationship
+   * ids must be protected across relationship types.
+   */
+  const readGraphIdentities = (
+    kind: "relationship" | "vertex",
+    numericId: number
+  ): Effect.Effect<ReadonlyArray<string>, HydraError> =>
+    Effect.gen(function* () {
+      const result = yield* send(renderGraphIdentityLookupQuery(kind), { id: numericId }, {})
+      const identities = new Set<string>()
+      for (const row of result.rows) {
+        const stored = row[FULL_KEY_PROPERTY]
+        const canonicalIdentity = typeof stored === "string" ? stored : null
+        yield* identityEffect(
+          verifyStoredGraphIdentity({
+            kind,
+            numericId,
+            requestedKey: canonicalIdentity ?? "",
+            storedKey: canonicalIdentity
+          })
+        )
+        if (canonicalIdentity !== null) identities.add(canonicalIdentity)
+      }
+      return [...identities]
     })
 
   const sendChunked = (
@@ -260,6 +290,7 @@ const make = Effect.gen(function* () {
   return {
     query,
     getById,
+    readGraphIdentities,
     batchMerge,
     batchRel,
     msPaths,

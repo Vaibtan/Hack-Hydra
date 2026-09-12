@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import type { DatasetSession } from "@palimpsest/dataset"
 import { Data, Either } from "effect"
 import type { BeginSourceRevision } from "./IngestManifest.js"
+import type { MemoryScope } from "./MemoryScope.js"
 
 export type CanonicalJson =
   | null
@@ -228,15 +229,14 @@ export const parseExtractionGeneration = (
 }
 
 export const sourceRevisionInputForSession = (
-  tenant: string,
-  uid: string,
+  scope: MemoryScope,
   session: DatasetSession,
   extractionGeneration: ExtractionGeneration
 ): BeginSourceRevision => {
   const source = canonicalSessionSource(session)
   return {
-    tenant,
-    uid,
+    tenant: scope.tenantId,
+    uid: scope.uid,
     logicalSessionId: session.key,
     sourceDigest: source.sourceDigest,
     sourceBytes: source.sourceBytes,

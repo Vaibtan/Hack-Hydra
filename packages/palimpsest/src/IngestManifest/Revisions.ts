@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { Effect } from "effect"
+import { parseMemoryScope, type MemoryScope } from "../MemoryScope.js"
 import { parseExtractionGeneration } from "../SourceIdentity.js"
 import { integer, revisionKey, selectRevision, text, transaction } from "./Rows.js"
 import {
@@ -34,7 +35,7 @@ export interface RevisionOperations {
   ) => Effect.Effect<SourceRevision, InvalidSourceRevision | IngestManifestUnavailable>
   readonly read: (
     input: SourceRevisionIdentity
-  ) => Effect.Effect<SourceRevision | null, IngestManifestUnavailable>
+  ) => Effect.Effect<SourceRevision | null, InvalidSourceRevision | IngestManifestUnavailable>
   readonly readExtractionGeneration: (
     id: string
   ) => Effect.Effect<ExtractionGenerationReference | null, InvalidSourceRevision | IngestManifestUnavailable>
@@ -56,6 +57,19 @@ const invalid = (
   field: keyof BeginSourceRevision,
   reason: string
 ): Effect.Effect<never, InvalidSourceRevision> => Effect.fail(new InvalidSourceRevision({ field, reason }))
+
+const scopeFor = (input: { readonly tenant: string; readonly uid: string }): MemoryScope => {
+  const parsed = parseMemoryScope(input.tenant, input.uid)
+  if (parsed._tag === "Left") {
+    throw new InvalidSourceRevision({
+      field: parsed.left.field === "tenantId" ? "tenant" : "uid",
+      reason: parsed.left.reason
+    })
+  }
+  return parsed.right
+}
+
+const revisionKeyFor = (input: SourceRevisionIdentity): string => revisionKey(scopeFor(input), input)
 
 const parseBegin = (
   input: BeginSourceRevision
@@ -165,7 +179,7 @@ const insertRevision = (database: DatabaseSync, parsed: BeginSourceRevision): Be
     sourceDigest: parsed.sourceDigest,
     extractionGeneration: parsed.extractionGeneration.id
   }
-  const key = revisionKey(identity)
+  const key = revisionKeyFor(identity)
   const existing = selectRevision(database, key)
   if (existing !== undefined) {
     return { disposition: existing.state === "COMMITTED" ? "committed" : "resumed", revision: existing }
@@ -210,7 +224,7 @@ type AdvanceOutcome =
   | { readonly _tag: "invalid"; readonly current: IngestState }
 
 const advanceRevision = (database: DatabaseSync, input: AdvanceIngestState): AdvanceOutcome => {
-  const key = revisionKey(input.revision)
+  const key = revisionKeyFor(input.revision)
   const current = selectRevision(database, key)
   if (current === undefined) return { _tag: "invalid", current: input.revision.state }
   if (current.failureRetryable === false && current.failureCode !== null) {
@@ -251,7 +265,7 @@ const advanceRevision = (database: DatabaseSync, input: AdvanceIngestState): Adv
 }
 
 const recordRevisionFailure = (database: DatabaseSync, input: RecordIngestFailure): SourceRevision => {
-  const key = revisionKey(input.revision)
+  const key = revisionKeyFor(input.revision)
   const current = selectRevision(database, key)
   if (current === undefined) {
     throw new InvalidSourceRevision({ field: "sourceDigest", reason: "does not name a stored source revision" })
@@ -324,8 +338,11 @@ export const makeRevisionOperations = (database: DatabaseSync): RevisionOperatio
 
   read: (input) =>
     Effect.try({
-      try: () => selectRevision(database, revisionKey(input)) ?? null,
-      catch: (cause) => new IngestManifestUnavailable({ operation: "read", cause })
+      try: () => selectRevision(database, revisionKeyFor(input)) ?? null,
+      catch: (cause) =>
+        cause instanceof InvalidSourceRevision
+          ? cause
+          : new IngestManifestUnavailable({ operation: "read", cause })
     }),
 
   readExtractionGeneration: (id) =>

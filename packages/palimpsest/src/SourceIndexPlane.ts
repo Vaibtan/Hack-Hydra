@@ -1,5 +1,26 @@
 /** The Index* write plane: written by ingest, not yet read by retrieval (ADR-0002). */
 export {
+  InvalidMemoryScope,
+  frameSegment,
+  memoryScopeFromRevision,
+  memoryScopeKey,
+  parseMemoryScope,
+  scopePrefix
+} from "./MemoryScope.js"
+export type { MemoryScope } from "./MemoryScope.js"
+export {
+  claimIndexGraphWritePlan,
+  claimSourceTranscriptPlan,
+  claimWriteIdentities,
+  recoverGraphIdCollision,
+  relationshipIdentity
+} from "./GraphIdClaims.js"
+export type {
+  ClaimWriteIdentitiesError,
+  GraphIdRekeyTarget,
+  GraphWriteRelation
+} from "./GraphIdClaims.js"
+export {
   IndexGraph,
   IndexGraphWriteRejected,
   indexClaimKey,

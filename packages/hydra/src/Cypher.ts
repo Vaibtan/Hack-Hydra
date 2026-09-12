@@ -99,6 +99,12 @@ export const renderGetByIdQuery = (label: string, properties: ReadonlyArray<stri
   return `MATCH (n:${label} {id: $id}) RETURN ${projection}`
 }
 
+/** Read every stored full identity that currently owns a global reduced id. */
+export const renderGraphIdentityLookupQuery = (kind: "relationship" | "vertex"): string =>
+  kind === "vertex"
+    ? `MATCH (n {id: $id}) RETURN n.${FULL_KEY_PROPERTY} AS ${FULL_KEY_PROPERTY}`
+    : `MATCH ()-[r]->() WHERE r.id = $id RETURN r.${FULL_KEY_PROPERTY} AS ${FULL_KEY_PROPERTY}`
+
 export const renderVertexMergeStatement = (label: string, properties: ReadonlyArray<string>): string => {
   requireIdentifier("label", label)
   const assignments = [

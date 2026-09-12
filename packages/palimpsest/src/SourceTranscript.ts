@@ -3,29 +3,36 @@ import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
 import { Data, Effect, Either, Option } from "effect"
 import type { SourceRevision } from "./IngestManifest.js"
 import { chunkText } from "./Chunk.js"
+import {
+  frameSegment,
+  memoryScopeFromRevision,
+  memoryScopeKey,
+  scopePrefix,
+  type MemoryScope
+} from "./MemoryScope.js"
 import { canonicalSessionSource } from "./SourceIdentity.js"
-import { linkToUser } from "./User.js"
 
+/** New-plane source keys are tenant-scoped (S01); the `uid` is never a bare key prefix. */
 export const sourceSessionKey = (
-  uid: string,
+  scope: MemoryScope,
   logicalSessionId: string,
   sourceDigest: string
-): string => `${uid}|srcsess|${sourceDigest}|${logicalSessionId}`
+): string => `${scopePrefix(scope)}|srcsess|${sourceDigest}|${frameSegment(logicalSessionId)}`
 
 export const sourceTurnKey = (
-  uid: string,
+  scope: MemoryScope,
   logicalSessionId: string,
   sourceDigest: string,
   turnIdx: number
-): string => `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|turn|${turnIdx}`
+): string => `${sourceSessionKey(scope, logicalSessionId, sourceDigest)}|turn|${turnIdx}`
 
 export const sourceTurnChunkKey = (
-  uid: string,
+  scope: MemoryScope,
   logicalSessionId: string,
   sourceDigest: string,
   turnIdx: number,
   chunkIdx: number
-): string => `${sourceTurnKey(uid, logicalSessionId, sourceDigest, turnIdx)}|chunk|${chunkIdx}`
+): string => `${sourceTurnKey(scope, logicalSessionId, sourceDigest, turnIdx)}|chunk|${chunkIdx}`
 
 export class SourceTranscriptRevisionMismatch extends Data.TaggedError(
   "SourceTranscriptRevisionMismatch"
@@ -43,15 +50,16 @@ export interface SourceTranscriptVertex {
 }
 
 export interface SourceTranscriptRelation {
-  readonly type: "SOURCE_HAS_CHUNK" | "SOURCE_HAS_TURN"
-  readonly srcLabel: "SourceSession" | "SourceTurn"
+  readonly type: "HAS_SOURCE_REVISION" | "SOURCE_HAS_CHUNK" | "SOURCE_HAS_TURN"
+  readonly srcLabel: "MemoryScope" | "SourceSession" | "SourceTurn"
   readonly srcKey: string
-  readonly dstLabel: "SourceTurn" | "SourceTurnChunk"
+  readonly dstLabel: "SourceSession" | "SourceTurn" | "SourceTurnChunk"
   readonly dstKey: string
 }
 
 export interface SourceTranscriptWritePlan {
   readonly sourceDigest: string
+  readonly scope: SourceTranscriptVertex
   readonly session: SourceTranscriptVertex
   readonly turns: ReadonlyArray<SourceTranscriptVertex>
   readonly chunks: ReadonlyArray<SourceTranscriptVertex>
@@ -80,7 +88,9 @@ export const planSourceTranscriptWrite = (
     return Either.left(new SourceTranscriptRevisionMismatch({ field: "sourceBytes" }))
   }
 
-  const sessionKey = sourceSessionKey(revision.uid, revision.logicalSessionId, revision.sourceDigest)
+  const scope = memoryScopeFromRevision(revision)
+  const rootKey = memoryScopeKey(scope)
+  const sessionKey = sourceSessionKey(scope, revision.logicalSessionId, revision.sourceDigest)
   const sessionProperties = {
     source_session: sessionKey,
     tenant: revision.tenant,
@@ -98,8 +108,15 @@ export const planSourceTranscriptWrite = (
   const turnWrites: Array<SourceTranscriptVertex> = []
   const chunkWrites: Array<SourceTranscriptVertex> = []
   const relations: Array<SourceTranscriptRelation> = []
+  relations.push({
+    type: "HAS_SOURCE_REVISION",
+    srcLabel: "MemoryScope",
+    srcKey: rootKey,
+    dstLabel: "SourceSession",
+    dstKey: sessionKey
+  })
   for (const turn of session.turns) {
-    const key = sourceTurnKey(revision.uid, revision.logicalSessionId, revision.sourceDigest, turn.turnIdx)
+    const key = sourceTurnKey(scope, revision.logicalSessionId, revision.sourceDigest, turn.turnIdx)
     const chunks = chunkText(turn.text)
     turnWrites.push({
       key,
@@ -127,7 +144,7 @@ export const planSourceTranscriptWrite = (
     for (let index = 1; index < chunks.length; index++) {
       const chunkIdx = index
       const chunkKey = sourceTurnChunkKey(
-        revision.uid,
+        scope,
         revision.logicalSessionId,
         revision.sourceDigest,
         turn.turnIdx,
@@ -156,6 +173,14 @@ export const planSourceTranscriptWrite = (
 
   return Either.right({
     sourceDigest: revision.sourceDigest,
+    scope: {
+      key: rootKey,
+      properties: {
+        memory_scope: rootKey,
+        tenant: revision.tenant,
+        uid: revision.uid
+      }
+    },
     session: { key: sessionKey, properties: sessionProperties },
     turns: turnWrites,
     chunks: chunkWrites,
@@ -174,6 +199,7 @@ const make = Effect.gen(function* () {
       const plan = planSourceTranscriptWrite(revision, session)
       if (plan._tag === "Left") return yield* Effect.fail(plan.left)
 
+      yield* hydra.batchMerge("MemoryScope", [plan.right.scope])
       yield* hydra.batchMerge("SourceSession", [plan.right.session])
       yield* hydra.batchMerge("SourceTurn", plan.right.turns)
       if (plan.right.chunks.length > 0) {
@@ -183,7 +209,8 @@ const make = Effect.gen(function* () {
       if (turnRelations.length > 0) yield* hydra.batchRel("SOURCE_HAS_TURN", turnRelations)
       const chunkRelations = plan.right.relations.filter((relation) => relation.type === "SOURCE_HAS_CHUNK")
       if (chunkRelations.length > 0) yield* hydra.batchRel("SOURCE_HAS_CHUNK", chunkRelations)
-      yield* linkToUser(hydra, revision.uid, "HAS_SOURCE_REVISION", "SourceSession", [plan.right.session.key])
+      const scopeRelations = plan.right.relations.filter((relation) => relation.type === "HAS_SOURCE_REVISION")
+      if (scopeRelations.length > 0) yield* hydra.batchRel("HAS_SOURCE_REVISION", scopeRelations)
 
       return {
         sourceDigest: plan.right.sourceDigest,

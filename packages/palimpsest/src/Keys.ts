@@ -1,3 +1,11 @@
+/**
+ * Legacy per-user key builders for the pre-tenant `g3`-era query graph.
+ *
+ * Explicit compatibility boundary (S01): readable by the legacy retrieval
+ * path only. New transactional-plane writes must use the `MemoryScope` key
+ * builders in `SourceTranscript.ts` / `IndexGraph.ts`; there is no implicit
+ * fallback from a scoped identity to these bare-`uid` keys on writes.
+ */
 export const userKey = (uid: string): string => `${uid}|user`
 
 export const sessionKey = (uid: string, sid: string): string => `${uid}|sess|${sid}`

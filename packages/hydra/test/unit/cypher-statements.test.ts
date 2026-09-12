@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   DELETE_BY_ID_STATEMENT,
+  renderGraphIdentityLookupQuery,
   renderGetByIdQuery,
   renderRelMergeStatement,
   renderVertexMergeStatement
@@ -33,6 +34,15 @@ describe("write and by-id statements", () => {
     expect(renderGetByIdQuery("User", ["claims", "tokens"])).toBe(
       "MATCH (n:User {id: $id}) RETURN n.claims AS claims, n.tokens AS tokens, " +
         "n.__palimpsest_full_key AS __palimpsest_full_key"
+    )
+  })
+
+  it("looks up existing reduced ids without relying on a requested label or relationship type", () => {
+    expect(renderGraphIdentityLookupQuery("vertex")).toBe(
+      "MATCH (n {id: $id}) RETURN n.__palimpsest_full_key AS __palimpsest_full_key"
+    )
+    expect(renderGraphIdentityLookupQuery("relationship")).toBe(
+      "MATCH ()-[r]->() WHERE r.id = $id RETURN r.__palimpsest_full_key AS __palimpsest_full_key"
     )
   })
 

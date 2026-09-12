@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite"
+import { memoryScopeFromRevision } from "../MemoryScope.js"
 import { integer, nullableBoolean, nullableText, revisionKey, text, type DatabaseRow } from "./Rows.js"
 
 const V2_REVISION_IDENTITY =
@@ -123,6 +124,23 @@ const TABLES = `
     FOREIGN KEY (tenant, uid, view_id)
       REFERENCES entity_canonical_views (tenant, uid, view_id)
   ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS graph_id_claims (
+    reduced_id INTEGER NOT NULL CHECK (reduced_id >= 0),
+    kind TEXT NOT NULL CHECK (kind IN ('vertex', 'relationship')),
+    canonical_identity TEXT NOT NULL CHECK (length(canonical_identity) > 0),
+    claimed_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (reduced_id, kind)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS graph_id_quarantine (
+    reduced_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('vertex', 'relationship')),
+    existing_identity TEXT NOT NULL,
+    rejected_identity TEXT NOT NULL,
+    detected_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (reduced_id, kind)
+  ) STRICT;
 `
 
 const migrateRevisionsV1 = (database: DatabaseSync): void => {
@@ -151,7 +169,7 @@ const migrateRevisionsV1 = (database: DatabaseSync): void => {
     }
     const failureRetryable = nullableBoolean(row, "failure_retryable")
     insert.run(
-      revisionKey(identity),
+      revisionKey(memoryScopeFromRevision(identity), identity),
       identity.tenant,
       identity.uid,
       identity.logicalSessionId,
@@ -169,6 +187,29 @@ const migrateRevisionsV1 = (database: DatabaseSync): void => {
     )
   }
   database.exec("DROP TABLE source_revisions_v1")
+}
+
+/** Rewrite delimiter-joined v2 keys to the canonical S01 framing in place. */
+const migrateRevisionKeysV3 = (database: DatabaseSync): void => {
+  const rows = database
+    .prepare(`
+      SELECT revision_key, tenant, uid, logical_session_id, source_digest, extraction_generation
+        FROM source_revisions
+    `)
+    .all() as ReadonlyArray<DatabaseRow>
+  const update = database.prepare(`UPDATE source_revisions SET revision_key = ? WHERE revision_key = ?`)
+  for (const row of rows) {
+    const identity = {
+      tenant: text(row, "tenant"),
+      uid: text(row, "uid"),
+      logicalSessionId: text(row, "logical_session_id"),
+      sourceDigest: text(row, "source_digest"),
+      extractionGeneration: text(row, "extraction_generation")
+    }
+    const previous = text(row, "revision_key")
+    const canonical = revisionKey(memoryScopeFromRevision(identity), identity)
+    if (canonical !== previous) update.run(canonical, previous)
+  }
 }
 
 export const createDatabase = (path: string): DatabaseSync => {
@@ -197,10 +238,11 @@ export const createDatabase = (path: string): DatabaseSync => {
 
     database.exec(TABLES)
     if (oldIdentity) migrateRevisionsV1(database)
+    migrateRevisionKeysV3(database)
     database.exec(`
       CREATE INDEX IF NOT EXISTS source_revisions_logical_session
         ON source_revisions (tenant, uid, logical_session_id, extraction_generation, created_at_ms);
-      PRAGMA user_version = 7;
+      PRAGMA user_version = 9;
       COMMIT;
     `)
   } catch (cause) {

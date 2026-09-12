@@ -112,6 +112,69 @@ export interface StoreExtractionArtifact {
   readonly artifact: ExtractionArtifact
 }
 
+/** Durable claim of one reduced Hydra graph id for one canonical identity (S01). */
+export type GraphIdKind = "vertex" | "relationship"
+
+export interface ClaimGraphId {
+  readonly reducedId: number
+  readonly kind: GraphIdKind
+  readonly canonicalIdentity: string
+}
+
+export type GraphIdClaimDisposition = "claimed" | "idempotent"
+
+export interface GraphIdClaim extends ClaimGraphId {
+  readonly claimedAtMs: number
+}
+
+export interface GraphIdQuarantineRecord {
+  readonly reducedId: number
+  readonly kind: GraphIdKind
+  readonly existingIdentity: string
+  readonly rejectedIdentity: string
+  readonly detectedAtMs: number
+}
+
+/** Evidence required to resolve a quarantined collision after verified rekey. */
+export interface CompleteGraphIdRekey {
+  readonly reducedId: number
+  readonly kind: GraphIdKind
+  readonly rejectedIdentity: string
+  readonly replacementReducedId: number
+  readonly replacementCanonicalIdentity: string
+}
+
+export class InvalidGraphIdClaim extends Data.TaggedError("InvalidGraphIdClaim")<{
+  readonly field: "reducedId" | "kind" | "canonicalIdentity"
+  readonly reason: string
+}> {
+  override get message(): string {
+    return `Invalid graph id claim ${this.field}: ${this.reason}`
+  }
+}
+
+export class GraphIdCollision extends Data.TaggedError("GraphIdCollision")<{
+  readonly reducedId: number
+  readonly kind: GraphIdKind
+  readonly existingIdentity: string
+  readonly rejectedIdentity: string
+}> {
+  override get message(): string {
+    return `Graph id ${this.reducedId} (${this.kind}) is claimed by a different identity`
+  }
+}
+
+/** A collision cannot be cleared because its rebuild/rekey evidence is incomplete. */
+export class GraphIdRecoveryRejected extends Data.TaggedError("GraphIdRecoveryRejected")<{
+  readonly reducedId: number
+  readonly kind: GraphIdKind
+  readonly reason: "missingQuarantine" | "sameReducedId" | "replacementClaimMismatch" | "readBackMismatch"
+}> {
+  override get message(): string {
+    return `Graph id ${this.reducedId} (${this.kind}) recovery was rejected: ${this.reason}`
+  }
+}
+
 export interface BeginSourceRevisionResult {
   readonly disposition: "created" | "resumed" | "committed"
   readonly revision: SourceRevision
@@ -281,6 +344,11 @@ export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestU
     | "readActiveIndexGeneration"
     | "storeExtractionArtifact"
     | "readExtractionArtifact"
+    | "claimGraphId"
+    | "readGraphIdClaim"
+    | "readGraphIdQuarantine"
+    | "listGraphIdQuarantine"
+    | "completeGraphIdRekey"
   readonly cause: unknown
 }> {
   override get message(): string {
@@ -305,4 +373,7 @@ export type IngestManifestError =
   | ExtractionArtifactBindingMismatch
   | ExtractionArtifactStateInvalid
   | ExtractionArtifactConflict
+  | InvalidGraphIdClaim
+  | GraphIdCollision
+  | GraphIdRecoveryRejected
   | IngestManifestUnavailable

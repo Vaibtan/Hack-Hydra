@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import { frameSegment, scopePrefix, type MemoryScope } from "../MemoryScope.js"
 import { INGEST_STATES, type IngestState, type SourceRevision, type SourceRevisionIdentity } from "./Types.js"
 
 export type DatabaseRow = Readonly<Record<string, string | number | bigint | null | Uint8Array>>
@@ -35,8 +36,15 @@ export const nullableBoolean = (row: DatabaseRow, column: string): boolean | nul
 const isIngestState = (value: unknown): value is IngestState =>
   typeof value === "string" && INGEST_STATES.some((state) => state === value)
 
-export const revisionKey = (input: SourceRevisionIdentity): string =>
-  `${input.tenant}\u001f${input.uid}\u001f${input.logicalSessionId}\u001f${input.sourceDigest}\u001f${input.extractionGeneration}`
+/** Fields appended to a parsed memory scope to identify one source revision. */
+export type ScopedSourceRevisionIdentity = Pick<
+  SourceRevisionIdentity,
+  "extractionGeneration" | "logicalSessionId" | "sourceDigest"
+>
+
+/** Canonical, prefix-free identity of one tenant-scoped source revision. */
+export const revisionKey = (scope: MemoryScope, input: ScopedSourceRevisionIdentity): string =>
+  `${scopePrefix(scope)}|revision|${frameSegment(input.logicalSessionId)}|${frameSegment(input.sourceDigest)}|${frameSegment(input.extractionGeneration)}`
 
 export const decodeRevision = (row: DatabaseRow): SourceRevision => {
   const state = text(row, "state")

@@ -32,16 +32,33 @@ describe("planSourceIndexSession", () => {
       generation: generation.right
     })
 
-    expect(plan.sourceRevision).toMatchObject({
+    expect(plan._tag).toBe("Right")
+    if (plan._tag === "Left") return
+    expect(plan.right.sourceRevision).toMatchObject({
       tenant: "default",
       uid: "user-a",
       logicalSessionId: "session-a",
       extractionGeneration: { id: generation.right.extractionGeneration.id }
     })
-    expect(plan.sourceRevision.sourceDigest).toMatch(/^[a-f0-9]{64}$/)
-    expect(plan.indexGeneration.id).toBe(generation.right.indexGeneration.id)
-    expect(plan.indexGeneration.extractionGenerationId).toBe(
-      plan.sourceRevision.extractionGeneration.id
+    expect(plan.right.sourceRevision.sourceDigest).toMatch(/^[a-f0-9]{64}$/)
+    expect(plan.right.indexGeneration.id).toBe(generation.right.indexGeneration.id)
+    expect(plan.right.indexGeneration.extractionGenerationId).toBe(
+      plan.right.sourceRevision.extractionGeneration.id
     )
+  })
+
+  it("rejects an empty tenant or user id at the entry boundary", () => {
+    expect(generation).toMatchObject({ _tag: "Right" })
+    if (generation._tag === "Left") return
+
+    for (const input of [
+      { tenant: "  ", uid: "user-a" },
+      { tenant: "default", uid: "" }
+    ]) {
+      expect(planSourceIndexSession({ ...input, session, generation: generation.right })).toMatchObject({
+        _tag: "Left",
+        left: { _tag: "InvalidMemoryScope" }
+      })
+    }
   })
 })

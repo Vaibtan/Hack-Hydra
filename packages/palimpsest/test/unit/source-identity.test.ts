@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest"
+import { Either } from "effect"
+import { parseMemoryScope } from "../../src/MemoryScope.js"
 import { canonicalSessionSource, createExtractionGeneration, parseExtractionGeneration, sourceRevisionInputForSession } from "../../src/SourceIdentity.js"
 
 const session = {
@@ -72,7 +74,8 @@ describe("source identity", () => {
   })
 
   it("makes the manifest input use the logical session key and canonical source", () => {
-    expect(sourceRevisionInputForSession("default", "user-a", session, extractionGeneration)).toEqual({
+    const scope = Either.getOrThrow(parseMemoryScope("default", "user-a"))
+    expect(sourceRevisionInputForSession(scope, session, extractionGeneration)).toEqual({
       tenant: "default",
       uid: "user-a",
       logicalSessionId: "source-session",

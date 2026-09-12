@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { describe, expect, it } from "vitest"
 import { IngestManifest, IngestManifestLayerMemory, IngestManifestLive, type BeginSourceRevision, type IngestManifestError } from "../../src/IngestManifest.js"
+import { createDatabase } from "../../src/IngestManifest/Schema.js"
 import { createExtractionGeneration } from "../../src/SourceIdentity.js"
 
 const extractionGeneration = createExtractionGeneration({
@@ -110,6 +111,32 @@ describe("IngestManifest", () => {
     expect(result.second.disposition).toBe("created")
     expect(result.second.revision.commitId).not.toBe(result.first.revision.commitId)
     expect(result.second.revision.sessionOrdinal).toBe(result.first.revision.sessionOrdinal + 1)
+  })
+
+  it("keeps separator-bearing tenant and user identities distinct", async () => {
+    const separator = "\u001f"
+    const result = await run(
+      Effect.gen(function* () {
+        const manifest = yield* IngestManifest
+        const first = yield* manifest.begin({
+          ...baseRevision,
+          tenant: "a",
+          uid: `b${separator}c`
+        })
+        const second = yield* manifest.begin({
+          ...baseRevision,
+          tenant: `a${separator}b`,
+          uid: "c"
+        })
+        return { first, second }
+      })
+    )
+
+    expect({ tenant: result.first.revision.tenant, uid: result.first.revision.uid }).not.toEqual({
+      tenant: result.second.revision.tenant,
+      uid: result.second.revision.uid
+    })
+    expect(result.first.revision.commitId).not.toBe(result.second.revision.commitId)
   })
 
   it("records the full extraction-generation definition and rejects an id collision", async () => {
@@ -255,6 +282,66 @@ describe("IngestManifest", () => {
     } finally {
       if (previousPath === undefined) delete process.env["PALIMPSEST_INGEST_MANIFEST_PATH"]
       else process.env["PALIMPSEST_INGEST_MANIFEST_PATH"] = previousPath
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("rewrites delimiter-joined revision keys to canonical S01 framing", () => {
+    const directory = mkdtempSync(join(tmpdir(), "palimpsest-manifest-v2-key-"))
+    const path = join(directory, "manifest.sqlite")
+    try {
+      const database = createDatabase(path)
+      const legacyKey = [
+        baseRevision.tenant,
+        baseRevision.uid,
+        baseRevision.logicalSessionId,
+        baseRevision.sourceDigest,
+        baseRevision.extractionGeneration.id
+      ].join("\u001f")
+      database
+        .prepare(`INSERT INTO extraction_generations VALUES (?, ?, ?)`)
+        .run(
+          baseRevision.extractionGeneration.id,
+          baseRevision.extractionGeneration.canonicalJson,
+          1
+        )
+      database
+        .prepare(`INSERT INTO user_manifests VALUES (?, ?, ?, ?)`)
+        .run(baseRevision.tenant, baseRevision.uid, 2, 0)
+      database
+        .prepare(`
+          INSERT INTO source_revisions (
+            revision_key, tenant, uid, logical_session_id, source_digest, source_bytes,
+            extraction_generation, session_ordinal, commit_id, state, manifest_version,
+            failure_code, failure_retryable, created_at_ms, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+        `)
+        .run(
+          legacyKey,
+          baseRevision.tenant,
+          baseRevision.uid,
+          baseRevision.logicalSessionId,
+          baseRevision.sourceDigest,
+          baseRevision.sourceBytes,
+          baseRevision.extractionGeneration.id,
+          1,
+          "legacy-v2-commit",
+          "SOURCE_DURABLE",
+          0,
+          1,
+          1
+        )
+      database.close()
+
+      const migrated = createDatabase(path)
+      // SAFETY: the query projects one non-null TEXT column from the row just inserted above.
+      const row = migrated
+        .prepare(`SELECT revision_key FROM source_revisions WHERE commit_id = ?`)
+        .get("legacy-v2-commit") as { readonly revision_key: string }
+      expect(row.revision_key).not.toBe(legacyKey)
+      expect(row.revision_key).toContain("t7:default|u6:user-a|revision|")
+      migrated.close()
+    } finally {
       rmSync(directory, { recursive: true, force: true })
     }
   })

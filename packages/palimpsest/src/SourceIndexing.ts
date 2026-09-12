@@ -1,10 +1,11 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { Effect, Layer } from "effect"
+import { Effect, Either, Layer } from "effect"
 import { extractSession } from "./Extract.js"
 import type { IngestGenerationConfig } from "./GenerationConfig.js"
 import { IndexGraph } from "./IndexGraph.js"
 import { IngestCommitLock, IngestCommitLockLive } from "./IngestCommitLock.js"
 import { IngestManifest, IngestManifestLive } from "./IngestManifest.js"
+import { InvalidMemoryScope, parseMemoryScope } from "./MemoryScope.js"
 import { sourceRevisionInputForSession } from "./SourceIdentity.js"
 import { SourceTranscript } from "./SourceTranscript.js"
 import {
@@ -24,15 +25,17 @@ export interface PlanSourceIndexSession {
   readonly generation: IngestGenerationConfig
 }
 
-export const planSourceIndexSession = (input: PlanSourceIndexSession): SourceIndexSessionPlan => ({
-  sourceRevision: sourceRevisionInputForSession(
-    input.tenant,
-    input.uid,
-    input.session,
-    input.generation.extractionGeneration
-  ),
-  indexGeneration: input.generation.indexGeneration
-})
+/** Validates tenant/uid into a `MemoryScope` at the new-plane entry boundary (S01). */
+export const planSourceIndexSession = (
+  input: PlanSourceIndexSession
+): Either.Either<SourceIndexSessionPlan, InvalidMemoryScope> => {
+  const scope = parseMemoryScope(input.tenant, input.uid)
+  if (scope._tag === "Left") return Either.left(scope.left)
+  return Either.right({
+    sourceRevision: sourceRevisionInputForSession(scope.right, input.session, input.generation.extractionGeneration),
+    indexGeneration: input.generation.indexGeneration
+  })
+}
 
 const classifyFailure = (input: {
   readonly error: SourceIndexStageError<never>
@@ -43,6 +46,10 @@ const classifyFailure = (input: {
     case "HydraUnavailable":
     case "IngestManifestUnavailable":
       return { code: input.error._tag, retryable: true }
+    case "GraphIdCollision":
+      return { code: "GRAPH_ID_COLLISION", retryable: false }
+    case "InvalidGraphIdClaim":
+      return { code: "INVALID_GRAPH_ID_CLAIM", retryable: false }
     case "HydraParseError":
     case "HydraLimitError":
     case "IndexGraphWriteRejected":
@@ -54,16 +61,18 @@ const classifyFailure = (input: {
   }
 }
 
-export const indexSourceSession = (input: PlanSourceIndexSession) => {
-  const plan = planSourceIndexSession(input)
-  return runTransactionalSourceIndex({
-    sourceRevision: plan.sourceRevision,
-    indexGeneration: plan.indexGeneration,
-    session: input.session,
-    extract: extractSession,
-    classifyFailure: ({ error }) => classifyFailure({ error })
+export const indexSourceSession = (input: PlanSourceIndexSession) =>
+  Effect.gen(function* () {
+    const plan = planSourceIndexSession(input)
+    if (plan._tag === "Left") return yield* Effect.fail(plan.left)
+    return yield* runTransactionalSourceIndex({
+      sourceRevision: plan.right.sourceRevision,
+      indexGeneration: plan.right.indexGeneration,
+      session: input.session,
+      extract: extractSession,
+      classifyFailure: ({ error }) => classifyFailure({ error })
+    })
   })
-}
 
 const make = Effect.gen(function* () {
   const sourceTranscript = yield* SourceTranscript

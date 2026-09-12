@@ -1,15 +1,16 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import type { HydraError } from "@palimpsest/hydra"
+import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Data, Effect } from "effect"
 import type { ExtractionArtifact, PersistedSessionExtraction } from "./ExtractionArtifact.js"
-import { IndexGraph, IndexGraphWriteRejected } from "./IndexGraph.js"
+import { claimIndexGraphWritePlan, claimSourceTranscriptPlan } from "./GraphIdClaims.js"
+import { IndexGraph, IndexGraphWriteRejected, planIndexGraphWrite } from "./IndexGraph.js"
 import type { IndexGeneration } from "./IndexGeneration.js"
 import {
   IngestManifest,
   type BeginSourceRevision,
   type IngestManifestError
 } from "./IngestManifest.js"
-import { SourceTranscript, SourceTranscriptRevisionMismatch } from "./SourceTranscript.js"
+import { SourceTranscript, SourceTranscriptRevisionMismatch, planSourceTranscriptWrite } from "./SourceTranscript.js"
 import {
   IngestRetryBlocked,
   IngestStageFailed,
@@ -76,7 +77,7 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
   | IngestStageFailed
   | IngestRetryBlocked
   | IngestCommitLockUnavailable,
-  Requirements | SourceTranscript | IndexGraph | IngestManifest | IngestCommitLock
+  Requirements | SourceTranscript | IndexGraph | IngestManifest | IngestCommitLock | HydraClient
 > =>
   Effect.gen(function* () {
     if (input.sourceRevision.extractionGeneration.id !== input.indexGeneration.extractionGenerationId) {
@@ -92,8 +93,17 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
     yield* manifest.storeIndexGeneration({ generation: input.indexGeneration })
     const sourceTranscript = yield* SourceTranscript
     const indexGraph = yield* IndexGraph
+    const hydra = yield* HydraClient
     const stages: TransactionalIngestStages<SourceIndexStageError<Error>, Requirements | SourceTranscript | IndexGraph | IngestManifest> = {
-      SOURCE_DURABLE: (revision) => sourceTranscript.write(revision, input.session),
+      SOURCE_DURABLE: (revision) =>
+        Effect.gen(function* () {
+          // Durable id claims precede the upsert (S01): a retry re-claims
+          // idempotently, a collision fails before ambiguous data is written.
+          const transcriptPlan = planSourceTranscriptWrite(revision, input.session)
+          if (transcriptPlan._tag === "Left") return yield* Effect.fail(transcriptPlan.left)
+          yield* claimSourceTranscriptPlan(manifest, hydra, transcriptPlan.right)
+          return yield* sourceTranscript.write(revision, input.session)
+        }),
       INDEXED: (revision) =>
         Effect.gen(function* () {
           const existing = yield* manifest.readExtractionArtifact(revision)
@@ -117,6 +127,14 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
                 })
               )
             ))
+          const indexPlan = planIndexGraphWrite({
+            generation: input.indexGeneration,
+            revision,
+            session: input.session,
+            claims: artifact.extraction.claims
+          })
+          if (indexPlan._tag === "Left") return yield* Effect.fail(indexPlan.left)
+          yield* claimIndexGraphWritePlan(manifest, hydra, indexPlan.right)
           return yield* indexGraph.write({
             generation: input.indexGeneration,
             revision,

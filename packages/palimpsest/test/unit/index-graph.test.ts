@@ -2,10 +2,12 @@ import type { DatasetSession } from "@palimpsest/dataset"
 import type { ExtractedClaim } from "../../src/Extract.js"
 import type { SourceRevision } from "../../src/IngestManifest.js"
 import { createIndexGeneration } from "../../src/IndexGeneration.js"
-import { planIndexGraphWrite } from "../../src/IndexGraph.js"
+import { indexSlotKey, planIndexGraphWrite } from "../../src/IndexGraph.js"
+import { parseMemoryScope } from "../../src/MemoryScope.js"
 import { createExtractionGeneration } from "../../src/SourceIdentity.js"
-import { sourceTurnKey } from "../../src/SourceTranscript.js"
+import { sourceSessionKey, sourceTurnKey } from "../../src/SourceTranscript.js"
 import { canonicalSessionSource } from "../../src/SourceIdentity.js"
+import { Either } from "effect"
 import { describe, expect, it } from "vitest"
 
 const session: DatasetSession = {
@@ -17,6 +19,9 @@ const session: DatasetSession = {
 }
 
 const source = canonicalSessionSource(session)
+
+const scope = Either.getOrThrow(parseMemoryScope("default", "user-a"))
+const otherTenantScope = Either.getOrThrow(parseMemoryScope("other-tenant", "user-a"))
 const revision: SourceRevision = {
   tenant: "default",
   uid: "user-a",
@@ -74,7 +79,7 @@ describe("planIndexGraphWrite", () => {
       expect.objectContaining({
         type: "INDEX_EVIDENCE",
         dstLabel: "SourceTurn",
-        dstKey: sourceTurnKey("user-a", "session-a", source.sourceDigest, 0),
+        dstKey: sourceTurnKey(scope, "session-a", source.sourceDigest, 0),
         properties: expect.objectContaining({
           index_generation: generation.id,
           source_digest: source.sourceDigest,
@@ -95,5 +100,37 @@ describe("planIndexGraphWrite", () => {
     })
 
     expect(plan).toMatchObject({ _tag: "Left", left: { reason: "unknownTurn" } })
+  })
+
+  it("scopes every derived key by tenant so equal user ids cannot share graph keys", () => {
+    const plan = planIndexGraphWrite({ generation, revision, session, claims: [claim] })
+    if (plan._tag === "Left") return expect.unreachable()
+
+    const otherRevision: SourceRevision = { ...revision, tenant: "other-tenant" }
+    const other = planIndexGraphWrite({ generation, revision: otherRevision, session, claims: [claim] })
+    if (other._tag === "Left") return expect.unreachable()
+
+    const keys = [
+      ...plan.right.claims.map((vertex) => vertex.key),
+      ...plan.right.slots.map((vertex) => vertex.key),
+      ...plan.right.tokens.map((vertex) => vertex.key)
+    ]
+    const otherKeys = [
+      ...other.right.claims.map((vertex) => vertex.key),
+      ...other.right.slots.map((vertex) => vertex.key),
+      ...other.right.tokens.map((vertex) => vertex.key)
+    ]
+    expect(keys.length).toBeGreaterThan(0)
+    for (const key of keys) {
+      expect(otherKeys).not.toContain(key)
+    }
+    expect(sourceSessionKey(scope, "session-a", source.sourceDigest)).not.toBe(
+      sourceSessionKey(otherTenantScope, "session-a", source.sourceDigest)
+    )
+    // Free-text segments are length-framed: an attr containing a separator
+    // cannot alias another attr.
+    expect(
+      indexSlotKey(scope, generation.id, "session-a", source.sourceDigest, "identity", "a|b")
+    ).not.toBe(indexSlotKey(scope, generation.id, "session-a", source.sourceDigest, "identity", "a"))
   })
 })

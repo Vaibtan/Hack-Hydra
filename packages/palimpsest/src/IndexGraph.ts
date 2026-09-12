@@ -8,6 +8,7 @@ import type { ExtractedClaim, ExtractedEntity } from "./Extract.js"
 import type { IndexGeneration } from "./IndexGeneration.js"
 import type { SourceRevision } from "./IngestManifest.js"
 import { canonicalJson, canonicalSessionSource } from "./SourceIdentity.js"
+import { frameSegment, memoryScopeFromRevision, type MemoryScope } from "./MemoryScope.js"
 import { sourceSessionKey, sourceTurnKey } from "./SourceTranscript.js"
 import { claimTokens } from "./Tokenize.js"
 
@@ -25,42 +26,46 @@ export const indexEntityIdentityId = (entity: ExtractedEntity): string => {
   return `entity-v1-${createHash("sha256").update(descriptor, "utf8").digest("hex")}`
 }
 
+/** New-plane index keys are tenant-and-source scoped (S01). Digests and ids stay
+ * bare only because they are code-generated `[A-Za-z0-9-]` values; every
+ * caller-controlled segment (scope, session id, attr, stem) is
+ * length-prefixed. */
 export const indexEntityKey = (
-  uid: string,
+  scope: MemoryScope,
   generationId: string,
   logicalSessionId: string,
   sourceDigest: string,
   identityId: string
 ): string =>
-  `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|entity|${identityId}`
+  `${sourceSessionKey(scope, logicalSessionId, sourceDigest)}|index|${generationId}|entity|${identityId}`
 
 export const indexClaimKey = (
-  uid: string,
+  scope: MemoryScope,
   generationId: string,
   logicalSessionId: string,
   sourceDigest: string,
   digest: string
 ): string =>
-  `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|claim|${digest}`
+  `${sourceSessionKey(scope, logicalSessionId, sourceDigest)}|index|${generationId}|claim|${digest}`
 
 export const indexSlotKey = (
-  uid: string,
+  scope: MemoryScope,
   generationId: string,
   logicalSessionId: string,
   sourceDigest: string,
   identityId: string,
   attr: string
 ): string =>
-  `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|slot|${identityId}|${attr}`
+  `${sourceSessionKey(scope, logicalSessionId, sourceDigest)}|index|${generationId}|slot|${identityId}|${frameSegment(attr)}`
 
 export const indexTokenKey = (
-  uid: string,
+  scope: MemoryScope,
   generationId: string,
   logicalSessionId: string,
   sourceDigest: string,
   stem: string
 ): string =>
-  `${sourceSessionKey(uid, logicalSessionId, sourceDigest)}|index|${generationId}|token|${stem}`
+  `${sourceSessionKey(scope, logicalSessionId, sourceDigest)}|index|${generationId}|token|${frameSegment(stem)}`
 
 export class IndexGraphWriteRejected extends Data.TaggedError("IndexGraphWriteRejected")<{
   readonly reason: "sourceRevisionMismatch" | "unknownTurn" | "invalidSpan"
@@ -157,7 +162,8 @@ export const planIndexGraphWrite = (
     }
   }
 
-  const sourceSession = sourceSessionKey(revision.uid, revision.logicalSessionId, revision.sourceDigest)
+  const scope = memoryScopeFromRevision(revision)
+  const sourceSession = sourceSessionKey(scope, revision.logicalSessionId, revision.sourceDigest)
   const source = sourceProperties(generation, revision, sourceSession)
   const entitiesByIdentity = new Map<string, ExtractedEntity>()
   const entitiesByCanon = new Map<string, ExtractedEntity>()
@@ -181,7 +187,7 @@ export const planIndexGraphWrite = (
     const entity = entitiesByIdentity.get(identity.id)
     if (entity === undefined) throw new Error("entity identity was not readable")
     const key = indexEntityKey(
-      revision.uid,
+      scope,
       generation.id,
       revision.logicalSessionId,
       revision.sourceDigest,
@@ -208,7 +214,7 @@ export const planIndexGraphWrite = (
   for (const claim of claims) {
     const digest = claimDigest(claim, revision.logicalSessionId)
     const key = indexClaimKey(
-      revision.uid,
+      scope,
       generation.id,
       revision.logicalSessionId,
       revision.sourceDigest,
@@ -240,7 +246,7 @@ export const planIndexGraphWrite = (
       srcKey: key,
       dstLabel: "SourceTurn",
       dstKey: sourceTurnKey(
-        revision.uid,
+        scope,
         revision.logicalSessionId,
         revision.sourceDigest,
         claim.span.turnIdx
@@ -268,7 +274,7 @@ export const planIndexGraphWrite = (
       const entityKey = entityKeyByIdentity.get(identityId)
       if (entityKey === undefined) throw new Error("slot entity was not prepared")
       const slotKey = indexSlotKey(
-        revision.uid,
+        scope,
         generation.id,
         revision.logicalSessionId,
         revision.sourceDigest,
@@ -303,7 +309,7 @@ export const planIndexGraphWrite = (
     })
     for (const stem of tokens) {
       const tokenKey = indexTokenKey(
-        revision.uid,
+        scope,
         generation.id,
         revision.logicalSessionId,
         revision.sourceDigest,
@@ -331,7 +337,7 @@ export const planIndexGraphWrite = (
     const names = [entity.canon, ...entity.aliases]
     for (const stem of new Set(names.flatMap((name) => claimTokens({ text: name, keywords: [], entityNames: [] })))) {
       const tokenKey = indexTokenKey(
-        revision.uid,
+        scope,
         generation.id,
         revision.logicalSessionId,
         revision.sourceDigest,
