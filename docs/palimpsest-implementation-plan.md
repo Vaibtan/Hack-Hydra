@@ -1,12 +1,12 @@
 # Palimpsest implementation plan
 
-Status: S00-S03 verified; D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S04-S19 remain
+Status: S00-S04 verified; D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S05-S19 remain
 
 Implementation baseline: committed code at `1445e77`, inspected and reverified 2026-09-19
 
-Committed checkpoints: repository guidance `4ae686b`; S00 population evidence `44930d5`; S01 scoped graph identities `3449e39`; unit-test consolidation `a0025a8`; Effect v4, S02, and corrective hardening `9705c32`; S03 immutable aggregate snapshot graph `1445e77`. The vendor guidance change referenced by `4ae686b` is commit `3e6803a` inside `vendor/hydradb`.
+Committed checkpoints: repository guidance `4ae686b`; S00 population evidence `44930d5`; S01 scoped graph identities `3449e39`; unit-test consolidation `a0025a8`; Effect v4, S02, and corrective hardening `9705c32`; S03 immutable aggregate snapshot graph `1445e77`; S04 lifecycle orchestration and atomic activation `4d4bfbf`. The vendor guidance change referenced by `4ae686b` is commit `3e6803a` inside `vendor/hydradb`.
 
-Current local verification at `1445e77` (2026-09-19): `pnpm install --frozen-lockfile` passes, `pnpm lint` passes with zero findings, `pnpm test:unit` passes 66 files / 663 tests, `pnpm typecheck` passes, `pnpm demo:build` passes, and the staged implementation passed `git diff --check`. The recursive dependency graph contains only `effect@4.0.0-beta.107`; there is no Effect v3 compatibility package or fallback path. This is local contract evidence, not live HydraDB or production-readiness evidence.
+Current local verification at `4d4bfbf` (2026-09-19): `pnpm install --frozen-lockfile` passes, `pnpm lint` passes with zero findings, `pnpm test:unit` passes 67 files / 688 tests, `pnpm typecheck` passes, `pnpm demo:build` passes, and the staged implementation passed `git diff --check`. The recursive dependency graph contains only `effect@4.0.0-beta.107`; there is no Effect v3 compatibility package or fallback path. This is local contract evidence, not live HydraDB or production-readiness evidence.
 
 Audience: a fresh implementation agent working one reviewable slice at a time
 
@@ -562,15 +562,15 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Checklist**
 
-- [ ] Write an explicit lifecycle transition table and error taxonomy.
-- [ ] Resume safely from every durable state without replaying successful provider work unnecessarily.
-- [ ] Separate source enrichment from per-user consolidation/snapshot build.
-- [ ] Acquire the correct scope lock for consolidation and terminal activation.
-- [ ] Verify source revision, canonical view, generation, snapshot projection, and graph digest before the terminal manifest transaction.
-- [ ] Commit the revision and switch the active-snapshot pointer atomically, or define the exact compensating protocol if one database cannot own both records.
-- [ ] Return `queryVisible: true` only after active-snapshot read-back confirms the new pointer.
-- [ ] Preserve the prior active snapshot on provider, graph, manifest, cancellation, or process failures.
-- [ ] Add fault injection at every boundary and state-transition contract tests.
+- [x] Write an explicit lifecycle transition table and error taxonomy.
+- [x] Resume safely from every durable state without replaying successful provider work unnecessarily.
+- [x] Separate source enrichment from per-user consolidation/snapshot build.
+- [x] Acquire the correct scope lock for consolidation and terminal activation.
+- [x] Verify source revision, canonical view, generation, snapshot projection, and graph digest before the terminal manifest transaction.
+- [x] Commit the revision and switch the active-snapshot pointer atomically, or define the exact compensating protocol if one database cannot own both records.
+- [x] Return `queryVisible: true` only after active-snapshot read-back confirms the new pointer.
+- [x] Preserve the prior active snapshot on provider, graph, manifest, cancellation, or process failures.
+- [x] Add fault injection at every boundary and state-transition contract tests.
 
 **Acceptance**
 
@@ -579,6 +579,10 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 - Concurrent commits for the same `MemoryScope` cannot lose a source revision.
 
 **Verification:** transactional source/index, transactional ingest, manifest, projection, and generation unit tests plus `pnpm typecheck`.
+
+**Verified implementation and evidence (2026-09-19, committed `4d4bfbf`):** `TransactionalSourceIndex.ts` now owns the full lifecycle. `runTransactionalSourceCommit` drives one revision through `SOURCE_DURABLE`/`INDEXED` (unchanged S01-S02 stages) plus three new stages under the per-user `IngestCommitLock`: `ENRICHED` builds contested slot chains via `SupersessionDecision.collectSupersessionChains` (match-key union over all same-or-earlier-ordinal artifacts), calls the `decideSupersession` port once per chain, and persists the resolved links in the new `supersession_decisions` table (schema v11) — a stored record makes the stage a pure no-op on resume; `CONSOLIDATED` folds every covered revision (committed, or consolidated-and-retryable, plus the in-flight one) into a fresh `EntityCanonicalView`, registers the content-addressed `UserIndexSnapshot`, replays durable decisions as caller-supplied causal links, and runs the S03 build+verify; `COMMITTED` runs `commitScopeInternal`, which calls the manifest's new `commitAndActivateIndexSnapshot` — one SQLite transaction that re-checks `expectedManifestVersion` pre-commit, advances each listed `CONSOLIDATED` revision to `COMMITTED` (bumping the manifest version per commit), enforces complete committed coverage, compare-and-swaps the active pointer, and supersedes the prior active snapshot, so any failure rolls commits and pointer back together. The post-loop `commitScope` re-acquires the lock and reports the pointer; `queryVisible` is true only when the read-back active snapshot covers the revision's commit id. `commitScope` is also the exported repair/report path for converging pending or committed-but-uncovered revisions. `SnapshotGraph`'s planner now accepts `ENRICHED`/`CONSOLIDATED`/`COMMITTED` revisions (`revisionNotReady`), since `ENRICHED` is the first state whose durable per-revision inputs are complete and the terminal transaction enforces `COMMITTED`. `commitSourceSession`/`commitSession` wire the real decider (`decideSlotSupersession` over `Llm.generateObject`, provider failures die as defects outside stage classification) while `indexSession` still stops at `INDEXED`. Twenty-five new unit tests in `source-commit.test.ts` cover the happy path, supersession projection into the active snapshot, resume from `INDEXED`/`ENRICHED`/`CONSOLIDATED` without re-extraction or re-deciding, idempotent re-commit, retryable and non-retryable stage failures, atomic rollback under stale manifest version / stale pointer / uncovered coverage, idempotent re-activation, and decision-persistence conflict and scope rules; `HydraMemory.ts` is the shared in-memory Hydra double extracted from the snapshot-graph suite. Unit evidence: `pnpm lint` 0 findings, `pnpm test:unit` 67 files / 688 tests, `pnpm typecheck` clean, `git diff --check` clean.
+
+**Future-slice ownership check (2026-09-19):** S05 still owns every read through the active snapshot — no reader was wired here — and S07 still owns the live HydraDB probe and restart reconciliation; the decider port was exercised only through test stubs, so no provider or live-runtime claim is made. Concurrent same-scope commits are serialized by `IngestCommitLock` and defended by the activation CAS, but contention behavior is unit-evidence only.
 
 ### S05: Read exclusively through the active snapshot
 
@@ -1179,4 +1183,4 @@ Before editing, confirm its decision blockers and inspect the current code and t
 Work only on this slice. Add behavior-focused tests, run pnpm lint and the affected unit tests, and run pnpm typecheck when types or contracts change. Preserve the Effect v4-only dependency graph and do not introduce an Effect v3 compatibility or fallback path. Distinguish unit evidence from live evidence. If a maintainer decision or runtime authorization is missing, stop at that boundary and return the exact decision/evidence needed. Do not close or rewrite GitHub issues unless explicitly asked. If asked to commit, use the commit-work skill and stage only the intended scope.
 ```
 
-S00-S03 and D1-D7 are complete. The next production-path slice is S04; preserve the immutable manifest and non-query-visible snapshot boundary until S04 activation orchestration and S05 active-only reads land. Under D5/S14, preserve the original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. S14-S15 may close the frozen legacy experiment while the production lane proceeds independently. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.
+S00-S04 and D1-D7 are complete. The next production-path slice is S05; preserve the active-snapshot-only read boundary until S05 wires readers to the activated pointer. Under D5/S14, preserve the original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. S14-S15 may close the frozen legacy experiment while the production lane proceeds independently. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.
