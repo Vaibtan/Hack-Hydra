@@ -21,8 +21,8 @@ changed either the container profile or the client.
 | 2 | Every relationship write would have failed | `verifyRelationshipIdentity` sent `MATCH ()-[r {id: $id}]->()`, which the engine rejects outright: *"relationship pattern must have exactly one type in Query engine"*. | Removed with #1. |
 | 3 | Every path read failed: `numericMismatch for numeric id 19995` | A relationship has two ids and only one is ours. `MSpaths` returns the engine's own sequential relationship identity (`1145` for the first `HAS_TURN` of a fresh graph); the content-addressed `edgeId` is in the `id` **property**, because the engine refuses `SET r.id`. The check compared a counter with a hash. Vertices are fine — `node.id` **is** the content-addressed id (verified: `2364642823230` for a Session key). | `verifyPathIdentity` now verifies the `id` property. Regression test: `packages/hydra/test/unit/path-identity.test.ts`. |
 | 4 | Users lost to `object_store_unavailable` and `writer_unavailable` inside the first minute | `GRAPH_WRITER_LEASE_MS` was pinned at `3000`, the engine's *minimum* (its default is 30 000). Under load MinIO drops pooled connections often enough that lease renewal misses its window. The client classified these errors as `retryable` and then did not retry. | Lease restored to the engine default `30000`. The client now retries declared-retryable engine failures with jittered exponential backoff (7 attempts, ~6 s, inside the 30 s runtime cap); replay is safe because every write is a content-addressed `MERGE` with a fresh `query_id`. |
-| 5 | Throughput far below the spec's 1–2 h estimate | The object store, not the engine, is the bottleneck, and structurally so: the engine hard-codes SlateDB's WAL flush interval at **1 ms** with `await_durable_writes` (`GraphDurabilityConfig::default()` in `src/bin/graph_node/config.rs`, no env override), so a write-heavy ingest is a stream of tiny durable PUTs. At `cpus: 1` MinIO pinned at 99.9 % with HydraDB at 38 %; at `cpus: 3` it pinned at 301 % with HydraDB at 106 %. | `.wslconfig` `processors` 4 → 8 and `memory` 8 GB → 12 GB; object store `mem_limit` 768m → 3g and `cpus` 1 → 6, in the Compose file and in `benchmark-profile.v1.json`. |
-| 6 | A whole batch of four users lost at once to `client_query_runtime exceeded 30000 ms`, at the ninth user | Not one expensive statement — four unrelated users stalled together, which is a shared resource. The store held **2.0 GB of objects for eight users** at the engine's default storage buffers (64 MiB `max_unflushed_bytes`, 16 MiB L0 SSTs, one flush at a time). `max_unflushed_bytes` is backpressure: when the flush behind it is an object-store round trip, every writer waits for it, and a statement crosses 30 s. | Raised `GRAPH_MAX_UNFLUSHED_BYTES` to 256 MiB, `GRAPH_L0_SST_SIZE_BYTES` to 64 MiB and `GRAPH_L0_FLUSH_PARALLELISM` to 4 — the *opposite* direction from the spec's tier B, spending RAM the curve says is free. The client also halves an `UNWIND` write batch on a limit refusal and keeps the smaller size, as `deleteByKeys` already did, and reports the refused statement so the next one is diagnosable. |
+| 5 | Throughput far below the original 2026-08-29 1–2 h estimate | The object store, not the engine, is the bottleneck, and structurally so: the engine hard-codes SlateDB's WAL flush interval at **1 ms** with `await_durable_writes` (`GraphDurabilityConfig::default()` in `src/bin/graph_node/config.rs`, no env override), so a write-heavy ingest is a stream of tiny durable PUTs. At `cpus: 1` MinIO pinned at 99.9 % with HydraDB at 38 %; at `cpus: 3` it pinned at 301 % with HydraDB at 106 %. | `.wslconfig` `processors` 4 → 8 and `memory` 8 GB → 12 GB; object store `mem_limit` 768m → 3g and `cpus` 1 → 6, in the Compose file and in `benchmark-profile.v1.json`. |
+| 6 | A whole batch of four users lost at once to `client_query_runtime exceeded 30000 ms`, at the ninth user | Not one expensive statement — four unrelated users stalled together, which is a shared resource. The store held **2.0 GB of objects for eight users** at the engine's default storage buffers (64 MiB `max_unflushed_bytes`, 16 MiB L0 SSTs, one flush at a time). `max_unflushed_bytes` is backpressure: when the flush behind it is an object-store round trip, every writer waits for it, and a statement crosses 30 s. | Raised `GRAPH_MAX_UNFLUSHED_BYTES` to 256 MiB, `GRAPH_L0_SST_SIZE_BYTES` to 64 MiB and `GRAPH_L0_FLUSH_PARALLELISM` to 4 — the *opposite* direction from the original low-memory proposal, spending RAM the curve says is free. The client also halves an `UNWIND` write batch on a limit refusal and keeps the smaller size, as `deleteByKeys` already did, and reports the refused statement so the next one is diagnosable. |
 
 Two further notes, both about measurement rather than the runtime:
 
@@ -57,7 +57,7 @@ the bottleneck.
 Ingested with `pnpm ingest-slice --slice N --prefix g3 --users 3
 --skip-existing` (step 1 was run at `--users 4`; see the re-measurement below),
 with `scripts/p0-hydradb-capacity-gate.ps1` sampling alongside. Step 1's
-`--users 4` rather than the spec's 3: the spec pinned 3 because it
+`--users 4` rather than the predeclared 3: three had been selected because it
 was the concurrency that completed 60 users with 0 failures *on the previous
 runtime*, which had a local-file object store and none of the round trips this
 one makes. Ingest concurrency does not change the resulting graph — every write
@@ -144,8 +144,8 @@ so extra concurrent users add queueing rather than parallelism, and the
 per-statement latency rises faster than the concurrency helps. Total throughput
 is `statements/s ÷ statements-per-user` and is therefore *worse* at 8 than at 4.
 
-This is the opposite of the intuition `--users 3` was chosen under in the spec —
-there it was picked as the highest concurrency that had completed 60 users
+This is the opposite of the intuition behind the original `--users 3` choice —
+it was picked as the highest concurrency that had completed 60 users
 without failures, on a runtime with a local-file object store. Here it is the
 low end that is fast, and the reason is structural rather than tuning.
 
@@ -169,10 +169,9 @@ writer lease, and three writers saturate it as completely as four. The earlier
 6.0-at-3 figure was measured on a smaller graph and a different container
 profile and does not reproduce.
 
-The population is therefore ingested at the spec's **`--users 3`**, not 4. Not
-because it is faster — it is not, measurably — but because it is what the spec
-says, it costs nothing, and it removes a deviation that would otherwise have had
-to be argued for on the ticket.
+The population is therefore ingested at the predeclared **`--users 3`**, not 4.
+It is not measurably faster, but retaining the frozen value costs nothing and
+avoids an unnecessary evaluation-protocol deviation.
 
 ### A first-touch eval row is a cold row
 
@@ -218,7 +217,7 @@ latency or accuracy claim — runs on the shipped values.
 | `GRAPH_OBJECT_STORE_CACHE_ENABLED` | `false` | `true` | On, RSS climbs ~2 GiB/min during writes and the gate stops the node in three minutes; off, a cold convergence walk does not finish in 25 s. |
 | `GRAPH_MAX_QUERY_RUNTIME_MS` | `120000` | `120000` | The same in both phases since 2026-08-31 (agreed on #22); the shipped default is 30 s and the product's per-call ceiling stays 25 s. The 30 s cap stops a runaway *plan*. An ingest has no runaway plan and neither does a cold read: it has 86 s of object-store round trips. Failing at 30 s costs the whole unit of work — a user's ingest, or the priming pass an eval's warm numbers depend on. |
 
-**The eval's cap is 120 s, not the spec's 30 s [decided 2026-08-31].** On the
+**The eval's cap is 120 s, not the originally proposed 30 s [decided 2026-08-31].** On the
 60-user graph a cold ask is **86.2 s** and the second ask on the same user is
 **0.1 s**, so the entire cost is pulling a user's working set out of the object
 store once. At a 30 s cap the *priming* pass cannot complete a single ask, and
@@ -235,8 +234,8 @@ finishes, not what the second pass reports. It is recorded in
 `runtime_config_sha256` in every envelope, and the writeup says both passes ran
 at 120 s rather than claiming the shipped cap.
 
-The spec sentence this replaces is *"The eval runs at the shipped 30 s, so no
-latency claim is made against a relaxed cap."* The replacement is: *both passes
+The earlier protocol sentence this replaces was *"The eval runs at the shipped 30 s, so no latency
+claim is made against a relaxed cap."* The replacement is: *both passes
 ran at a 120 s cap; every reported number is a warm read two orders of magnitude
 below the shipped cap, and no measured ask came within an order of magnitude of
 either.*

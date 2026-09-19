@@ -74,7 +74,7 @@ changed a decision. They are the most interesting page in the repository.
 |---|---|
 | **1024 rows per response**, with a `next_cursor` | Ignoring it does not fail, it silently truncates — including from `MSpaths`, which cannot take `SKIP`/`LIMIT`. Every recall number taken before this was found would have been wrong in the same invisible direction. Continuing needs **both** the cursor and the originating `query_id`. |
 | **`MATCH (n:L) WHERE n.p = $v` is a full label scan**, ~100 µs per vertex of that label *store-wide* | The blocker for scale. One user's Claim count cost 4.4 s at 58 k Claims, one Token count 9.5 s, `readSessions` 19.2 s — for numbers belonging to one user out of a hundred. Fixed by §2.3. |
-| **A label scan past 250 000 vertices of that label is refused outright** | `cypher_vertex_label_index_candidates … actual 250001 exceeds limit 250000`. The scan does not degrade, it *stops working* — reached at 60 ingested users. Nothing on the product path scans a label, so nothing broke; two tests did, and the spec's `STARTS WITH` prefix-fallback widening lever is retired with it. |
+| **A label scan past 250 000 vertices of that label is refused outright** | `cypher_vertex_label_index_candidates … actual 250001 exceeds limit 250000`. The scan does not degrade, it *stops working* — reached at 60 ingested users. Nothing on the product path scans a label, so nothing broke; two tests did, and the former `STARTS WITH` prefix-fallback widening idea is retired with it. |
 | **No batched read by id** | `UNWIND $rows AS row MATCH (n {id: row.id}) RETURN …` is refused ("UNWIND batch supports one-hop relationships only" — `UNWIND` is a write form here), and so is `WHERE n.id IN [...]`. Many vertices at once must go through `MSpaths`. |
 | **Source-only `MSpaths` returns one path per source** unless `pathCount` is raised | Silent, like the row cap. The walk from `User` over `HAS_SESSION` returned 1 of 39 sessions. A constant target selector is exempt *and* faster — raising `pathCount` on the convergence query took its median from 0.12 s to 14 s for byte-identical evidence — so the client raises it on source-only walks only. |
 | **32 743-byte string property cap** | Four of 246 750 turns are longer, and they are exactly the long assistant outputs the `single-session-assistant` questions ask about. They spill into `HAS_CHUNK` vertices and reassemble on read, so Span offsets stay absolute. |
@@ -204,8 +204,8 @@ Three things this says, none of which is the thing the pitch originally wanted t
 
 **Full context wins on accuracy, at thirty times the reader tokens.** 83.3 % against 79.6 %, for
 111 057 tokens against 3 658. The brief's premise that full-context loses 30–60 % simply does not
-hold for a mid-2026 model with a 128 k window — the spec anticipated this and said the pitch must
-not depend on it, and it does not. The honest claim is *comparable accuracy at a thirtieth of the
+hold for a mid-2026 model with a 128 k window. The pitch does not depend on it. The honest claim is
+*comparable accuracy at a thirtieth of the
 context*, plus the three things sending everything cannot do: an answer you can check against a
 span, a memory you can query as of a past session, and an explicit supersession chain. It is worth
 adding that B2 is not free — 111 k tokens per question is the whole haystack every time, and it
@@ -356,56 +356,15 @@ small graph, and as-of is how a large graph becomes small.
    scales every score by one constant and changes no ordering, and the receipt reports it as the
    present rather than pretending.
 
-## 8. Deviations from the spec
+## 8. Current status authority
 
-1. **Vertex ids are 53-bit, not `xxhash64`** — HydraDB node ids travel as JSON numbers.
-2. **Extraction does not receive the user's entity list.** The spec asks for it, but that makes the
-   prompt user-specific and destroys the session-hash cache the same ticket requires. Extraction is
-   keyed purely by session content and shared across every user whose haystack contains that
-   session; canon stability moved to deterministic union-find reconciliation over stem match keys.
-   It also made extraction order-independent, which is the only reason a 48-session haystack ingests
-   in ~5 minutes instead of ~30.
-3. **The extractor returns a verbatim quote, not `cs`/`ce`.** Spans are located here, in three
-   reported tiers (exact / whitespace / markdown). Models reliably strip `**bold**` when quoting;
-   that tier alone recovered 125 claims and cut dropped spans from 128 to 15.
-4. **`packages/dataset` is its own package** — ingest needs the loader and must not depend on eval.
-5. **Turn text over 32 743 bytes spills into `HAS_CHUNK` vertices**, settling the open item in
-   spec §7.
-6. **A prompt change gets a fresh key prefix** rather than a reset, because deletion is unavailable.
-7. **Slot expansion is capped at 40 claims.**
-8. **As-of is applied before the verdict, not after it** (spec §3.4 step 5 is wrong and carries an
-   erratum). Applied where the spec puts it, the receipt of an as-of ask is computed over claims the
-   memory is not supposed to hold yet, and top-K is spent on them.
-9. **`A1` as implemented is "no anchor reached a claim"**, where the spec's A1 is "no anchor token
-   exists". The receipt field is named `anchorsReachingClaims` for what it measures. A Token vertex
-   with no `HITS` edge is indistinguishable from a missing one for the verdict, and telling them
-   apart would cost a second query.
-10. **The judge is asked for free text, not a schema-constrained object**, so upstream's
-    `'yes' in response.lower()` scoring is applied to the same kind of reply upstream scores.
-    Upstream pins `gpt-4o-2024-08-06`; this asks for the account's `gpt-4o` alias and records the
-    resolved model in every results row. Upstream also caps the reply at `max_tokens: 10`; here it
-    is uncapped and scored identically.
-11. **`--slice N` selects the same N questions for ingest, the retrieval gate and the answer
-    harness.** Below 30 it is the original stratified slice, unchanged, so the day-1 and day-3
-    numbers keep meaning what they meant; at 30 and above it is all thirty `_abs` questions plus a
-    stratified remainder.
+This writeup is a narrative of the benchmark work and measurements available when it was written.
+It is not a specification, roadmap, completion report, or source of next actions. Current
+requirements, deviations, gates, implementation status, and remaining work live only in
+`docs/palimpsest-implementation-plan.md`; code and committed evidence remain the verification
+sources named there.
 
-## 9. What is not finished
-
-The 100-question ingest reached **60 of 100 users** and stopped there. Twice during it the WSL2 VM
-hosting HydraDB collapsed — once under memory pressure at seven concurrent users, once at three
-with the host still holding 3 GB free — and each time the node came back **read-only**, because a
-node killed mid-write cannot reclaim its own writer lease (§2.2). Recovery is understood and takes
-about five minutes, and is written down in `docs/run-log.md`; the graph, the LLM cache and every
-committed number survived both. But two node failures in one run was the agreed line to stop and
-report on rather than push through, so the results above are over 60 questions and not 100, and the
-full 500-question run has not been attempted.
-
-Nothing about it is blocked: the remaining 40 users are an idempotent re-run of the same command,
-the already-ingested 60 replay from cache for free, and the harness produces the 100- and
-500-question tables from the same code path with no changes.
-
-## 10. Reproducing any of it
+## 9. Reproducing any of it
 
 Everything above replays from `.cache/llm` for **$0.00**; the cache is what the money bought.
 `docs/run-log.md` records what each run cost and what it projected beforehand. `README.md` has the

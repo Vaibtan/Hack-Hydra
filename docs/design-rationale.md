@@ -220,7 +220,7 @@ verbatim span are never projected (`DerivedAssertion.ts`).
 
 **Arms run four at a time** (`Gather.ts`). The engine degrades under read concurrency as it did
 under write concurrency (measured); eleven simultaneous walks are slower in wall clock than four and
-unkind to a concurrent eval. The spec said six.
+unkind to a concurrent eval.
 
 **`DEFAULT_READ_TIMEOUT_MS = 25_000`** (`Gather.ts`). The engine's cap protects the node; by the time
 it fires the caller has spent 30 s of an 8 s budget. This protects the ask. v1 fails the ask on it;
@@ -239,9 +239,9 @@ forgettable (`forgetUser` after a live ingest) so an ask never scores against a 
 A user with no `User` vertex dies loudly: a total of zero flattens every idf. The denominator is the
 whole-history count, not as-of — a constant factor changes no order, and the receipt says so.
 
-**`anchorsReachingClaims`** (`Retrieve.ts`). The spec's A1 is "no anchor token exists"; this is "no
-anchor reached a claim", the weaker and more useful test — a Token with no `HITS` edge is
-indistinguishable from a missing one for the verdict.
+**`anchorsReachingClaims`** (`Retrieve.ts`). A1 means "no anchor reached a claim", not merely "no
+anchor token exists": a Token with no `HITS` edge is indistinguishable from a missing one for the
+verdict, and neither can support an answer.
 
 **`graphMs` vs `askMs`** (`Retrieve.ts`). `graphMs` starts after the anchors call and ends at the
 last read, never includes an LLM round trip; 1.5 s p50 warm is a claim about the index, 8 s about
@@ -263,10 +263,10 @@ stems join the convergence and discovery sources; only what is searched for diff
 **`fast` profile** drops the sufficiency check and its second pass — the demo's 5 s answer that is
 occasionally thinner beats an 8 s one. The HTTP API defaults to `fast`.
 
-**`beforeAsOf` runs before the verdict and the top-K cut** (`Scoring.ts`). Spec §3.4 put as-of at
-step 5 and is wrong (erratum in the spec): a receipt computed over claims the memory should not have
-yet reports anchors resolving against future claims and lets top-K be consumed by them. `applyAsOf`
-still runs later for supersession edges and Query 2 slot-mates.
+**`beforeAsOf` runs before the verdict and the top-K cut** (`Scoring.ts`). Otherwise a receipt can be
+computed over claims the memory should not have yet, report anchors resolving against future claims,
+and let top-K be consumed by them. `applyAsOf` still runs later for supersession edges and Query 2
+slot-mates.
 
 **`convergenceThreshold = min(2, |anchors|)`** (`Scoring.ts`). The one tunable; `min` so a one-word
 question ("Nibbles?") can be answered. The reader's `NOT_IN_MEMORY` is deliberately not an
@@ -289,11 +289,10 @@ bounded by the Slots they name.
 post-`k` claims consumed the budget and were discarded and the scrubber lost recall at every
 position but the last.
 
-**Discovery seeds deviate from the spec** (`Arms.ts`). Two deterministic, LLM-free sources: the
-entities a two-hop `Token→Entity→Claim` path passed through (a name the question's words reached —
-the walk hands its raw paths on rather than re-reading), and terms from the top candidates' index
-text ranked by rarity *within the candidate set*. The spec asked for idf from `Token.df`, which
-`Scoring` only reads for terms that were already anchors — and an anchor discovers nothing.
+**Discovery seeds** (`Arms.ts`) come from two deterministic, LLM-free sources: entities a two-hop
+`Token→Entity→Claim` path passed through (the walk hands its raw paths on rather than re-reading),
+and terms from the top candidates' index text ranked by rarity *within the candidate set*. Global
+`Token.df` is available only for terms already used as anchors, so it cannot discover new vocabulary.
 Discovery is serial by construction and costs one round trip on the critical path.
 
 **Probe arm** (`Arms.ts`). A missing Slot is an empty arm, not an error (the model proposes, the

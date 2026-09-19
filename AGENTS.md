@@ -4,7 +4,9 @@ Use the package manager pinned in `package.json`. For code changes, run affected
 
 Preserve unrelated changes, `data/`, `.cache/llm`, `.palimpsest/`, and the HydraDB volume. Resetting a persistent store or spending on ingestion/evaluation must be part of the authorized task. Run Docker commands from PowerShell; Git Bash rewrites container paths.
 
-For ingestion or evaluation work, consult the relevant runtime procedures in `ops/hydradb/step-load-2026-08.md` and the adoption gate in `docs/spec-retrieval-v2.md`. Report the evaluated population, cache/runtime conditions and acceptance evidence; unit tests alone do not establish runtime readiness. Historical dossiers under `docs/archive/` are evidence of earlier work, not current gate status.
+`docs/palimpsest-implementation-plan.md` is the only active roadmap, requirements plan, execution checklist, and status ledger. Do not create or revive parallel specs, goal prompts, remediation plans, or progress checklists. ADRs record decisions; `CONTEXT.md` records vocabulary and measured engine constraints; `docs/design-rationale.md` explains code invariants; none of them defines work order or completion.
+
+For ingestion or evaluation work, consult the frozen evidence contract in `docs/palimpsest-implementation-plan.md` and the relevant runtime procedures in `ops/hydradb/step-load-2026-08.md`. Report the evaluated population, cache/runtime conditions and acceptance evidence; unit tests alone do not establish runtime readiness.
 
 For domain or architecture changes, follow the conditional pointers in [domain.md](docs/agents/domain.md). For GitHub issue work, use [issue-tracker.md](docs/agents/issue-tracker.md) and the five state labels in [triage-labels.md](docs/agents/triage-labels.md).
 

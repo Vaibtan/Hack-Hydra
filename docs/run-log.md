@@ -119,5 +119,6 @@ No run. v1 (`palimpsest`, `palimpsest-premise`) retired from the checkout to tag
 (run it from a worktree: `scripts/dev-programme.ps1 -V1Worktree <path>`). ~2 800 comment lines
 removed from the code (`d8a6e42`, `b3aa850`); every measured fact and rationale they carried is now in
 `CONTEXT.md`, `ops/hydradb/step-load-2026-08.md` or the new `docs/design-rationale.md`. No results
-file changed. Pending: a dev replay of `palimpsest-v2` on the cleaned code to confirm it is
-byte-identical to `results/palimpsest-v2-dev.json`.
+file changed. At that date, the next proposed action was a dev replay of `palimpsest-v2` on the
+cleaned code. Current ownership, prerequisites, and status live only in S14 of
+`docs/palimpsest-implementation-plan.md`; this dated run log is not a task list.

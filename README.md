@@ -53,7 +53,7 @@ HydraDB stores Sessions, Turns, Claims, Entities, Slots, and Tokens. Explicit `S
 represent updates such as an old employer, address, or preference being replaced by a newer value.
 Historical questions are answered using data-level `asOf` semantics.
 
-### 3. Retrieval plan
+### 3. Retrieval pipeline
 
 For each question, Palimpsest:
 
@@ -99,37 +99,13 @@ test split has not been run. The committed gate is in
 [`results/gate-dev.md`](results/gate-dev.md); source rows are in
 [`results/palimpsest-v2-dev.json`](results/palimpsest-v2-dev.json).
 
-## What is built
+## Implementation authority
 
-- A typed HydraDB client with pagination, bounded writes, safe errors, causal bookmarks, and identity
-  checks.
-- Source-grounded transcript ingestion and temporal Claim/Slot indexing.
-- The full retrieval-v2 stage pipeline and route-specific reader.
-- Citation validation, sufficiency assessment, and one bounded second pass.
-- A typed HTTP API and React demo for evidence, plans, receipts, slot history, and as-of replay.
-- A LongMemEval harness with fixed dev/test splits, BM25/full-context/oracle baselines, paired
-  statistics, result envelopes, batching, and table generation from JSON.
-- A source-first transactional ingest foundation with immutable SourceRevisions, extraction/index
-  generations, a durable manifest, and per-user commit locking.
-
-## What remains
-
-The main work before this can be called a production platform is:
-
-- finish the 200-user benchmark population and run Palimpsest v2 on the held-out test split;
-- complete the planned dev ablations, fast-profile measurement, and reader A/B;
-- connect the transactional source/index-generation path to query-visible retrieval;
-- make same-user live ingestion atomic and content-verified;
-- establish a bounded cold-read and memory profile for HydraDB at multi-user scale;
-- add authentication, tenant isolation, authorization, retention, deletion, quotas, and safe public
-  error handling;
-- strengthen receipts with source, generation, dataset, runtime, and prompt/cache identities;
-- add CI, production packaging, health/readiness checks, and load, restart, and security tests.
-
-The detailed retrieval plan and acceptance criteria live in
-[`docs/spec-retrieval-v2.md`](docs/spec-retrieval-v2.md). Runtime findings, including cold-read and
-memory limits, are recorded in
-[`ops/hydradb/step-load-2026-08.md`](ops/hydradb/step-load-2026-08.md).
+This README intentionally does not mirror implementation status, remaining work, gates, or
+checklists. The single active roadmap and requirements authority is
+[`docs/palimpsest-implementation-plan.md`](docs/palimpsest-implementation-plan.md). Runtime findings
+and procedures remain in [`ops/hydradb/step-load-2026-08.md`](ops/hydradb/step-load-2026-08.md), but
+they do not establish roadmap completion.
 
 ## Repository map
 
@@ -205,11 +181,11 @@ isolation and should not be exposed as a public service.
 ## Design and evidence
 
 - [`CONTEXT.md`](CONTEXT.md): domain vocabulary and measured HydraDB constraints
+- [`docs/palimpsest-implementation-plan.md`](docs/palimpsest-implementation-plan.md): the only active roadmap, requirements plan, checklist, and status ledger
+- [`docs/adr/`](docs/adr/): accepted architectural decisions
 - [`docs/design-rationale.md`](docs/design-rationale.md): why the important invariants and constants exist
-- [`docs/spec-palimpsest.md`](docs/spec-palimpsest.md): original product and graph design
-- [`docs/spec-retrieval-v2.md`](docs/spec-retrieval-v2.md): current retrieval architecture and gate
 - [`ops/hydradb/step-load-2026-08.md`](ops/hydradb/step-load-2026-08.md): runtime measurements and operating procedures
-- [`docs/archive/`](docs/archive/): historical audits and remediation evidence
+- [`docs/run-log.md`](docs/run-log.md) and [`results/`](results/): dated evidence, not execution plans
 
 ## License
 

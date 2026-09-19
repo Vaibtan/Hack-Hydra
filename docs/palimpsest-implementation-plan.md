@@ -14,6 +14,27 @@ This plan turns the current retrieval-v2 findings and open GitHub work into a de
 
 The destination is one coherent path from accepted source data to an immutable, tenant-scoped query snapshot, with atomic activation, reproducible receipts, bounded serving behavior, and honest evaluation evidence.
 
+## Documentation authority
+
+This file is the repository's only active implementation roadmap, requirements plan, execution
+checklist, and status ledger. Add or revise slices here; do not create a second plan, spec, goal
+prompt, remediation checklist, or status matrix.
+
+Other documentation has narrower authority and must not be used to infer work order or completion:
+
+- `CONTEXT.md` owns domain vocabulary and measured engine constraints.
+- `docs/adr/` owns accepted architectural decisions.
+- `docs/design-rationale.md` explains constants and invariants already represented in code.
+- `ops/hydradb/` owns runtime procedures and measurements, not product readiness status.
+- `docs/run-log.md` and committed `results/` are dated evidence records, not current plans.
+- `README.md`, `docs/writeup.md`, and `docs/video-script.md` are explanatory surfaces and must link
+  here instead of mirroring remaining work.
+
+Prior specs, goal prompts, research roadmaps, and remediation checklists were removed from the active
+checkout after their still-valid requirements were reconciled here. Git history remains the recovery
+path for historical text. If another document conflicts with this plan, treat that as documentation
+drift and correct the other document without silently changing this plan's contract.
+
 ## Current baseline and safety boundary
 
 ### Verified from the repository
@@ -41,7 +62,7 @@ The destination is one coherent path from accepted source data to an immutable, 
 
 Docker Desktop reports server version 29.7.2. For S00, the existing benchmark object-store and HydraDB containers were started without recreation, queried only for exact `User -> HAS_SESSION -> Session.sess` membership, and stopped cleanly. The volume was not reset or written by the reconciliation; no ingestion, provider call, or evaluation was run.
 
-Before any runtime work, follow [the August step-load procedure](../ops/hydradb/step-load-2026-08.md) and [the retrieval-v2 adoption gate](spec-retrieval-v2.md). Starting services is reversible; resetting the volume, ingesting data, or running paid evaluation requires explicit authorization.
+Before any runtime work, follow [the August step-load procedure](../ops/hydradb/step-load-2026-08.md) and the frozen retrieval-v2 evidence contract below. Starting services is reversible; resetting the volume, ingesting data, or running paid evaluation requires explicit authorization.
 
 ## How the implementation agent should work
 
@@ -64,10 +85,38 @@ Do not reimplement issues merely because they are still open. For issues #24 thr
 
 The remaining work has two independent lanes:
 
-1. **Retrieval-v2 evidence closure:** S00 is complete; S14-S16 must continue the `g3` experiment on the audited capacity-capped population. This lane does **not** depend on transactional snapshots, Receipt v2, authentication, deletion, or production packaging. Adding those blockers would contradict `docs/spec-retrieval-v2.md` and risks consuming the held-out arm after unrelated architecture changes.
+1. **Retrieval-v2 evidence closure:** S00 is complete; S14-S16 must continue the `g3` experiment on the audited capacity-capped population. This lane does **not** depend on transactional snapshots, Receipt v2, authentication, deletion, or production packaging. Adding those blockers would contradict the frozen evidence contract below and risks consuming the held-out arm after unrelated architecture changes.
 2. **Production memory plane:** D1-D4, D6-D7, S01-S13, S16B, and S17-S19 build and qualify the tenant-scoped transactional path. Evidence from the legacy `g3` experiment is a product-quality baseline, not proof that the new snapshot path preserves it.
 
 The lanes join at S16B: the production path must reproduce the accepted retrieval contract on known data, or obtain a new evaluation approval under D5, before it can become a release candidate.
+
+### Frozen retrieval-v2 evidence contract
+
+This section is the only active contract for the legacy retrieval-v2 experiment. Algorithm details
+already implemented are owned by executable code and behavior tests; this section freezes only the
+population, evaluation, and claim boundary needed by S14-S16.
+
+- The experiment uses the legacy query-visible `g3` graph. The transactional source/index path is
+  not query-visible and must not be substituted into this lane.
+- The originally selected population was 200 questions. S00 proved 164 users complete and 36
+  missing, with zero partial users. Effective membership is dev 60 and test 104; the original
+  60/140 split remains immutable provenance.
+- The 2026-08-31 dev adoption gate is read-once evidence. Its predeclared checks were: v2 at least
+  three more correct answers than v1 on 54 answerable questions; no question type worse by more than
+  one; false abstention at most 10%; abstention accuracy on six `_abs` questions at least v1's;
+  warm `graphMs` p50 at most 1.5 seconds; and reader input p50 at most 6,000 tokens.
+- The gate passed at `4d45e09`. V1 is available only at tag `pre-cleanup-v1`; it is not a live
+  checkout system. The reader remains `gpt-5.6-luna`, and final scoring uses the declared upstream
+  `gpt-4o` judge protocol unless S14 records and approves a deviation before the remaining arm.
+- BM25, full-context, and oracle-session already consumed the original 140-question test split at
+  `422f021`. Their artifacts must remain byte-identical. Only Palimpsest v2 may be run on the 104
+  eligible test users, exactly once and only after S14-S15 plus explicit runtime/provider approval.
+- The test split is held out from v2 tuning but is no longer fully blind because baseline answers
+  have been observed. Public wording must say so. A stronger blind quality claim requires the D5
+  private-holdout path.
+- Any change that can alter candidates, scope, selection, packing, sufficiency, reader input/output,
+  or answer choice invalidates inherited gate qualification unless the full 60-user semantic replay
+  is byte-identical under S14's frozen manifest.
 
 ## Wayfinding decision frontier
 
@@ -291,7 +340,7 @@ This matrix is the completeness check against the severity review. A slice is no
 
 ## F-01 through F-45 traceability
 
-The archived remediation dossier remains the definition of each finding. This crosswalk is mandatory because the P0/P1/P2 review above refines, but does not replace, the original 45-item acceptance contract.
+This table, the P0/P1/P2 matrix above, and the mapped slice acceptance criteria are the complete active definition of the 45 findings. Historical remediation dossiers remain only in Git history and must not be restored as a parallel checklist.
 
 | Finding | Plan owner | Finding | Plan owner |
 | --- | --- | --- | --- |
@@ -319,7 +368,7 @@ The archived remediation dossier remains the definition of each finding. This cr
 | F-22 historical scoring snapshot | D7, S05A, S09 | F-45 multi-source product evidence | D5, S18B, S19 |
 | F-23 generated denominators | S00, S14 |  |  |
 
-No finding is closed by this mapping. Each still needs the dossier's named acceptance evidence or an explicitly approved non-goal.
+No finding is closed by this mapping. Each still needs the mapped slice's acceptance evidence or an explicitly approved non-goal recorded in this plan.
 
 ## Open issue reconciliation map
 
@@ -736,7 +785,7 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 - [ ] Prototype only the candidate topology required to answer D2; time-box it and record image/config digests.
 - [ ] Tie the runtime image digest and build metadata to the exact reviewed HydraDB source revision and local patch fingerprint; reject `latest` or an untraceable build.
 - [ ] Verify cold start, health, readiness, persistence, object-store behavior, clean shutdown, unclean restart, and schema/version compatibility.
-- [ ] Repeat the dossier's minimum 20 clean write/restart/write cycles and 10 forced-kill/restart/write cycles without lease surgery or lost committed source.
+- [ ] Run at least 20 clean write/restart/write cycles and 10 forced-kill/restart/write cycles without lease surgery or lost committed source.
 - [ ] Run a sustained compaction/GC soak and a fault-injected maintenance test; record backlog, bytes pending, error counts, and last-success times and make stale maintenance visible to readiness.
 - [ ] Exercise both the supported cache-off profile and an enabled-cache load profile; prove queue depth/drop rate, latency, and RSS stay inside a declared bound rather than assuming zero samples under a disabled cache close F-05.
 - [ ] Set explicit timeouts, retries, concurrency, paging, payload, memory, disk, and connection limits.
@@ -846,11 +895,11 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 
 **Blocked by:** S00 and D5.
 
-**Primary areas:** `docs/spec-retrieval-v2.md`, eval config/manifests, gate and result schemas.
+**Primary areas:** this plan's frozen retrieval-v2 evidence contract, eval config/manifests, gate and result schemas.
 
 **Checklist**
 
-- [ ] Reconcile the spec with the audited population artifact, current implementation, `pre-cleanup-v1`, and the accepted issue deviations. Update stale statements that v1 remains live or that no test data has been read.
+- [ ] Reconcile the frozen contract above with the audited population artifact, current implementation, `pre-cleanup-v1`, and the accepted issue deviations. Keep all evaluation requirements in this plan; do not create another spec or run checklist.
 - [ ] Preserve the 2026-08-31 dev gate as read-once evidence. Do not delete, overwrite, or recompute its thresholds or result from newer code.
 - [ ] Record that BM25, full-context, and oracle-session already consumed the 140-question test split at `422f021`; only Palimpsest v2 remains unrun on test.
 - [ ] Freeze the S00 effective membership (dev 60, test 104) in the evaluation manifest. Derive 104-row baseline views from the immutable 140-row committed baseline artifacts without provider calls or overwriting them, and make every join fail on an ID outside or missing from the eligible set.
@@ -1040,7 +1089,7 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 - [ ] Run fair controls needed to separate graph/index effects from whole-system effects: literal graph terms, BM25 with matched expanded queries, equal selected-character/token budgets, top-k/budget curves, group-budgeted slot variants, and oracle session/span readers.
 - [ ] Run the exact upstream LongMemEval judge path for the official score; add a second judge family as sensitivity analysis and blind two human reviewers on system discordances.
 - [ ] Report paired effects/CIs and exact McNemar, retrieval/grounding metrics, risk-coverage/AURC, false answer/abstention, calibration (including ECE/Brier where probabilistic scores exist), temporal metrics, cost, freshness, and failures under one manifest contract.
-- [ ] Trigger a semantic/late-interaction sidecar experiment for F-36 only if the frozen post-v2 error table shows retrieval/vocabulary misses above the agreed threshold (the retrieval-v2 spec uses 5%). Keep negative results and source-lineage/cost evidence.
+- [ ] Trigger a semantic/late-interaction sidecar experiment for F-36 only if the frozen post-v2 error table shows retrieval/vocabulary misses above the predeclared 5% threshold. Keep negative results and source-lineage/cost evidence.
 - [ ] Test structured per-span assessment/Chain-of-Note for F-37 only as an identical-evidence A/B; do not replace source spans with generated summaries.
 - [ ] Run the complete 500-question LongMemEval-S comparison only after runtime, transactional, tenancy, deletion, and benchmark gates pass. Resolve #13's stale “three systems” wording under D5 before execution.
 - [ ] Expand claims only after evidence from the approved set: LongMemEval-M/V2, MemoryAgentBench, a post-model-release private rolling holdout, adversarial temporal/concurrency/restart/collision/tenancy/deletion TCKs, and opt-in de-identified product traces where authorized.
@@ -1063,19 +1112,20 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 
 **Blocked by:** all release-target slices, including S16B and S18B when their work is in the selected release scope.
 
-**Primary areas:** README, retrieval spec, ops procedures, architecture/domain docs, GitHub issues #13-#32.
+**Primary areas:** this implementation plan, README, ops procedures, architecture/domain docs, GitHub issues #13-#32.
 
 **Checklist**
 
 - [ ] Review each issue acceptance criterion against code and evidence, especially #25-#30.
 - [ ] Close only criteria proven by the linked commit and artifact; relabel partial work accurately.
 - [ ] Record the proposed acceptance-criterion substitutions on #24, #26, and #27 instead of leaving impossible/stale wording silently unticked.
-- [ ] Reconcile the specific stale surfaces from the severity review: README architecture/result boundaries, `docs/writeup.md` completion/blocker claims, `docs/run-log.md` cleanup replay status, and the local semantic replay evidence.
-- [ ] Reconcile `docs/spec-retrieval-v2.md` with the accepted post-gate state: v1 is available only at `pre-cleanup-v1`, the dev gate already passed, three test baselines were already read, and only the graph arm remains.
+- [x] Remove duplicated roadmap/status sections from README, `docs/writeup.md`, and `docs/run-log.md`; those surfaces now point here instead of maintaining next-work claims.
+- [ ] Reconcile any remaining release-facing architecture/result claims with the local semantic replay evidence.
+- [ ] Reconcile this plan's frozen retrieval-v2 contract with the accepted post-gate state: v1 is available only at `pre-cleanup-v1`, the dev gate already passed, three test baselines were already read, and only the graph arm remains.
 - [ ] Update architecture diagrams for `MemoryScope`, `UserIndexSnapshot`, activation, reader binding, receipts, and security boundaries.
 - [ ] Update the runtime procedure with exact supported image/config, backup/restore, and restart steps.
 - [ ] Separate dev quality, held-out quality, runtime acceptance, and production-readiness claims.
-- [ ] Archive superseded dossiers as historical evidence rather than deleting them or presenting them as current status.
+- [x] Remove superseded specs, goal prompts, research roadmaps, and remediation checklists from the active checkout after reconciling their durable requirements into this plan; use Git history for recovery.
 - [ ] Record known limitations, removal dates for compatibility paths, and owners for remaining risks.
 - [ ] Assign the recorded-video/link step to a human owner and treat it as an external deliverable, not a code completion claim.
 
