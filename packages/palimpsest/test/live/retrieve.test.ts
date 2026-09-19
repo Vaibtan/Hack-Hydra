@@ -10,15 +10,15 @@ import { Supersede } from "../../src/Supersede.js"
 
 const hasDataset = existsSync(datasetPath("s"))
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
-const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.runPromise(Effect.provide(effect, AppLive) as unknown as Effect.Effect<A, E, never>)
+const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof AppLive>>) =>
+  Effect.runPromise(Effect.provide(effect, AppLive))
 
 const UID = "probe-supersede"
 const QUESTION = "What was the amount I was pre-approved for when I got my mortgage from Wells Fargo?"

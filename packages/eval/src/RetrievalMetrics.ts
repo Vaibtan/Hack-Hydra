@@ -17,9 +17,20 @@ export interface QuestionRetrieval {
   readonly latencyMs: number
 }
 
+export interface RetrievalScoreResult {
+  readonly verdict: AskResult["verdict"]
+  readonly reason: AskResult["reason"]
+  readonly evidence: ReadonlyArray<{ readonly sid: string }>
+  readonly receipt: {
+    readonly anchorTerms: ReadonlyArray<string>
+    readonly anchorsReachingClaims: ReadonlyArray<string>
+    readonly convergence: ReadonlyArray<{ readonly convergence: number }>
+  }
+}
+
 export const scoreQuestion = (
   question: DatasetQuestion,
-  result: AskResult,
+  result: RetrievalScoreResult,
   latencyMs: number
 ): QuestionRetrieval => {
   const evidenceSessions = [...new Set(result.evidence.map((claim) => claim.sid))].sort()

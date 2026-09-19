@@ -101,7 +101,7 @@ describe("reachedRows", () => {
   it.each([
     ["a path that ends where it starts", pathOf([token], [])],
     ["a target with no claim key", pathOf([token, node(3, "Claim", { text: "x" })], ["HITS"])],
-    ["an empty node list", { nodes: [], relationships: [] } as HydraPath]
+    ["an empty node list", { nodes: [], relationships: [] } satisfies HydraPath]
   ])("skips %s", (_, path) => {
     expect(reachedRows([path])).toEqual([])
   })

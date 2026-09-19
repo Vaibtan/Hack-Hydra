@@ -31,7 +31,7 @@ export const projectPlan = (answered: V2Answer): typeof RetrievalPlan.Type => {
     intervalSentence: plan.intervalSentence,
     stages: {
       ...answered.ask.timings.stages,
-      ...(read === null ? {} : { hydrate: read.hydrateMs, read: read.readMs })
+      ...(read !== null && { hydrate: read.hydrateMs, read: read.readMs })
     },
     askMs: answered.ask.timings.askMs + (read === null ? 0 : read.readMs),
     graphMs: answered.ask.timings.graphMs + (read === null ? 0 : read.hydrateMs)

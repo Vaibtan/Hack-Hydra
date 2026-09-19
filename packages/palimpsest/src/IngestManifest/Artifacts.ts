@@ -5,7 +5,7 @@ import {
   parseExtractionArtifact,
   type ExtractionArtifact
 } from "../ExtractionArtifact.js"
-import { selectRevisionByCommitId, text, transaction, type DatabaseRow } from "./Rows.js"
+import { selectRevisionByCommitId, text, transaction } from "./Rows.js"
 import {
   ExtractionArtifactBindingMismatch,
   ExtractionArtifactConflict,
@@ -37,18 +37,18 @@ const selectExtractionArtifact = (
 ): ExtractionArtifact | undefined => {
   const row = database
     .prepare(`SELECT artifact_id, canonical_json FROM extraction_artifacts WHERE commit_id = ?`)
-    .get(revision.commitId) as DatabaseRow | undefined
+    .get(revision.commitId)
   if (row === undefined) return undefined
   const parsed = parseExtractionArtifact(text(row, "artifact_id"), text(row, "canonical_json"))
-  if (parsed._tag === "Left") throw new Error(`stored extraction artifact ${revision.commitId} was invalid`)
+  if (parsed._tag === "Failure") throw new Error(`stored extraction artifact ${revision.commitId} was invalid`)
   if (
-    parsed.right.commitId !== revision.commitId ||
-    parsed.right.sourceDigest !== revision.sourceDigest ||
-    parsed.right.extractionGeneration !== revision.extractionGeneration
+    parsed.success.commitId !== revision.commitId ||
+    parsed.success.sourceDigest !== revision.sourceDigest ||
+    parsed.success.extractionGeneration !== revision.extractionGeneration
   ) {
     throw new Error(`stored extraction artifact ${revision.commitId} had an invalid revision binding`)
   }
-  return parsed.right
+  return parsed.success
 }
 
 const storeArtifact = (database: DatabaseSync, input: StoreExtractionArtifact): ExtractionArtifact => {
@@ -66,10 +66,10 @@ const storeArtifact = (database: DatabaseSync, input: StoreExtractionArtifact): 
     throw new ExtractionArtifactBindingMismatch({ commitId: revision.commitId, reason: "extractionGeneration" })
   }
   const parsed = parseExtractionArtifact(input.artifact.id, input.artifact.canonicalJson)
-  if (parsed._tag === "Left") throw parsed.left
+  if (parsed._tag === "Failure") throw parsed.failure
   const existing = selectExtractionArtifact(database, revision)
   if (existing !== undefined) {
-    if (existing.canonicalJson !== parsed.right.canonicalJson) {
+    if (existing.canonicalJson !== parsed.success.canonicalJson) {
       throw new ExtractionArtifactConflict({ commitId: revision.commitId })
     }
     return existing
@@ -82,13 +82,13 @@ const storeArtifact = (database: DatabaseSync, input: StoreExtractionArtifact): 
       `INSERT INTO extraction_artifacts (commit_id, artifact_id, canonical_json, created_at_ms)
        VALUES (?, ?, ?, ?)`
     )
-    .run(revision.commitId, parsed.right.id, parsed.right.canonicalJson, Date.now())
+    .run(revision.commitId, parsed.success.id, parsed.success.canonicalJson, Date.now())
   const stored = selectExtractionArtifact(database, revision)
   if (stored === undefined) throw new Error("inserted extraction artifact was not readable")
   return stored
 }
 
-export const makeArtifactOperations = (database: DatabaseSync): ArtifactOperations => ({
+export const createArtifactOperations = (database: DatabaseSync): ArtifactOperations => ({
   storeExtractionArtifact: (input) =>
     Effect.try({
       try: () => transaction(database, () => storeArtifact(database, input)),

@@ -2,6 +2,16 @@ import { createHash } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { existsSync } from "node:fs"
+import { Result, Schema } from "effect"
+
+const CachedCallSchema = Schema.Struct({
+  model: Schema.String,
+  value: Schema.Unknown,
+  inputTokens: Schema.Number,
+  outputTokens: Schema.Number,
+  system: Schema.optionalKey(Schema.String),
+  prompt: Schema.optionalKey(Schema.String)
+})
 
 export const cacheKey = (parts: {
   readonly model: string
@@ -57,7 +67,8 @@ export const readCache = async (
   const path = pathFor(dir, kind, key)
   if (!existsSync(path)) return undefined
   try {
-    return JSON.parse(await readFile(path, "utf8")) as CachedCall
+    const decoded = Schema.decodeUnknownResult(CachedCallSchema)(JSON.parse(await readFile(path, "utf8")))
+    return Result.isSuccess(decoded) ? decoded.success : undefined
   } catch {
     return undefined
   }

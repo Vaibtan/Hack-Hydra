@@ -1,5 +1,5 @@
-import { HttpClient } from "@effect/platform"
-import { Config, Effect, Either, FiberRef, Option } from "effect"
+import { HttpClient } from "effect/unstable/http"
+import { Config, Context, Effect, Layer, Option, Result, Schema } from "effect"
 import { isLimit, oversizeProperty } from "./Classify.js"
 import { DELETE_ROWS_PER_CHUNK, MERGE_ROWS_PER_CHUNK, writeChunked } from "./Chunking.js"
 import {
@@ -14,22 +14,23 @@ import {
   requireIdentifier,
   type MsPathsConfig
 } from "./Cypher.js"
-import type { HydraPath, QueryResult, Row, Scalar } from "./Decode.js"
+import { isHydraPath, type HydraPath, type QueryResult, type Row, type Scalar } from "./Decode.js"
 import {
   HydraLimitError,
   HydraParseError,
   type HydraError,
   type HydraIdentityIntegrityError
 } from "./Errors.js"
-import { identityEffect, makeIdentity } from "./Identity.js"
+import { createIdentity, identityEffect } from "./Identity.js"
 import { edgeId, vertexId } from "./Ids.js"
 import { verifyStoredGraphIdentity } from "./Ids.js"
-import { makeTransport, type QueryOptions } from "./Transport.js"
+import type { JsonObject, JsonValue } from "./JsonValue.js"
+import { createTransport, CurrentHydraBookmark, type QueryOptions } from "./Transport.js"
 
 export type { QueryOptions } from "./Transport.js"
 
-/** Scalar statement parameters. Lists of maps are handled by the batch methods. */
-export type Params = Record<string, Scalar>
+/** JSON-compatible parameters accepted by HydraDB's query protocol. */
+export type Params = Readonly<Record<string, JsonValue>>
 
 /** One vertex upsert. The client derives the id from `key`; callers never hash. */
 export interface VertexRow {
@@ -69,10 +70,10 @@ const reservedProperty = (query: string): HydraParseError =>
     query
   })
 
-const firstFailure = <E>(claims: Iterable<() => Either.Either<unknown, E>>): E | undefined => {
+const firstFailure = <E>(claims: Iterable<() => Result.Result<unknown, E>>): E | undefined => {
   for (const claim of claims) {
     const outcome = claim()
-    if (outcome._tag === "Left") return outcome.left
+    if (outcome._tag === "Failure") return outcome.failure
   }
   return undefined
 }
@@ -88,9 +89,8 @@ const make = Effect.gen(function* () {
   const cellId = yield* Config.string("HYDRA_CELL").pipe(Config.withDefault("cell-0"))
 
   const http = yield* HttpClient.HttpClient
-  const bookmarkRef = FiberRef.unsafeMake<Option.Option<string>>(Option.none())
-  const identity = makeIdentity()
-  const send = makeTransport({ baseUrl, token, graph, cellId, http, bookmarkRef })
+  const identity = createIdentity()
+  const send = createTransport({ baseUrl, token, graph, cellId, http })
 
   const query = (
     cypher: string,
@@ -132,7 +132,7 @@ const make = Effect.gen(function* () {
       const identities = new Set<string>()
       for (const row of result.rows) {
         const stored = row[FULL_KEY_PROPERTY]
-        const canonicalIdentity = typeof stored === "string" ? stored : null
+        const canonicalIdentity = Schema.is(Schema.String)(stored) ? stored : null
         yield* identityEffect(
           verifyStoredGraphIdentity({
             kind,
@@ -146,9 +146,9 @@ const make = Effect.gen(function* () {
       return [...identities]
     })
 
-  const sendChunked = (
+  const sendChunked = <T extends JsonObject>(
     statement: string,
-    payload: ReadonlyArray<Readonly<Record<string, unknown>>>,
+    payload: ReadonlyArray<T>,
     maxRows: number
   ): Effect.Effect<number, HydraError> =>
     writeChunked((rows) => send(statement, { rows }, {}), payload, { maxRows })
@@ -247,7 +247,7 @@ const make = Effect.gen(function* () {
           d: vertexId(row.dstKey),
           r: edgeId(row.srcKey, relType, row.dstKey),
           [FULL_KEY_PROPERTY]: `${row.srcKey}|${relType}|${row.dstKey}`,
-          ...(row.properties ?? {})
+          ...row.properties
         }))
         written += yield* sendChunked(statement, payload, MERGE_ROWS_PER_CHUNK)
       }
@@ -263,7 +263,7 @@ const make = Effect.gen(function* () {
       const result = yield* send(rendered.query, rendered.parameters, {})
       const paths = result.rows
         .map((row) => row["path"])
-        .filter((cell): cell is HydraPath => cell !== null && typeof cell === "object")
+        .filter(isHydraPath)
       const failure = firstFailure(paths.map((path) => () => identity.verifyPath(path)))
       if (failure !== undefined) return yield* Effect.fail(failure)
       return paths
@@ -281,11 +281,18 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.asVoid)
 
   const withCausalBookmark = <A, E, R>(
-    bookmark: string,
+    bookmark: string | undefined,
     operation: Effect.Effect<A, E, R>
-  ): Effect.Effect<A, E, R> => Effect.locally(operation, bookmarkRef, Option.some(bookmark))
+  ): Effect.Effect<A, E, R> =>
+    Effect.suspend(() =>
+      Effect.provideService(
+        operation,
+        CurrentHydraBookmark,
+        bookmark === undefined ? Option.none() : Option.some(bookmark)
+      )
+    )
 
-  const lastBookmark = FiberRef.get(bookmarkRef)
+  const lastBookmark = CurrentHydraBookmark
 
   return {
     query,
@@ -300,6 +307,6 @@ const make = Effect.gen(function* () {
   } as const
 })
 
-export class HydraClient extends Effect.Service<HydraClient>()("palimpsest/HydraClient", {
-  effect: make
-}) {}
+export type HydraClient = Effect.Success<typeof make>
+const HydraClientTag = Context.Service<HydraClient>("palimpsest/HydraClient")
+export const HydraClient = Object.assign(HydraClientTag, { layer: Layer.effect(HydraClientTag, make) })

@@ -1,8 +1,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
+import { Schema } from "effect"
 import {
   MEASUREMENT_FIELDS,
+  ReaderAbFile,
   arg,
   envelopeVariant,
   errorClasses,
@@ -22,7 +24,6 @@ import {
   type ErrorClassCounts,
   type EvalEnvelope,
   type EvalRow,
-  type ReaderAbFile,
   type SystemName
 } from "../src/index.js"
 
@@ -74,7 +75,7 @@ const loadAll = (): ReadonlyArray<EvalEnvelope> => {
 const loadReaderAb = (): ReaderAbFile | null => {
   const path = resolve(resultsDir, `reader-ab-${label === "" ? "dev" : label}.json`)
   if (!existsSync(path)) return null
-  return JSON.parse(readFileSync(path, "utf8")) as ReaderAbFile
+  return Schema.decodeUnknownSync(ReaderAbFile)(JSON.parse(readFileSync(path, "utf8")))
 }
 
 const main = async (): Promise<void> => {
@@ -92,8 +93,8 @@ const main = async (): Promise<void> => {
 
   const first = envelopes[0]!
   const n = first.rows.length
-  const bySystem = envelopes.map(
-    (envelope) => [envelope.system, envelope.rows] as readonly [SystemName, ReadonlyArray<EvalRow>]
+  const bySystem: ReadonlyArray<readonly [SystemName, ReadonlyArray<EvalRow>]> = envelopes.map(
+    (envelope) => [envelope.system, envelope.rows]
   )
 
   const disagreements: Array<string> = []
@@ -215,7 +216,7 @@ const main = async (): Promise<void> => {
   console.log(`wrote ${outPath}`)
 }
 
-main().catch((error: unknown) => {
+main().catch((error) => {
   console.error(String(error))
   process.exit(1)
 })

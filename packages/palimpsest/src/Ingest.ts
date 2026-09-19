@@ -1,8 +1,7 @@
-import type { LanguageModel } from "@effect/ai"
 import type { Llm } from "@palimpsest/llm"
 import type { DatasetQuestion, DatasetSession } from "@palimpsest/dataset"
 import { HydraClient, type HydraError } from "@palimpsest/hydra"
-import { Effect, Option } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import { ClaimGraph } from "./ClaimGraph.js"
 import type { SupersedeReport } from "./Supersede.js"
 import { extractSession } from "./Extract.js"
@@ -52,7 +51,7 @@ const make = Effect.gen(function* () {
     uid: string,
     question: DatasetQuestion,
     options?: { readonly onSession?: (progress: SessionProgress) => void }
-  ): Effect.Effect<IngestReport, HydraError, LanguageModel.LanguageModel | Llm> =>
+  ): Effect.Effect<IngestReport, HydraError, Llm> =>
     Effect.gen(function* () {
       yield* transcript.ingest(uid, question.sessions)
 
@@ -141,7 +140,7 @@ const make = Effect.gen(function* () {
   const ingestSession = (
     uid: string,
     session: Omit<DatasetSession, "sessionOrd">
-  ): Effect.Effect<SessionIngestReport, HydraError, LanguageModel.LanguageModel | Llm> =>
+  ): Effect.Effect<SessionIngestReport, HydraError, Llm> =>
     Effect.gen(function* () {
       const before = yield* readUserStats(hydra, uid).pipe(
         Effect.map(Option.getOrElse((): UserStats => EMPTY_STATS))
@@ -257,4 +256,6 @@ const make = Effect.gen(function* () {
   return { ingestUser, ingestSession, removeUser } as const
 })
 
-export class Ingest extends Effect.Service<Ingest>()("palimpsest/Ingest", { effect: make }) {}
+export type Ingest = Effect.Success<typeof make>
+const IngestTag = Context.Service<Ingest>("palimpsest/Ingest")
+export const Ingest = Object.assign(IngestTag, { layer: Layer.effect(IngestTag, make) })

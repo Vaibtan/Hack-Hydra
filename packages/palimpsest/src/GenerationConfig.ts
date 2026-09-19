@@ -1,4 +1,4 @@
-import { Config, Data, Effect, Either } from "effect"
+import { Config, Data, Effect, Result } from "effect"
 import {
   createRuntimeExtractionGeneration,
   type ExtractionRuntimeDependencies
@@ -39,58 +39,58 @@ const dependency = (
   id: string,
   revision: string,
   field: Exclude<keyof IngestGenerationConfigInput, "modelId">
-): Either.Either<VersionedDependency, InvalidIngestGenerationConfig> => {
+): Result.Result<VersionedDependency, InvalidIngestGenerationConfig> => {
   if (revision.trim().length === 0) {
-    return Either.left(new InvalidIngestGenerationConfig({ field }))
+    return Result.fail(new InvalidIngestGenerationConfig({ field }))
   }
-  return Either.right({ id, revision })
+  return Result.succeed({ id, revision })
 }
 
 export const makeIngestGenerationConfig = (
   input: IngestGenerationConfigInput
-): Either.Either<IngestGenerationConfig, InvalidIngestGenerationConfig> => {
+): Result.Result<IngestGenerationConfig, InvalidIngestGenerationConfig> => {
   if (input.modelId.trim().length === 0) {
-    return Either.left(new InvalidIngestGenerationConfig({ field: "modelId" }))
+    return Result.fail(new InvalidIngestGenerationConfig({ field: "modelId" }))
   }
   const model = dependency(input.modelId, input.modelRevision, "modelRevision")
-  if (model._tag === "Left") return Either.left(model.left)
+  if (model._tag === "Failure") return Result.fail(model.failure)
   const extractor = dependency(
     LOCAL_GENERATION_COMPONENTS.extractor,
     input.extractorRevision,
     "extractorRevision"
   )
-  if (extractor._tag === "Left") return Either.left(extractor.left)
+  if (extractor._tag === "Failure") return Result.fail(extractor.failure)
   const tokenizer = dependency(
     LOCAL_GENERATION_COMPONENTS.tokenizer,
     input.tokenizerRevision,
     "tokenizerRevision"
   )
-  if (tokenizer._tag === "Left") return Either.left(tokenizer.left)
+  if (tokenizer._tag === "Failure") return Result.fail(tokenizer.failure)
   const graphWriter = dependency(
     LOCAL_GENERATION_COMPONENTS.graphWriter,
     input.graphWriterRevision,
     "graphWriterRevision"
   )
-  if (graphWriter._tag === "Left") return Either.left(graphWriter.left)
+  if (graphWriter._tag === "Failure") return Result.fail(graphWriter.failure)
   const graphSchema = dependency(
     LOCAL_GENERATION_COMPONENTS.graphSchema,
     input.graphSchemaRevision,
     "graphSchemaRevision"
   )
-  if (graphSchema._tag === "Left") return Either.left(graphSchema.left)
+  if (graphSchema._tag === "Failure") return Result.fail(graphSchema.failure)
 
   const extractionDependencies: ExtractionRuntimeDependencies = {
-    extractor: extractor.right,
-    model: model.right,
-    tokenizer: tokenizer.right
+    extractor: extractor.success,
+    model: model.success,
+    tokenizer: tokenizer.success
   }
   const extractionGeneration = createRuntimeExtractionGeneration(extractionDependencies)
-  return Either.right({
+  return Result.succeed({
     extractionGeneration,
     indexGeneration: createIndexGeneration({
       extractionGeneration,
-      graphWriter: graphWriter.right,
-      graphSchema: graphSchema.right
+      graphWriter: graphWriter.success,
+      graphSchema: graphSchema.success
     })
   })
 }
@@ -104,6 +104,6 @@ export const ingestGenerationConfig = Effect.gen(function* () {
     graphWriterRevision: yield* Config.string("PALIMPSEST_INDEX_WRITER_REVISION"),
     graphSchemaRevision: yield* Config.string("PALIMPSEST_INDEX_SCHEMA_REVISION")
   })
-  if (parsed._tag === "Left") return yield* Effect.fail(parsed.left)
-  return parsed.right
+  if (parsed._tag === "Failure") return yield* Effect.fail(parsed.failure)
+  return parsed.success
 })

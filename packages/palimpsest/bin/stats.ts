@@ -16,9 +16,9 @@ const uid = arg("uid", "")
 const showSlots = process.argv.includes("--slots")
 const showTokens = process.argv.includes("--tokens")
 
-const AppLive = ClaimGraph.Default.pipe(
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = ClaimGraph.layer.pipe(
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -61,7 +61,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

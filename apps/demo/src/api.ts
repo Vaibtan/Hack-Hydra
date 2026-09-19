@@ -1,4 +1,5 @@
-import type * as S from "@palimpsest/server"
+import * as S from "@palimpsest/server/api"
+import { Schema } from "effect"
 
 export type Highlight = typeof S.Highlight.Type
 export type EvidenceSpan = typeof S.EvidenceSpan.Type
@@ -28,29 +29,33 @@ export class ApiError extends Error {
   }
 }
 
-const request = async <A>(path: string, init?: RequestInit): Promise<A> => {
+const request = async <Contract extends Schema.Top>(
+  contract: Contract,
+  path: string,
+  init?: RequestInit
+): Promise<Schema.Schema.Type<Contract>> => {
   const response = await fetch(`/api${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }
+    headers: { "Content-Type": "application/json", ...init?.headers }
   })
   if (!response.ok) throw new ApiError(response.status, await response.text())
-  return (await response.json()) as A
+  return Schema.decodeUnknownSync(contract)(await response.json())
 }
 
 export const api = {
   ask: (uid: string, input: AskInput): Promise<AskResponse> =>
-    request(`/users/${encodeURIComponent(uid)}/ask`, {
+    request(S.AskResponse, `/users/${encodeURIComponent(uid)}/ask`, {
       method: "POST",
       body: JSON.stringify(input)
     }),
 
   sessions: (uid: string): Promise<ReadonlyArray<SessionRow>> =>
-    request(`/users/${encodeURIComponent(uid)}/sessions`),
+    request(Schema.Array(S.SessionRow), `/users/${encodeURIComponent(uid)}/sessions`),
 
   /** Reads what the next ask will read; a failure must not stop the user asking. */
   warm: async (uid: string): Promise<WarmResult | null> => {
     try {
-      return await request<WarmResult>(`/users/${encodeURIComponent(uid)}/warm`, {
+      return await request(S.WarmResponse, `/users/${encodeURIComponent(uid)}/warm`, {
         method: "POST"
       })
     } catch {
@@ -58,16 +63,18 @@ export const api = {
     }
   },
 
-  stats: (uid: string): Promise<Stats> => request(`/users/${encodeURIComponent(uid)}/stats`),
+  stats: (uid: string): Promise<Stats> =>
+    request(S.StatsResponse, `/users/${encodeURIComponent(uid)}/stats`),
 
   slot: (uid: string, skey: string, asOf?: number): Promise<SlotChain> =>
     request(
+      S.SlotChainResponse,
       `/users/${encodeURIComponent(uid)}/slots/${encodeURIComponent(skey)}` +
         (asOf === undefined ? "" : `?asOf=${asOf}`)
     ),
 
   ingestSession: (uid: string, session: IngestInput): Promise<IngestResult> =>
-    request(`/users/${encodeURIComponent(uid)}/sessions`, {
+    request(S.IngestSessionResponse, `/users/${encodeURIComponent(uid)}/sessions`, {
       method: "POST",
       body: JSON.stringify(session)
     })

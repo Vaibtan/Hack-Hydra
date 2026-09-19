@@ -1,7 +1,7 @@
 import type { DatasetQuestion } from "@palimpsest/dataset"
 import type { AskResult } from "@palimpsest/palimpsest"
 import { describe, expect, it } from "vitest"
-import { gateReport, scoreQuestion, type QuestionRetrieval } from "../../src/index.js"
+import { gateReport, scoreQuestion, type QuestionRetrieval, type RetrievalScoreResult } from "../../src/index.js"
 
 const date = { raw: "2023/04/10 (Mon) 17:50", ts: 0, dateInt: 20230410 }
 
@@ -24,15 +24,13 @@ const result = (
   verdict: AskResult["verdict"],
   sids: ReadonlyArray<string>,
   reason: AskResult["reason"] = null
-): AskResult =>
+): RetrievalScoreResult =>
   ({
     verdict,
     reason,
     evidence: sids.map((sid) => ({ sid, ckey: `c-${sid}` })),
     receipt: { anchorTerms: ["a", "b"], anchorsReachingClaims: ["a"], convergence: [{ convergence: 3 }] },
-    hash: "",
-    anchors: {}
-  }) as unknown as AskResult
+  })
 
 describe("scoreQuestion", () => {
   it("counts a hit when any answer-bearing session appears in the evidence", () => {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { mkdirSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
 import { basename, dirname, join } from "node:path"
-import { Config, Context, Data, Effect, Layer, Option } from "effect"
+import { Config, Context, Data, Effect, Layer, Option, Semaphore } from "effect"
 
 export interface IngestCommitScope {
   readonly tenant: string
@@ -19,10 +19,10 @@ export class IngestCommitLockUnavailable extends Data.TaggedError("IngestCommitL
   }
 }
 
-export class IngestCommitLock extends Context.Tag("palimpsest/IngestCommitLock")<
+export class IngestCommitLock extends Context.Service<
   IngestCommitLock,
   IngestCommitLockService
->() {}
+>()("palimpsest/IngestCommitLock") {}
 
 export interface IngestCommitLockService {
   readonly withUserLock: <A, Error, Requirements>(
@@ -50,16 +50,16 @@ const releaseLock = (database: DatabaseSync): Effect.Effect<void> =>
     } finally {
       database.close()
     }
-  }).pipe(Effect.catchAll(() => Effect.void))
+  }).pipe(Effect.catch(() => Effect.void))
 
 const makeService = (acquireExternalLock: (scope: IngestCommitScope) => DatabaseSync) => {
-  const localLocks = new Map<string, Effect.Semaphore>()
+  const localLocks = new Map<string, Semaphore.Semaphore>()
 
-  const semaphoreFor = (scope: IngestCommitScope): Effect.Semaphore => {
+  const semaphoreFor = (scope: IngestCommitScope): Semaphore.Semaphore => {
     const key = keyFor(scope)
     const existing = localLocks.get(key)
     if (existing !== undefined) return existing
-    const created = Effect.unsafeMakeSemaphore(1)
+    const created = Semaphore.makeUnsafe(1)
     localLocks.set(key, created)
     return created
   }

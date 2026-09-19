@@ -1,6 +1,6 @@
 import type { DatasetSession } from "@palimpsest/dataset"
 import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
-import { Data, Effect, Either, Option } from "effect"
+import { Context, Data, Effect, Layer, Option, Result } from "effect"
 import type { SourceRevision } from "./IngestManifest.js"
 import { chunkText } from "./Chunk.js"
 import {
@@ -76,16 +76,16 @@ export interface SourceTranscriptReport {
 export const planSourceTranscriptWrite = (
   revision: SourceRevision,
   session: DatasetSession
-): Either.Either<SourceTranscriptWritePlan, SourceTranscriptRevisionMismatch> => {
+): Result.Result<SourceTranscriptWritePlan, SourceTranscriptRevisionMismatch> => {
   if (session.key !== revision.logicalSessionId) {
-    return Either.left(new SourceTranscriptRevisionMismatch({ field: "logicalSessionId" }))
+    return Result.fail(new SourceTranscriptRevisionMismatch({ field: "logicalSessionId" }))
   }
   const canonical = canonicalSessionSource(session)
   if (canonical.sourceDigest !== revision.sourceDigest) {
-    return Either.left(new SourceTranscriptRevisionMismatch({ field: "sourceDigest" }))
+    return Result.fail(new SourceTranscriptRevisionMismatch({ field: "sourceDigest" }))
   }
   if (canonical.sourceBytes !== revision.sourceBytes) {
-    return Either.left(new SourceTranscriptRevisionMismatch({ field: "sourceBytes" }))
+    return Result.fail(new SourceTranscriptRevisionMismatch({ field: "sourceBytes" }))
   }
 
   const scope = memoryScopeFromRevision(revision)
@@ -171,7 +171,7 @@ export const planSourceTranscriptWrite = (
     }
   }
 
-  return Either.right({
+  return Result.succeed({
     sourceDigest: revision.sourceDigest,
     scope: {
       key: rootKey,
@@ -197,25 +197,25 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<SourceTranscriptReport, HydraError | SourceTranscriptRevisionMismatch> =>
     Effect.gen(function* () {
       const plan = planSourceTranscriptWrite(revision, session)
-      if (plan._tag === "Left") return yield* Effect.fail(plan.left)
+      if (plan._tag === "Failure") return yield* Effect.fail(plan.failure)
 
-      yield* hydra.batchMerge("MemoryScope", [plan.right.scope])
-      yield* hydra.batchMerge("SourceSession", [plan.right.session])
-      yield* hydra.batchMerge("SourceTurn", plan.right.turns)
-      if (plan.right.chunks.length > 0) {
-        yield* hydra.batchMerge("SourceTurnChunk", plan.right.chunks)
+      yield* hydra.batchMerge("MemoryScope", [plan.success.scope])
+      yield* hydra.batchMerge("SourceSession", [plan.success.session])
+      yield* hydra.batchMerge("SourceTurn", plan.success.turns)
+      if (plan.success.chunks.length > 0) {
+        yield* hydra.batchMerge("SourceTurnChunk", plan.success.chunks)
       }
-      const turnRelations = plan.right.relations.filter((relation) => relation.type === "SOURCE_HAS_TURN")
+      const turnRelations = plan.success.relations.filter((relation) => relation.type === "SOURCE_HAS_TURN")
       if (turnRelations.length > 0) yield* hydra.batchRel("SOURCE_HAS_TURN", turnRelations)
-      const chunkRelations = plan.right.relations.filter((relation) => relation.type === "SOURCE_HAS_CHUNK")
+      const chunkRelations = plan.success.relations.filter((relation) => relation.type === "SOURCE_HAS_CHUNK")
       if (chunkRelations.length > 0) yield* hydra.batchRel("SOURCE_HAS_CHUNK", chunkRelations)
-      const scopeRelations = plan.right.relations.filter((relation) => relation.type === "HAS_SOURCE_REVISION")
+      const scopeRelations = plan.success.relations.filter((relation) => relation.type === "HAS_SOURCE_REVISION")
       if (scopeRelations.length > 0) yield* hydra.batchRel("HAS_SOURCE_REVISION", scopeRelations)
 
       return {
-        sourceDigest: plan.right.sourceDigest,
+        sourceDigest: plan.success.sourceDigest,
         sessions: 1,
-        turns: plan.right.turns.length,
+        turns: plan.success.turns.length,
         bookmark: yield* hydra.lastBookmark
       }
     })
@@ -223,6 +223,6 @@ const make = Effect.gen(function* () {
   return { write } as const
 })
 
-export class SourceTranscript extends Effect.Service<SourceTranscript>()("palimpsest/SourceTranscript", {
-  effect: make
-}) {}
+export type SourceTranscript = Effect.Success<typeof make>
+const SourceTranscriptTag = Context.Service<SourceTranscript>("palimpsest/SourceTranscript")
+export const SourceTranscript = Object.assign(SourceTranscriptTag, { layer: Layer.effect(SourceTranscriptTag, make) })

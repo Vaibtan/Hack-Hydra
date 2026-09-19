@@ -60,7 +60,7 @@ describe("runTransactionalIngest", () => {
       const outcome = await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const first = yield* runTransactionalIngest(input).pipe(Effect.either)
+            const first = yield* runTransactionalIngest(input).pipe(Effect.result)
             const second = yield* runTransactionalIngest(input)
             const repeated = yield* runTransactionalIngest(input)
             return { first, second, repeated }
@@ -69,8 +69,8 @@ describe("runTransactionalIngest", () => {
       )
 
       expect(outcome.first).toMatchObject({
-        _tag: "Left",
-        left: { _tag: "IngestStageFailed", stage: failingStage }
+        _tag: "Failure",
+        failure: { _tag: "IngestStageFailed", stage: failingStage }
       })
       expect(outcome.second.revision.state).toBe("COMMITTED")
       expect(outcome.second.alreadyCommitted).toBe(false)
@@ -106,20 +106,20 @@ describe("runTransactionalIngest", () => {
     const outcome = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const first = yield* runTransactionalIngest(input).pipe(Effect.either)
-          const retry = yield* runTransactionalIngest(input).pipe(Effect.either)
+          const first = yield* runTransactionalIngest(input).pipe(Effect.result)
+          const retry = yield* runTransactionalIngest(input).pipe(Effect.result)
           return { first, retry }
         }).pipe(Effect.provide(IngestManifestLayerMemory), Effect.provide(IngestCommitLockMemory))
       )
     )
 
     expect(outcome.first).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "IngestStageFailed", retryable: false }
+      _tag: "Failure",
+      failure: { _tag: "IngestStageFailed", retryable: false }
     })
     expect(outcome.retry).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "IngestRetryBlocked", code: "POLICY_REJECTED" }
+      _tag: "Failure",
+      failure: { _tag: "IngestRetryBlocked", code: "POLICY_REJECTED" }
     })
     expect(calls).toBe(1)
   })
@@ -167,14 +167,14 @@ describe("runTransactionalIngest", () => {
         const entered = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
         const scope = { tenant: "default", uid: "user-a" }
-        const holder = yield* Effect.fork(
+        const holder = yield* Effect.forkChild(
           lock.withUserLock(
             scope,
-            Deferred.succeed(entered, undefined).pipe(Effect.zipRight(Deferred.await(release)))
+            Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
           )
         )
         yield* Deferred.await(entered)
-        const contender = yield* lock.withUserLock(scope, Effect.void).pipe(Effect.either)
+        const contender = yield* lock.withUserLock(scope, Effect.void).pipe(Effect.result)
         yield* Deferred.succeed(release, undefined)
         yield* Fiber.join(holder)
         return contender
@@ -182,16 +182,16 @@ describe("runTransactionalIngest", () => {
     )
 
     expect(outcome).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "IngestCommitLockUnavailable", reason: "held", uid: "user-a" }
+      _tag: "Failure",
+      failure: { _tag: "IngestCommitLockUnavailable", reason: "held", uid: "user-a" }
     })
   })
 
   it("allows only one of 32 concurrent same-source requests to execute commit effects", async () => {
     const applied = new Set<string>()
     const work = (stage: IngestExecutionStage) => (revision: SourceRevision) =>
-      Effect.yieldNow().pipe(
-        Effect.zipRight(Effect.sync(() => applied.add(`${revision.commitId}:${stage}`))),
+      Effect.yieldNow.pipe(
+        Effect.andThen(Effect.sync(() => applied.add(`${revision.commitId}:${stage}`))),
         Effect.asVoid
       )
     const stages: TransactionalIngestStages<never, never> = {
@@ -209,14 +209,14 @@ describe("runTransactionalIngest", () => {
     const outcomes = await Effect.runPromise(
       Effect.scoped(
         Effect.all(
-          Array.from({ length: 32 }, () => runTransactionalIngest(input).pipe(Effect.either)),
+          Array.from({ length: 32 }, () => runTransactionalIngest(input).pipe(Effect.result)),
           { concurrency: "unbounded" }
         ).pipe(Effect.provide(IngestManifestLayerMemory), Effect.provide(IngestCommitLockMemory))
       )
     )
 
-    expect(outcomes.filter((outcome) => outcome._tag === "Right")).toHaveLength(1)
-    expect(outcomes.filter((outcome) => outcome._tag === "Left")).toHaveLength(31)
+    expect(outcomes.filter((outcome) => outcome._tag === "Success")).toHaveLength(1)
+    expect(outcomes.filter((outcome) => outcome._tag === "Failure")).toHaveLength(31)
     expect(applied).toHaveLength(INGEST_EXECUTION_STAGES.length)
   })
 
@@ -240,7 +240,7 @@ describe("runTransactionalIngest", () => {
         const lock = yield* IngestCommitLock
         return yield* lock.withUserLock(
           scope,
-          Effect.sync(markEntered).pipe(Effect.zipRight(Effect.promise(() => released)))
+          Effect.sync(markEntered).pipe(Effect.andThen(Effect.promise(() => released)))
         )
       }).pipe(Effect.provide(IngestCommitLockLive))
       holderPromise = Effect.runPromise(holder)
@@ -249,12 +249,12 @@ describe("runTransactionalIngest", () => {
       const contender = await Effect.runPromise(
         Effect.gen(function* () {
           const lock = yield* IngestCommitLock
-          return yield* lock.withUserLock(scope, Effect.void).pipe(Effect.either)
+          return yield* lock.withUserLock(scope, Effect.void).pipe(Effect.result)
         }).pipe(Effect.provide(IngestCommitLockLive))
       )
       expect(contender).toMatchObject({
-        _tag: "Left",
-        left: { _tag: "IngestCommitLockUnavailable", reason: "unavailable", uid: "user-a" }
+        _tag: "Failure",
+        failure: { _tag: "IngestCommitLockUnavailable", reason: "unavailable", uid: "user-a" }
       })
     } finally {
       releaseHolder()

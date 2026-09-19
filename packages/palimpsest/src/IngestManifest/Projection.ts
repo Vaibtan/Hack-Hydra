@@ -12,7 +12,7 @@ import {
   sameStats,
   statsJson
 } from "./Codec.js"
-import { integer, nullableText, selectRevisionByCommitId, text, transaction, type DatabaseRow } from "./Rows.js"
+import { integer, nullableText, selectRevisionByCommitId, text, transaction } from "./Rows.js"
 import {
   IngestManifestUnavailable,
   InvalidProjectionDelta,
@@ -86,7 +86,7 @@ const selectProjectionCounts = (database: DatabaseSync, scope: IngestCommitScope
   const select = (table: CountTable, key: CountKey): ReadonlyMap<string, number> => {
     const rows = database
       .prepare(`SELECT ${key}, value FROM ${table} WHERE tenant = ? AND uid = ? ORDER BY ${key} ASC`)
-      .all(scope.tenant, scope.uid) as ReadonlyArray<DatabaseRow>
+      .all(scope.tenant, scope.uid)
     return new Map(rows.map((row) => [text(row, key), integer(row, "value")]))
   }
   return {
@@ -145,7 +145,7 @@ const applyDelta = (database: DatabaseSync, input: ApplyProjectionDelta): Projec
     source.state === "COMMITTED" ? source.manifestVersion : source.manifestVersion + 1
   const existingDelta = database
     .prepare("SELECT canonical_delta FROM projection_deltas WHERE commit_id = ?")
-    .get(source.commitId) as DatabaseRow | undefined
+    .get(source.commitId)
   if (existingDelta !== undefined) {
     if (text(existingDelta, "canonical_delta") !== payload.canonicalJson) {
       throw new ProjectionDeltaConflict({ commitId: source.commitId })
@@ -207,7 +207,7 @@ const reconcile = (database: DatabaseSync, scope: IngestCommitScope): Projection
         WHERE tenant = ? AND uid = ?
         ORDER BY expected_manifest_version ASC`
     )
-    .all(scope.tenant, scope.uid) as ReadonlyArray<DatabaseRow>
+    .all(scope.tenant, scope.uid)
   const current = selectProjection(database, scope)
   if (deltas.length === 0 && current === undefined) {
     return { state: emptyProjection(scope), outcome: "unknown" }
@@ -268,7 +268,7 @@ const reconcile = (database: DatabaseSync, scope: IngestCommitScope): Projection
   return { state: expectedState, outcome: "repaired" }
 }
 
-export const makeProjectionOperations = (database: DatabaseSync): ProjectionOperations => ({
+export const createProjectionOperations = (database: DatabaseSync): ProjectionOperations => ({
   applyProjectionDelta: (input) =>
     Effect.try({
       try: () => transaction(database, () => applyDelta(database, input)),

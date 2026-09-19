@@ -23,11 +23,11 @@ const from = Number(arg("from", "1"))
 const step = Number(arg("step", "1"))
 const concurrency = Number(arg("concurrency", "4"))
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Reader.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(Transcript.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Reader.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -85,7 +85,7 @@ const program = Effect.gen(function* () {
   for (const change of changes) console.log(`  from session ${String(change.k).padStart(2)}: ${change.label}`)
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

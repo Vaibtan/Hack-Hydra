@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import { turnKey } from "../../src/Keys.js"
 import { Reader, SPAN_CONTEXT, type ReadAnswer } from "../../src/Reader.js"
 import type { AsOfLabelled } from "../../src/Scoring.js"
+import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 type Node = HydraPath["nodes"][number]
 
@@ -95,7 +96,7 @@ const graph = (config: MsPathsConfig, calls: Array<string>): ReadonlyArray<Hydra
   )
 }
 
-const stubLlm = Layer.succeed(Llm, {
+const stubLlm = Layer.succeed(Llm, behaviorFake<Llm>({
   model: "stub",
   cacheDir: "",
   concurrency: 1,
@@ -109,24 +110,24 @@ const stubLlm = Layer.succeed(Llm, {
     }),
   usage: Effect.succeed({ inputTokens: 0, outputTokens: 0, calls: 0, cacheHits: 0 }),
   resetUsage: Effect.void
-} as unknown as Llm)
+}))
 
 const read = async (
   evidence: ReadonlyArray<AsOfLabelled>,
   route: "fact" | "assistant_output"
 ): Promise<{ readonly answer: ReadAnswer; readonly calls: ReadonlyArray<string> }> => {
   const calls: Array<string> = []
-  const hydra = Layer.succeed(HydraClient, {
+  const hydra = Layer.succeed(HydraClient, behaviorFake<HydraClient>({
     msPaths: (config: MsPathsConfig) => Effect.sync(() => graph(config, calls))
-  } as unknown as HydraClient)
-  const answer = await Effect.runPromise(
+  }))
+  const answer = await runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
         const reader = yield* Reader
         return yield* reader.read("q", "2023/05/01 (Mon) 10:00", evidence, { route })
       }),
-      Reader.Default.pipe(Layer.provide(hydra), Layer.provide(stubLlm))
-    ) as unknown as Effect.Effect<ReadAnswer, never, never>
+      Reader.layer.pipe(Layer.provide(hydra), Layer.provide(stubLlm))
+    )
   )
   return { answer, calls }
 }

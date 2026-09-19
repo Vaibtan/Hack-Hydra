@@ -2,7 +2,7 @@ export { byType, questionRecall, summarise } from "./ExtractionRecall.js"
 export type { QuestionRecall, RecallSummary, TurnCoverage } from "./ExtractionRecall.js"
 export { benchmarkSlice, evalSlice, stratifiedSlice } from "./Slice.js"
 export { gateByType, gateReport, scoreQuestion } from "./RetrievalMetrics.js"
-export type { GateReport, QuestionRetrieval } from "./RetrievalMetrics.js"
+export type { GateReport, QuestionRetrieval, RetrievalScoreResult } from "./RetrievalMetrics.js"
 export { JUDGE_MODEL, judge, judgeLabel, judgePrompt, judgeTemplate } from "./Judge.js"
 export type { Judgement, JudgeTemplate } from "./Judge.js"
 export { B, BM25_TOP_K, K1, buildIndex, fullContextSpans, score, topSpans } from "./Bm25.js"
@@ -124,7 +124,7 @@ export {
 } from "./Cli.js"
 export type { AblationFlags, Batch } from "./Cli.js"
 export { mergeBatches } from "./Batches.js"
-export type { BatchPart, MergedBatches } from "./Batches.js"
+export type { BatchEnvelope, BatchPart, MergedBatches } from "./Batches.js"
 export {
   absentResponse,
   graphMsOf,
@@ -132,7 +132,7 @@ export {
   rowFromBaseline,
   rowFromV2
 } from "./Row.js"
-export type { BaselineOutcome, BaselineRead, SystemOutcome, V2Outcome } from "./Row.js"
+export type { BaselineOutcome, BaselineRead, SystemOutcome, V2EvaluationAnswer, V2Outcome } from "./Row.js"
 export { LIVE_SYSTEMS, RETIRED_SYSTEMS, SYSTEMS } from "./Systems.js"
 export type { SystemDeps, SystemSpec, V2Options } from "./Systems.js"
 export {
@@ -174,5 +174,5 @@ export type {
   RuntimeConfigInput,
   RuntimeConfigResult
 } from "./RuntimeConfig.js"
-export { disagreements, renderReaderAb, summariseReaderAb } from "./ReaderAb.js"
-export type { ReaderAbArm, ReaderAbFile, ReaderAbRow, ReaderAbSummary } from "./ReaderAb.js"
+export { ReaderAbArm, ReaderAbFile, ReaderAbRow, disagreements, renderReaderAb, summariseReaderAb } from "./ReaderAb.js"
+export type { ReaderAbSummary } from "./ReaderAb.js"

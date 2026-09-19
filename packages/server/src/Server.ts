@@ -1,7 +1,7 @@
-import { HttpApiBuilder, HttpMiddleware, HttpServer } from "@effect/platform"
+import { type Etag, type HttpPlatform, HttpRouter } from "effect/unstable/http"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { NodeHttpServer } from "@effect/platform-node"
 import { NodeHttpClient } from "@effect/platform-node"
-import type { LanguageModel } from "@effect/ai"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive } from "@palimpsest/llm"
 import {
@@ -14,23 +14,23 @@ import {
   Supersede,
   Transcript
 } from "@palimpsest/palimpsest"
-import { Layer } from "effect"
+import { type FileSystem, Layer, type Path } from "effect"
 import { createServer } from "node:http"
 import { PalimpsestApi } from "./Api.js"
 import { UsersLive } from "./Handlers.js"
 
 const HttpLive = NodeHttpClient.layerUndici
-const HydraLive = HydraClient.Default.pipe(Layer.provide(HttpLive))
+const HydraLive = HydraClient.layer.pipe(Layer.provide(HttpLive))
 const LlmStackLive = LlmLive().pipe(Layer.provide(HttpLive))
 const SourceIndexStackLive = SourceIndexLive.pipe(Layer.provide(HydraLive))
 const RuntimeLive = Layer.mergeAll(HydraLive, LlmStackLive, SourceIndexStackLive)
 
-const LegacyAppLive = Ingest.Default.pipe(
-  Layer.provideMerge(Retrieve.Default),
-  Layer.provideMerge(Reader.Default),
-  Layer.provideMerge(Transcript.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(Supersede.Default)
+const LegacyAppLive = Ingest.layer.pipe(
+  Layer.provideMerge(Retrieve.layer),
+  Layer.provideMerge(Reader.layer),
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(Supersede.layer)
 )
 
 const LegacyAppWithRuntime = LegacyAppLive.pipe(Layer.provide(RuntimeLive))
@@ -39,7 +39,6 @@ type AppServices =
   | ClaimGraph
   | HydraClient
   | Ingest
-  | LanguageModel.LanguageModel
   | Llm
   | Reader
   | Retrieve
@@ -52,17 +51,25 @@ export const AppLive: Layer.Layer<AppServices, unknown, never> = Layer.mergeAll(
   LegacyAppWithRuntime
 )
 
-export const ApiLive = HttpApiBuilder.api(PalimpsestApi).pipe(
-  Layer.provide(UsersLive),
-  Layer.provide(AppLive)
+const UsersWithApp = UsersLive.pipe(
+  Layer.provide(AppLive),
+  HttpRouter.provideRequest(AppLive)
 )
 
-export const ServerLive = (port: number) =>
-  HttpApiBuilder.serve(HttpMiddleware.logger).pipe(
-    Layer.provide(HttpApiBuilder.middlewareCors()),
-    Layer.provide(ApiLive),
-    HttpServer.withLogAddress,
+type ApiInfrastructure =
+  | Etag.Generator
+  | FileSystem.FileSystem
+  | HttpPlatform.HttpPlatform
+  | HttpRouter.HttpRouter
+  | Path.Path
+
+export const ApiLive: Layer.Layer<never, unknown, ApiInfrastructure> = HttpApiBuilder.layer(PalimpsestApi).pipe(
+  Layer.provide(UsersWithApp)
+)
+
+export const ServerLive = (port: number): Layer.Layer<never, unknown, never> =>
+  HttpRouter.serve(Layer.mergeAll(ApiLive, HttpRouter.cors())).pipe(
     Layer.provide(NodeHttpServer.layer(createServer, { port }))
   )
 
-export const serve = ServerLive
+export const serve: (port: number) => Layer.Layer<never, unknown, never> = ServerLive

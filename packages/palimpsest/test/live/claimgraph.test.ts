@@ -15,17 +15,17 @@ import { readUserStats } from "../../src/User.js"
 
 const hasOracle = existsSync(datasetPath("oracle"))
 
-const AppLive = Ingest.Default.pipe(
-  Layer.provideMerge(Transcript.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Ingest.layer.pipe(
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
-const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.runPromise(Effect.provide(effect, AppLive) as unknown as Effect.Effect<A, E, never>)
+const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof AppLive>>) =>
+  Effect.runPromise(Effect.provide(effect, AppLive))
 
 const UID = "probe-claimgraph-g2"
 const SOURCE = "gpt4_2655b836"

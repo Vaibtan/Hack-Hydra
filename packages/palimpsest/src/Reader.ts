@@ -1,7 +1,6 @@
-import type { LanguageModel } from "@effect/ai"
 import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
-import { Effect, Schema } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
 import { turnKey } from "./Keys.js"
 import {
   adjudicate,
@@ -29,12 +28,17 @@ export { NOT_IN_MEMORY, granularityFor, type Granularity } from "./Routes.js"
 /** Characters of surrounding turn text given on each side of a Span. */
 export const SPAN_CONTEXT = 300
 
+interface ExcerptCut {
+  readonly excerpt: string
+  readonly highlight: { readonly start: number; readonly end: number }
+}
+
 export const cutExcerpt = (
   text: string,
   cs: number,
   ce: number,
   context = SPAN_CONTEXT
-): { readonly excerpt: string; readonly highlight: { readonly start: number; readonly end: number } } => {
+): ExcerptCut => {
   const from = Math.max(0, Math.min(cs, text.length))
   const to = Math.max(from, Math.min(ce, text.length))
   const start = Math.max(0, from - context)
@@ -377,7 +381,7 @@ const make = Effect.gen(function* () {
     questionDate: string,
     spans: ReadonlyArray<HydratedSpan>,
     options: ReadSpansOptions = {}
-  ): Effect.Effect<ReadAnswer, never, LanguageModel.LanguageModel | Llm> =>
+  ): Effect.Effect<ReadAnswer, never, Llm> =>
     Effect.gen(function* () {
       const readStarted = Date.now()
       const granularity = options.granularity ?? "span"
@@ -435,7 +439,7 @@ If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
     questionDate: string,
     evidence: ReadonlyArray<AsOfLabelled>,
     options: ReadOptions
-  ): Effect.Effect<ReadAnswer, HydraError, LanguageModel.LanguageModel | Llm> =>
+  ): Effect.Effect<ReadAnswer, HydraError, Llm> =>
     Effect.gen(function* () {
       const packRoute = options.packRoute ?? options.route
       const granularity = granularityFor(packRoute, options.granularity)
@@ -446,8 +450,8 @@ If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
 
       const labelled = adjudicate(dedupeByTurn(hydrated), options.slotOf ?? new Map(), packRoute)
       const budgeted = applyBudget(labelled, {
-        ...(options.budgetTokens === undefined ? {} : { budget: options.budgetTokens }),
-        ...(options.protectedKeys === undefined ? {} : { protectedKeys: options.protectedKeys })
+        ...(options.budgetTokens !== undefined && { budget: options.budgetTokens }),
+        ...(options.protectedKeys !== undefined && { protectedKeys: options.protectedKeys })
       })
 
       const answer = yield* readSpans(question, questionDate, budgeted.kept, {
@@ -460,4 +464,6 @@ If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
   return { hydrate, read, readSpans } as const
 })
 
-export class Reader extends Effect.Service<Reader>()("palimpsest/Reader", { effect: make }) {}
+export type Reader = Effect.Success<typeof make>
+const ReaderTag = Context.Service<Reader>("palimpsest/Reader")
+export const Reader = Object.assign(ReaderTag, { layer: Layer.effect(ReaderTag, make) })

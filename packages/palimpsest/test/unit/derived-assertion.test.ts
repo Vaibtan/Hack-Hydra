@@ -47,8 +47,8 @@ describe("prepareDerivedIndexAssertions", () => {
     const result = prepareDerivedIndexAssertions([claim()], [sourceSpan()])
 
     expect(result).toMatchObject({
-      _tag: "Right",
-      right: [
+      _tag: "Success",
+      success: [
         {
           assertionKey: "user-a|c|assertion-a",
           derivedText: "The user moved to Pune.",
@@ -77,8 +77,8 @@ describe("prepareDerivedIndexAssertions", () => {
     const result = prepareDerivedIndexAssertions([claim({ sourceDigest: "" })], [sourceSpan()])
 
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         _tag: "DerivedAssertionSourceUnavailable",
         reason: "sourceRevisionUnavailable"
       }
@@ -89,8 +89,8 @@ describe("prepareDerivedIndexAssertions", () => {
     const result = prepareDerivedIndexAssertions([claim()], [])
 
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         _tag: "DerivedAssertionSourceUnavailable",
         reason: "sourceSpanUnavailable"
       }

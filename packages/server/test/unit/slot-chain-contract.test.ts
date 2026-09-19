@@ -16,7 +16,7 @@ const source = {
 
 describe("slot-chain public contract", () => {
   it("requires a derived assertion to carry a verbatim source span", () => {
-    const decode = Schema.decodeUnknownEither(SlotChainResponse)
+    const decode = Schema.decodeUnknownResult(SlotChainResponse)
     const result = decode({
       skey: "user-a|s|user|residence",
       asOf: null,
@@ -35,8 +35,8 @@ describe("slot-chain public contract", () => {
     })
 
     expect(result).toMatchObject({
-      _tag: "Right",
-      right: {
+      _tag: "Success",
+      success: {
         assertions: [
           {
             derivedText: "The user moved to Pune.",
@@ -48,7 +48,7 @@ describe("slot-chain public contract", () => {
   })
 
   it("rejects the legacy claims/text response shape that made model output look like evidence", () => {
-    const decode = Schema.decodeUnknownEither(SlotChainResponse)
+    const decode = Schema.decodeUnknownResult(SlotChainResponse)
     const result = decode({
       skey: "user-a|s|user|residence",
       asOf: null,
@@ -65,6 +65,6 @@ describe("slot-chain public contract", () => {
       ]
     })
 
-    expect(result._tag).toBe("Left")
+    expect(result._tag).toBe("Failure")
   })
 })

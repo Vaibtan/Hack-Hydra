@@ -6,13 +6,13 @@ import { describe, expect, it } from "vitest"
 import { turnKey } from "../../src/Keys.js"
 import { Transcript } from "../../src/Transcript.js"
 
-const layer = Transcript.Default.pipe(
-  Layer.provideMerge(HydraClient.Default),
+const layer = Transcript.layer.pipe(
+  Layer.provideMerge(HydraClient.layer),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraClient>): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, layer) as Effect.Effect<A, E, never>)
+  Effect.runPromise(Effect.provide(effect, layer))
 
 const UID_A = "probe-transcript-a"
 const UID_B = "probe-transcript-b"

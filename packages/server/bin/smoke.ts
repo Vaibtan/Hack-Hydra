@@ -1,4 +1,5 @@
-import { FetchHttpClient, HttpApiClient } from "@effect/platform"
+import { FetchHttpClient } from "effect/unstable/http"
+import { HttpApiClient } from "effect/unstable/httpapi"
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
@@ -62,7 +63,7 @@ const program = Effect.gen(function* () {
   console.log("")
 
   const first = yield* client.users.ingestSession({
-    path: { uid },
+    params: { uid },
     payload: SESSION_ONE
   })
   if (first.claims > 0 && first.sessionOrd === 1) {
@@ -74,7 +75,7 @@ const program = Effect.gen(function* () {
   else fail("write returned a bookmark", "null")
 
   const asked = yield* client.users.ask({
-    path: { uid },
+    params: { uid },
     payload: { question: "What is my hamster called?", questionDate: "2023/04/01 (Sat) 10:00" }
   })
   if (asked.verdict === "ANSWER") {
@@ -105,14 +106,14 @@ const program = Effect.gen(function* () {
     fail("receipt carries the query", "no anchor terms")
   }
 
-  const second = yield* client.users.ingestSession({ path: { uid }, payload: SESSION_TWO })
+  const second = yield* client.users.ingestSession({ params: { uid }, payload: SESSION_TWO })
   if (second.sessionOrd === 2) {
     ok("ingest session 2", `ord ${second.sessionOrd}, ${second.claims} claims, ${second.supersessions} supersessions`)
   } else {
     fail("ingest session 2", `ord ${second.sessionOrd}`)
   }
 
-  const repeat = yield* client.users.ingestSession({ path: { uid }, payload: SESSION_TWO })
+  const repeat = yield* client.users.ingestSession({ params: { uid }, payload: SESSION_TWO })
   if (repeat.alreadyPresent && repeat.stats.claims === second.stats.claims) {
     ok("re-posting a session is a no-op", `claims still ${repeat.stats.claims}`)
   } else {
@@ -120,7 +121,7 @@ const program = Effect.gen(function* () {
   }
 
   const again = yield* client.users.ask({
-    path: { uid },
+    params: { uid },
     payload: { question: "What is my hamster called?", questionDate: "2023/10/01 (Sun) 10:00" }
   })
   if (again.answer !== null && /pretzel/i.test(again.answer)) {
@@ -130,7 +131,7 @@ const program = Effect.gen(function* () {
   }
 
   const asOf1 = yield* client.users.ask({
-    path: { uid },
+    params: { uid },
     payload: {
       question: "What is my hamster called?",
       questionDate: "2023/10/01 (Sun) 10:00",
@@ -149,20 +150,20 @@ const program = Effect.gen(function* () {
   }
 
   const repeatAsk = yield* client.users.ask({
-    path: { uid },
+    params: { uid },
     payload: { question: "What is my hamster called?", questionDate: "2023/10/01 (Sun) 10:00" }
   })
   if (repeatAsk.hash === again.hash) ok("same question, same hash", again.hash.slice(0, 24) + "…")
   else fail("same question, same hash", `${again.hash} vs ${repeatAsk.hash}`)
 
-  const sessions = yield* client.users.sessions({ path: { uid } })
+  const sessions = yield* client.users.sessions({ params: { uid } })
   if (sessions.length === 2 && sessions[0]!.sessionOrd === 1) {
     ok("sessions list", sessions.map((s) => `s${s.sessionOrd} ${s.dateInt} (${s.turns} turns)`).join(", "))
   } else {
     fail("sessions list", JSON.stringify(sessions))
   }
 
-  const stats = yield* client.users.stats({ path: { uid } })
+  const stats = yield* client.users.stats({ params: { uid } })
   if (stats.claims > 0 && stats.sessions === 2) {
     ok("stats", `${stats.claims} claims, ${stats.entities} entities, ${stats.contestedSlots} contested slots`)
   } else {
@@ -172,8 +173,8 @@ const program = Effect.gen(function* () {
   const contested = stats.contested[0]
   if (contested !== undefined) {
     const chain = yield* client.users.slot({
-      path: { uid, skey: contested.skey },
-      urlParams: {}
+      params: { uid, skey: contested.skey },
+      query: {}
     })
     const superseded = chain.assertions.filter((assertion) => assertion.supersededBy !== null).length
     ok(
@@ -189,11 +190,7 @@ const program = Effect.gen(function* () {
 })
 
 Effect.runPromise(
-  Effect.provide(program, Layer.mergeAll(FetchHttpClient.layer, NodeHttpClient.layerUndici)) as Effect.Effect<
-    void,
-    unknown,
-    never
-  >
+  Effect.provide(program, Layer.mergeAll(FetchHttpClient.layer, NodeHttpClient.layerUndici))
 ).catch((error) => {
   console.error(String(error))
   process.exit(1)

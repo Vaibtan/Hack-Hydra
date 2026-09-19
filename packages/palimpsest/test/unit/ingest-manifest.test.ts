@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { ConfigProvider, Effect } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -157,7 +157,7 @@ describe("IngestManifest", () => {
                 canonicalJson: '{"format":"different"}'
               }
             })
-            .pipe(Effect.either)
+            .pipe(Effect.result)
           return { created, recorded, collision }
         }).pipe(Effect.provide(IngestManifestLayerMemory))
       )
@@ -165,7 +165,7 @@ describe("IngestManifest", () => {
 
     expect(outcome.created.revision.extractionGeneration).toBe(baseRevision.extractionGeneration.id)
     expect(outcome.recorded).toEqual(baseRevision.extractionGeneration)
-    expect(outcome.collision).toMatchObject({ _tag: "Left", left: { _tag: "InvalidSourceRevision" } })
+    expect(outcome.collision).toMatchObject({ _tag: "Failure", failure: { _tag: "InvalidSourceRevision" } })
   })
 
   it("rejects a non-canonical generation definition before it can name a revision", async () => {
@@ -180,11 +180,11 @@ describe("IngestManifest", () => {
               canonicalJson: '{ "model": "test", "format": "palimpsest.extraction-generation.v1" }'
             }
           })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
       })
     )
 
-    expect(outcome).toMatchObject({ _tag: "Left", left: { _tag: "InvalidSourceRevision" } })
+    expect(outcome).toMatchObject({ _tag: "Failure", failure: { _tag: "InvalidSourceRevision" } })
   })
 
   it("allocates one commit for concurrent retries and unique monotonic ordinals for distinct sessions", async () => {
@@ -273,7 +273,10 @@ describe("IngestManifest", () => {
               logicalSessionId: "session-b"
             })
             return { resumed, distinct }
-          }).pipe(Effect.provide(IngestManifestLive))
+          }).pipe(
+            Effect.provide(IngestManifestLive, { local: true }),
+            Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv())
+          )
         )
       )
 
@@ -356,14 +359,14 @@ describe("IngestManifest", () => {
             revision: created.revision,
             from: "RECEIVED",
             to: "COMMITTED"
-          }).pipe(Effect.either)
+          }).pipe(Effect.result)
         }).pipe(Effect.provide(IngestManifestLayerMemory))
       )
     )
 
-    expect(outcome._tag).toBe("Left")
-    if (outcome._tag === "Left") {
-      expect(outcome.left._tag).toBe("InvalidIngestTransition")
+    expect(outcome._tag).toBe("Failure")
+    if (outcome._tag === "Failure") {
+      expect(outcome.failure._tag).toBe("InvalidIngestTransition")
     }
   })
 
@@ -379,7 +382,7 @@ describe("IngestManifest", () => {
         })
         const blockedAdvance = yield* manifest
           .advance({ revision: failed, from: "RECEIVED", to: "SOURCE_DURABLE" })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
 
         let committed = (
           yield* manifest.begin({
@@ -399,18 +402,18 @@ describe("IngestManifest", () => {
         }
         const committedFailure = yield* manifest
           .recordFailure({ revision: committed, code: "TOO_LATE", retryable: true })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
         return { blockedAdvance, committedFailure }
       })
     )
 
     expect(outcome.blockedAdvance).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "IngestRevisionBlocked", failureCode: "POLICY_REJECTED" }
+      _tag: "Failure",
+      failure: { _tag: "IngestRevisionBlocked", failureCode: "POLICY_REJECTED" }
     })
     expect(outcome.committedFailure).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "InvalidSourceRevision" }
+      _tag: "Failure",
+      failure: { _tag: "InvalidSourceRevision" }
     })
   })
 
@@ -442,7 +445,7 @@ describe("IngestManifest", () => {
         const reapplied = yield* manifest.applyProjectionDelta(delta)
         const conflict = yield* manifest
           .applyProjectionDelta({ ...delta, stats: { ...projectionStats, claims: 3 } })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
         const committed = yield* manifest.advance({
           revision,
           from: "CONSOLIDATED",
@@ -457,8 +460,8 @@ describe("IngestManifest", () => {
     expect(outcome.applied).toMatchObject({ manifestVersion: 1, stats: projectionStats })
     expect(outcome.reapplied).toEqual(outcome.applied)
     expect(outcome.conflict).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "ProjectionDeltaConflict" }
+      _tag: "Failure",
+      failure: { _tag: "ProjectionDeltaConflict" }
     })
     expect(outcome.committed).toMatchObject({ state: "COMMITTED", manifestVersion: 1 })
     expect(outcome.projection).toMatchObject({
@@ -501,7 +504,10 @@ describe("IngestManifest", () => {
               slotClaims: new Map([["slot-a", 2]])
             })
             yield* manifest.advance({ revision, from: "CONSOLIDATED", to: "COMMITTED" })
-          }).pipe(Effect.provide(IngestManifestLive))
+          }).pipe(
+            Effect.provide(IngestManifestLive, { local: true }),
+            Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv())
+          )
         )
       )
 
@@ -522,7 +528,10 @@ describe("IngestManifest", () => {
             const reconciliation = yield* manifest.reconcileProjection({ tenant: "default", uid: "user-a" })
             const counts = yield* manifest.readProjectionCounts({ tenant: "default", uid: "user-a" })
             return { reconciliation, counts }
-          }).pipe(Effect.provide(IngestManifestLive))
+          }).pipe(
+            Effect.provide(IngestManifestLive, { local: true }),
+            Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv())
+          )
         )
       )
 

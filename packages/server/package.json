@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./api": "./src/Api.ts"
   },
   "scripts": {
     "serve": "tsx bin/serve.ts",
@@ -15,9 +16,7 @@
     "@palimpsest/hydra": "workspace:*",
     "@palimpsest/llm": "workspace:*",
     "@palimpsest/palimpsest": "workspace:*",
-    "@effect/ai": "^0.37.0",
-    "@effect/platform": "^0.97.1",
-    "@effect/platform-node": "^0.108.1",
-    "effect": "^3.22.1"
+    "@effect/platform-node": "4.0.0-beta.107",
+    "effect": "4.0.0-beta.107"
   }
 }

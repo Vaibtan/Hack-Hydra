@@ -6,10 +6,10 @@ import { HydraClient } from "../../src/index.js"
 const UID = "probe-paging"
 const ROWS = 2_600
 
-const layer = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const layer = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const run = <A, E>(effect: Effect.Effect<A, E, HydraClient>): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, layer) as Effect.Effect<A, E, never>)
+  Effect.runPromise(Effect.provide(effect, layer))
 
 const keys = Array.from({ length: ROWS }, (_, i) => `${UID}|p|${String(i).padStart(5, "0")}`)
 

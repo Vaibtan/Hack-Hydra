@@ -1,16 +1,22 @@
 import { describe, expect, it } from "vitest"
-import { mergeBatches, type BatchPart } from "../../src/index.js"
+import { mergeBatches, type BatchEnvelope, type BatchPart } from "../../src/index.js"
 
 interface Row {
   readonly questionId: string
+}
+
+interface TestEnvelope extends BatchEnvelope {
+  readonly prefix: string
+  readonly variant: ReadonlyArray<string>
+  readonly rows: ReadonlyArray<Row>
 }
 
 const part = (
   index: number,
   count: number,
   ids: ReadonlyArray<string>,
-  extra: Record<string, unknown> = {}
-): BatchPart<Row> => ({
+  extra: Partial<Pick<TestEnvelope, "prefix" | "variant">> = {}
+): BatchPart<TestEnvelope> => ({
   name: `b${index}`,
   envelope: {
     prefix: "g3",
@@ -21,7 +27,7 @@ const part = (
   }
 })
 
-const FIELDS = ["prefix", "variant"]
+const FIELDS = ["prefix", "variant"] as const satisfies ReadonlyArray<keyof TestEnvelope>
 
 describe("merging batches", () => {
   it("joins a complete set in population order", () => {

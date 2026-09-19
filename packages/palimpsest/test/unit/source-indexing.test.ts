@@ -22,42 +22,42 @@ const generation = makeIngestGenerationConfig({
 
 describe("planSourceIndexSession", () => {
   it("binds a caller's exact source bytes to one configured extraction and index generation", () => {
-    expect(generation).toMatchObject({ _tag: "Right" })
-    if (generation._tag === "Left") return
+    expect(generation).toMatchObject({ _tag: "Success" })
+    if (generation._tag === "Failure") return
 
     const plan = planSourceIndexSession({
       tenant: "default",
       uid: "user-a",
       session,
-      generation: generation.right
+      generation: generation.success
     })
 
-    expect(plan._tag).toBe("Right")
-    if (plan._tag === "Left") return
-    expect(plan.right.sourceRevision).toMatchObject({
+    expect(plan._tag).toBe("Success")
+    if (plan._tag === "Failure") return
+    expect(plan.success.sourceRevision).toMatchObject({
       tenant: "default",
       uid: "user-a",
       logicalSessionId: "session-a",
-      extractionGeneration: { id: generation.right.extractionGeneration.id }
+      extractionGeneration: { id: generation.success.extractionGeneration.id }
     })
-    expect(plan.right.sourceRevision.sourceDigest).toMatch(/^[a-f0-9]{64}$/)
-    expect(plan.right.indexGeneration.id).toBe(generation.right.indexGeneration.id)
-    expect(plan.right.indexGeneration.extractionGenerationId).toBe(
-      plan.right.sourceRevision.extractionGeneration.id
+    expect(plan.success.sourceRevision.sourceDigest).toMatch(/^[a-f0-9]{64}$/)
+    expect(plan.success.indexGeneration.id).toBe(generation.success.indexGeneration.id)
+    expect(plan.success.indexGeneration.extractionGenerationId).toBe(
+      plan.success.sourceRevision.extractionGeneration.id
     )
   })
 
   it("rejects an empty tenant or user id at the entry boundary", () => {
-    expect(generation).toMatchObject({ _tag: "Right" })
-    if (generation._tag === "Left") return
+    expect(generation).toMatchObject({ _tag: "Success" })
+    if (generation._tag === "Failure") return
 
     for (const input of [
       { tenant: "  ", uid: "user-a" },
       { tenant: "default", uid: "" }
     ]) {
-      expect(planSourceIndexSession({ ...input, session, generation: generation.right })).toMatchObject({
-        _tag: "Left",
-        left: { _tag: "InvalidMemoryScope" }
+      expect(planSourceIndexSession({ ...input, session, generation: generation.success })).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "InvalidMemoryScope" }
       })
     }
   })

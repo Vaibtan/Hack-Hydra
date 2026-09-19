@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadDataset, type DatasetName } from "@palimpsest/dataset"
+import { loadDataset, parseDatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, Retrieve, Supersede } from "@palimpsest/palimpsest"
@@ -15,7 +15,7 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const sliceSize = Number(arg("slice", "20"))
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const prefix = arg("prefix", "g2")
 const maxLen = Number(arg("max-len", "2"))
 const topK = Number(arg("top-k", "25"))
@@ -28,10 +28,10 @@ const uidFor = (questionId: string): string =>
 const pct = (value: number | null): string =>
   value === null ? "   n/a" : `${(value * 100).toFixed(1)} %`
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -131,7 +131,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

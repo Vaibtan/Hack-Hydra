@@ -38,17 +38,27 @@ export interface DatasetQuestion {
   readonly isAbstention: boolean
 }
 
-export interface RawQuestion {
-  readonly question_id: string
-  readonly question_type: string
-  readonly question: string
-  readonly answer?: string
-  readonly question_date: string
-  readonly haystack_dates: ReadonlyArray<string>
-  readonly haystack_session_ids: ReadonlyArray<string>
-  readonly haystack_sessions: ReadonlyArray<ReadonlyArray<{ role: string; content: string; has_answer?: boolean }>>
-  readonly answer_session_ids?: ReadonlyArray<string>
-}
+export const RawQuestion = Schema.Struct({
+  question_id: Schema.String,
+  question_type: Schema.String,
+  question: Schema.String,
+  answer: Schema.optionalKey(Schema.String),
+  question_date: Schema.String,
+  haystack_dates: Schema.Array(Schema.String),
+  haystack_session_ids: Schema.Array(Schema.String),
+  haystack_sessions: Schema.Array(
+    Schema.Array(
+      Schema.Struct({
+        role: Schema.String,
+        content: Schema.String,
+        has_answer: Schema.optionalKey(Schema.Boolean)
+      })
+    )
+  ),
+  answer_session_ids: Schema.optionalKey(Schema.Array(Schema.String))
+})
+
+export type RawQuestion = typeof RawQuestion.Type
 
 /** `2023/04/10 (Mon) 17:50` — the only timestamp format either file uses. */
 const DATE_PATTERN = /^(\d{4})\/(\d{2})\/(\d{2})\s+\([A-Za-z]{3}\)\s+(\d{2}):(\d{2})$/
@@ -56,7 +66,10 @@ const DATE_PATTERN = /^(\d{4})\/(\d{2})\/(\d{2})\s+\([A-Za-z]{3}\)\s+(\d{2}):(\d
 export const parseHaystackDate = (raw: string): HaystackDate => {
   const match = DATE_PATTERN.exec(raw.trim())
   if (match === null) throw new Error(`unrecognised LongMemEval timestamp: ${JSON.stringify(raw)}`)
-  const [, y, mo, d, h, mi] = match as unknown as [string, string, string, string, string, string]
+  const [, y, mo, d, h, mi] = match
+  if (y === undefined || mo === undefined || d === undefined || h === undefined || mi === undefined) {
+    throw new Error(`incomplete LongMemEval timestamp: ${JSON.stringify(raw)}`)
+  }
   const year = Number(y)
   const month = Number(mo)
   const day = Number(d)
@@ -105,3 +118,4 @@ export const parseQuestion = (raw: RawQuestion): DatasetQuestion => {
     isAbstention: raw.question_id.endsWith("_abs")
   }
 }
+import { Schema } from "effect"

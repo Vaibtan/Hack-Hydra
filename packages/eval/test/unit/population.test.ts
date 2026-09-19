@@ -53,7 +53,7 @@ describe("the committed split file", () => {
     const questions = [...file.test.slice(0, 3), ...file.dev.slice(0, 2)].reverse().map(question)
     const selected = splitQuestions(questions, file, "dev")
     expect(selected.wanted).toBe(60)
-    expect(selected.slice.map((q) => q.questionId)).toEqual([...file.dev.slice(0, 2)].sort())
+    expect(selected.slice.map((q) => q.questionId)).toEqual(file.dev.slice(0, 2).sort())
   })
 
   it("refuses the test half only while the gate is unread", () => {

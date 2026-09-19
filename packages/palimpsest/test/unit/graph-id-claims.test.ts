@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { HydraClient, vertexId } from "@palimpsest/hydra"
+import { vertexId } from "@palimpsest/hydra"
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import { recoverGraphIdCollision } from "../../src/GraphIdClaims.js"
@@ -12,8 +12,9 @@ import {
   IngestManifestLayerMemory,
   type IngestManifestError
 } from "../../src/IngestManifest.js"
-import { makeGraphClaimOperations } from "../../src/IngestManifest/GraphClaims.js"
+import { createGraphClaimOperations } from "../../src/IngestManifest/GraphClaims.js"
 import { createDatabase } from "../../src/IngestManifest/Schema.js"
+import type { GraphIdentityReader } from "../../src/GraphIdClaims.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -66,16 +67,16 @@ describe("graph id claims", () => {
         const manifest = yield* IngestManifest
         return yield* manifest
           .claimGraphId({ reducedId: 42, kind: "vertex", canonicalIdentity: "identity-a" })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
       })
     )
 
-    expect(outcome).toMatchObject({ _tag: "Left", left: { _tag: "InvalidGraphIdClaim" } })
+    expect(outcome).toMatchObject({ _tag: "Failure", failure: { _tag: "InvalidGraphIdClaim" } })
   })
 
   it("quarantines a deterministic same-id/different-identity collision", async () => {
     const database = createDatabase(":memory:")
-    const claims = makeGraphClaimOperations(database, () => 99)
+    const claims = createGraphClaimOperations(database, () => 99)
     try {
       await Effect.runPromise(
         claims.claimGraphId({ reducedId: 99, kind: "vertex", canonicalIdentity: "identity-a" })
@@ -83,14 +84,14 @@ describe("graph id claims", () => {
       const collision = await Effect.runPromise(
         claims
           .claimGraphId({ reducedId: 99, kind: "vertex", canonicalIdentity: "identity-b" })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
       )
       const stored = await Effect.runPromise(claims.readGraphIdClaim({ reducedId: 99, kind: "vertex" }))
       const quarantine = await Effect.runPromise(claims.listGraphIdQuarantine())
 
       expect(collision).toMatchObject({
-        _tag: "Left",
-        left: {
+        _tag: "Failure",
+        failure: {
           _tag: "GraphIdCollision",
           reducedId: 99,
           existingIdentity: "identity-a",
@@ -108,12 +109,12 @@ describe("graph id claims", () => {
     const database = createDatabase(":memory:")
     const collisionReducer = (key: string): number =>
       key === "identity-a" || key === "identity-b" ? 5 : vertexId(key)
-    const claims = makeGraphClaimOperations(database, collisionReducer)
+    const claims = createGraphClaimOperations(database, collisionReducer)
     const storedGraph = new Map<number, ReadonlyArray<string>>()
-    const hydra = {
+    const hydra: GraphIdentityReader = {
       readGraphIdentities: (_kind: "relationship" | "vertex", reducedId: number) =>
         Effect.succeed(storedGraph.get(reducedId) ?? [])
-    } as unknown as HydraClient
+    }
     try {
       await Effect.runPromise(
         claims.claimGraphId({ reducedId: 5, kind: "vertex", canonicalIdentity: "identity-a" })
@@ -121,7 +122,7 @@ describe("graph id claims", () => {
       await Effect.runPromise(
         claims
           .claimGraphId({ reducedId: 5, kind: "vertex", canonicalIdentity: "identity-b" })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
       )
 
       const target = await Effect.runPromise(
@@ -146,10 +147,10 @@ describe("graph id claims", () => {
     const database = createDatabase(":memory:")
     const collisionReducer = (key: string): number =>
       key === "identity-a" || key === "identity-b" ? 5 : vertexId(key)
-    const claims = makeGraphClaimOperations(database, collisionReducer)
-    const hydra = {
+    const claims = createGraphClaimOperations(database, collisionReducer)
+    const hydra: GraphIdentityReader = {
       readGraphIdentities: () => Effect.succeed([])
-    } as unknown as HydraClient
+    }
     try {
       await Effect.runPromise(
         claims.claimGraphId({ reducedId: 5, kind: "vertex", canonicalIdentity: "identity-a" })
@@ -157,7 +158,7 @@ describe("graph id claims", () => {
       await Effect.runPromise(
         claims
           .claimGraphId({ reducedId: 5, kind: "vertex", canonicalIdentity: "identity-b" })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
       )
       const outcome = await Effect.runPromise(
         recoverGraphIdCollision(claims, hydra, {
@@ -166,12 +167,12 @@ describe("graph id claims", () => {
           rejectedIdentity: "identity-b",
           replacementCanonicalIdentity: "identity-b|rekey|namespace-2",
           rebuild: () => Effect.void
-        }).pipe(Effect.either)
+        }).pipe(Effect.result)
       )
 
       expect(outcome).toMatchObject({
-        _tag: "Left",
-        left: { _tag: "GraphIdRecoveryRejected", reason: "readBackMismatch" }
+        _tag: "Failure",
+        failure: { _tag: "GraphIdRecoveryRejected", reason: "readBackMismatch" }
       })
       expect(await Effect.runPromise(claims.listGraphIdQuarantine())).toHaveLength(1)
     } finally {
@@ -197,7 +198,7 @@ describe("graph id claims", () => {
       ])
 
       const database = createDatabase(path)
-      const claims = makeGraphClaimOperations(database, () => 4242)
+      const claims = createGraphClaimOperations(database, () => 4242)
       try {
         const stored = await Effect.runPromise(
           claims.readGraphIdClaim({ reducedId: 4242, kind: "relationship" })

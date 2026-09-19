@@ -3,10 +3,10 @@ import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import { claimKind, slotKey, userKey } from "../../src/Keys.js"
-import type { AskResult } from "../../src/Plan.js"
 import { Retrieve } from "../../src/Retrieve.js"
 import { shortId } from "../../src/Select.js"
 import { Supersede } from "../../src/Supersede.js"
+import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 type Node = HydraPath["nodes"][number]
 
@@ -78,7 +78,7 @@ const understanding = {
 
 const ask = async (ablations: { readonly noSelect?: boolean }) => {
   const kinds: Array<string> = []
-  const llm = Layer.succeed(Llm, {
+  const llm = Layer.succeed(Llm, behaviorFake<Llm>({
     model: "stub",
     cacheDir: "",
     concurrency: 1,
@@ -95,17 +95,17 @@ const ask = async (ablations: { readonly noSelect?: boolean }) => {
       }),
     usage: Effect.succeed({ inputTokens: 0, outputTokens: 0, calls: 0, cacheHits: 0 }),
     resetUsage: Effect.void
-  } as unknown as Llm)
-  const hydra = Layer.succeed(HydraClient, {
+  }))
+  const hydra = Layer.succeed(HydraClient, behaviorFake<HydraClient>({
     msPaths: (config: MsPathsConfig) => Effect.sync(() => graph(config)),
     getById: (_label: string, key: string) =>
       Effect.succeed(key === userKey(UID) ? Option.some({ n_claims: 100 }) : Option.none())
-  } as unknown as HydraClient)
-  const supersede = Layer.succeed(Supersede, {
+  }))
+  const supersede = Layer.succeed(Supersede, behaviorFake<Supersede>({
     readEdges: () => Effect.succeed(new Map())
-  } as unknown as Supersede)
+  }))
 
-  const result = await Effect.runPromise(
+  const result = await runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
         const retrieve = yield* Retrieve
@@ -114,8 +114,8 @@ const ask = async (ablations: { readonly noSelect?: boolean }) => {
           ablations
         })
       }),
-      Retrieve.Default.pipe(Layer.provideMerge(hydra), Layer.provideMerge(supersede), Layer.provideMerge(llm))
-    ) as unknown as Effect.Effect<AskResult, never, never>
+      Retrieve.layer.pipe(Layer.provideMerge(hydra), Layer.provideMerge(supersede), Layer.provideMerge(llm))
+    )
   )
   return { result, kinds }
 }

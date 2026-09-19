@@ -5,7 +5,7 @@ import {
   serializeEntityCanonicalView,
   type EntityCanonicalView
 } from "../EntityCanonicalView.js"
-import { text, transaction, type DatabaseRow } from "./Rows.js"
+import { text, transaction } from "./Rows.js"
 import {
   EntityCanonicalViewConflict,
   EntityCanonicalViewNotFound,
@@ -37,10 +37,10 @@ const selectEntityCanonicalView = (
 ): EntityCanonicalView | undefined => {
   const row = database
     .prepare(`SELECT canonical_json FROM entity_canonical_views WHERE tenant = ? AND uid = ? AND view_id = ?`)
-    .get(scope.tenant, scope.uid, viewId) as DatabaseRow | undefined
+    .get(scope.tenant, scope.uid, viewId)
   if (row === undefined) return undefined
   const parsed = parseEntityCanonicalView(viewId, text(row, "canonical_json"))
-  if (parsed._tag === "Left") throw new Error(`stored entity canonical view ${viewId} was invalid`)
+  if (parsed._tag === "Failure") throw new Error(`stored entity canonical view ${viewId} was invalid`)
   const rows = database
     .prepare(
       `SELECT from_identity_id, to_canonical_identity_id
@@ -48,22 +48,22 @@ const selectEntityCanonicalView = (
         WHERE tenant = ? AND uid = ? AND view_id = ?
         ORDER BY from_identity_id ASC`
     )
-    .all(scope.tenant, scope.uid, viewId) as ReadonlyArray<DatabaseRow>
+    .all(scope.tenant, scope.uid, viewId)
   const persistedEdges = new Map(
     rows.map((edge) => [text(edge, "from_identity_id"), text(edge, "to_canonical_identity_id")])
   )
-  const expectedEdges = new Map(parsed.right.sameAs.map((edge) => [edge.fromIdentityId, edge.toCanonicalIdentityId]))
+  const expectedEdges = new Map(parsed.success.sameAs.map((edge) => [edge.fromIdentityId, edge.toCanonicalIdentityId]))
   if (!sameStringMap(persistedEdges, expectedEdges)) {
     throw new Error(`stored entity canonical view edges for ${viewId} were invalid`)
   }
-  return parsed.right
+  return parsed.success
 }
 
 const storeView = (database: DatabaseSync, input: StoreEntityCanonicalView): EntityCanonicalView => {
   const serialized = serializeEntityCanonicalView(input.view)
   const existing = database
     .prepare(`SELECT canonical_json FROM entity_canonical_views WHERE tenant = ? AND uid = ? AND view_id = ?`)
-    .get(input.tenant, input.uid, input.view.id) as DatabaseRow | undefined
+    .get(input.tenant, input.uid, input.view.id)
   if (existing !== undefined) {
     if (text(existing, "canonical_json") !== serialized) {
       throw new EntityCanonicalViewConflict({ tenant: input.tenant, uid: input.uid, viewId: input.view.id })
@@ -110,14 +110,14 @@ const activateView = (database: DatabaseSync, input: ActivateEntityCanonicalView
 const readActiveView = (database: DatabaseSync, scope: EntityCanonicalViewScope): EntityCanonicalView | null => {
   const pointer = database
     .prepare(`SELECT view_id FROM active_entity_canonical_views WHERE tenant = ? AND uid = ?`)
-    .get(scope.tenant, scope.uid) as DatabaseRow | undefined
+    .get(scope.tenant, scope.uid)
   if (pointer === undefined) return null
   const view = selectEntityCanonicalView(database, scope, text(pointer, "view_id"))
   if (view === undefined) throw new Error("active entity canonical view was not readable")
   return view
 }
 
-export const makeCanonicalViewOperations = (database: DatabaseSync): CanonicalViewOperations => ({
+export const createCanonicalViewOperations = (database: DatabaseSync): CanonicalViewOperations => ({
   storeEntityCanonicalView: (input) =>
     Effect.try({
       try: () => transaction(database, () => storeView(database, input)),

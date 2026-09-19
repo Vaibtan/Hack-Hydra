@@ -1,6 +1,6 @@
-import { Effect, Either } from "effect"
+import { Effect, Result, Schema } from "effect"
 import { FULL_KEY_PROPERTY } from "./Cypher.js"
-import type { HydraPath } from "./Decode.js"
+import type { HydraPath, Row, Scalar } from "./Decode.js"
 import type { HydraIdentityIntegrityError } from "./Errors.js"
 import {
   createGraphIdentityRegistry,
@@ -8,44 +8,48 @@ import {
   type GraphIdentityRegistry
 } from "./Ids.js"
 
-export type IdentityOutcome = Either.Either<void, HydraIdentityIntegrityError>
+export type IdentityOutcome = Result.Result<void, HydraIdentityIntegrityError>
 
 export const identityEffect = <A>(
-  outcome: Either.Either<A, HydraIdentityIntegrityError>
+  outcome: Result.Result<A, HydraIdentityIntegrityError>
 ): Effect.Effect<A, HydraIdentityIntegrityError> =>
-  outcome._tag === "Left" ? Effect.fail(outcome.left) : Effect.succeed(outcome.right)
+  outcome._tag === "Failure" ? Effect.fail(outcome.failure) : Effect.succeed(outcome.success)
 
 /** The client's own id read back off the wire; `NaN` (a mismatch) when absent. */
-export const contentAddressedId = (properties: Readonly<Record<string, unknown>>): number =>
-  typeof properties["id"] === "number" ? properties["id"] : Number.NaN
+export const contentAddressedId = (properties: Readonly<Record<string, Scalar>>): number => {
+  const id = properties["id"]
+  return Schema.is(Schema.Number)(id) ? id : Number.NaN
+}
 
-const storedFullKey = (properties: Readonly<Record<string, unknown>>): string | null =>
-  typeof properties[FULL_KEY_PROPERTY] === "string" ? properties[FULL_KEY_PROPERTY] : null
+const storedFullKey = (properties: Readonly<Record<string, Scalar>> | Row): string | null => {
+  const stored = properties[FULL_KEY_PROPERTY]
+  return Schema.is(Schema.String)(stored) ? stored : null
+}
 
 export interface Identity {
   readonly registry: GraphIdentityRegistry
-  readonly claimVertexId: (key: string) => Either.Either<number, HydraIdentityIntegrityError>
-  readonly claimRelationshipId: (key: string) => Either.Either<number, HydraIdentityIntegrityError>
+  readonly claimVertexId: (key: string) => Result.Result<number, HydraIdentityIntegrityError>
+  readonly claimRelationshipId: (key: string) => Result.Result<number, HydraIdentityIntegrityError>
   readonly verifyPath: (path: HydraPath) => IdentityOutcome
   readonly verifyVertexRow: (
     key: string,
     numericId: number,
-    row: Readonly<Record<string, unknown>>
+    row: Row
   ) => IdentityOutcome
 }
 
-export const makeIdentity = (registry: GraphIdentityRegistry = createGraphIdentityRegistry()): Identity => {
+export const createIdentity = (registry: GraphIdentityRegistry = createGraphIdentityRegistry()): Identity => {
   const claimVertexId = (key: string) =>
-    Either.map(registry.claimVertex(key), (identity) => identity.numericId)
+    Result.map(registry.claimVertex(key), (identity) => identity.numericId)
   const claimRelationshipId = (key: string) =>
-    Either.map(registry.claimRelationship(key), (identity) => identity.numericId)
+    Result.map(registry.claimRelationship(key), (identity) => identity.numericId)
 
   const verifyPath = (path: HydraPath): IdentityOutcome => {
     for (const node of path.nodes) {
       const storedKey = storedFullKey(node.properties)
       if (storedKey !== null) {
         const claimed = registry.claimVertex(storedKey)
-        if (claimed._tag === "Left") return Either.left(claimed.left)
+        if (claimed._tag === "Failure") return Result.fail(claimed.failure)
       }
       const verified = verifyStoredGraphIdentity({
         kind: "vertex",
@@ -53,13 +57,13 @@ export const makeIdentity = (registry: GraphIdentityRegistry = createGraphIdenti
         requestedKey: storedKey ?? "",
         storedKey
       })
-      if (verified._tag === "Left") return Either.left(verified.left)
+      if (verified._tag === "Failure") return Result.fail(verified.failure)
     }
     for (const relationship of path.relationships) {
       const storedKey = storedFullKey(relationship.properties)
       if (storedKey !== null) {
         const claimed = registry.claimRelationship(storedKey)
-        if (claimed._tag === "Left") return Either.left(claimed.left)
+        if (claimed._tag === "Failure") return Result.fail(claimed.failure)
       }
       const verified = verifyStoredGraphIdentity({
         kind: "relationship",
@@ -67,15 +71,15 @@ export const makeIdentity = (registry: GraphIdentityRegistry = createGraphIdenti
         requestedKey: storedKey ?? "",
         storedKey
       })
-      if (verified._tag === "Left") return Either.left(verified.left)
+      if (verified._tag === "Failure") return Result.fail(verified.failure)
     }
-    return Either.void
+    return Result.void
   }
 
   const verifyVertexRow = (
     key: string,
     numericId: number,
-    row: Readonly<Record<string, unknown>>
+    row: Row
   ): IdentityOutcome =>
     verifyStoredGraphIdentity({ kind: "vertex", numericId, requestedKey: key, storedKey: storedFullKey(row) })
 

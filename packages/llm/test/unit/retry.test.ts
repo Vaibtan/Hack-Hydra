@@ -1,5 +1,5 @@
-import { AiError } from "@effect/ai"
-import { Effect, Option, Schedule } from "effect"
+import { AiError } from "effect/unstable/ai"
+import { Effect, Schedule } from "effect"
 import { describe, expect, it } from "vitest"
 import { isTransient } from "../../src/Llm.js"
 
@@ -7,29 +7,35 @@ const request = {
   method: "POST" as const,
   url: "https://provider.invalid/v1/chat/completions",
   urlParams: [],
-  hash: Option.none(),
   headers: {}
 }
 
-const status = (code: number): AiError.AiError =>
-  new AiError.HttpResponseError({
+const status = (code: number): AiError.AiError => {
+  const reason = code === 429
+    ? new AiError.RateLimitError({})
+    : code >= 500
+      ? new AiError.InternalProviderError({ description: `HTTP ${code}` })
+      : new AiError.InvalidRequestError({ description: `HTTP ${code}` })
+  return new AiError.AiError({
     module: "OpenAiClient",
     method: "createChatCompletion",
-    request,
-    response: { status: code, headers: {} },
-    reason: "StatusCode"
+    reason
   })
+}
 
 const transport = (): AiError.AiError =>
-  new AiError.HttpRequestError({
+  new AiError.AiError({
     module: "OpenAiClient",
     method: "createChatCompletion",
-    request,
-    reason: "Transport"
+    reason: new AiError.NetworkError({ request, reason: "TransportError" })
   })
 
 const malformed = (): AiError.AiError =>
-  new AiError.MalformedOutput({ module: "OpenAiClient", method: "generateObject", description: "bad json" })
+  new AiError.AiError({
+    module: "OpenAiClient",
+    method: "generateObject",
+    reason: new AiError.InvalidOutputError({ description: "bad json" })
+  })
 
 const attempts = (error: AiError.AiError): Promise<number> => {
   let calls = 0
@@ -39,7 +45,7 @@ const attempts = (error: AiError.AiError): Promise<number> => {
       return Effect.fail(error)
     }).pipe(
       Effect.retry({ schedule: Schedule.recurs(3), while: isTransient }),
-      Effect.either,
+      Effect.result,
       Effect.map(() => calls)
     )
   )

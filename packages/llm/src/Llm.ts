@@ -1,11 +1,19 @@
-import { LanguageModel, type AiError } from "@effect/ai"
-import { Config, Effect, JSONSchema, Layer, Ref, Schedule, Schema, Scope } from "effect"
+import { Config, Context, Effect, Layer, Ref, Schedule, Schema, Semaphore } from "effect"
+import { LanguageModel, type AiError } from "effect/unstable/ai"
 import { cacheKey, defaultCacheDir, readCache, writeCache } from "./Cache.js"
 import { DEFAULT_MODEL, configuredModel } from "./Models.js"
 import { languageModelLayer } from "./Provider.js"
 
-/** Token prices in USD per million tokens. */
-export const PRICING: Record<string, { readonly input: number; readonly output: number }> = {
+export interface ModelPricing {
+  readonly input: number
+  readonly output: number
+}
+
+export interface PricingCatalog {
+  readonly [model: string]: ModelPricing
+}
+
+export const PRICING: PricingCatalog = {
   [DEFAULT_MODEL]: { input: 0.2, output: 1.2 },
   "gpt-4o": { input: 2.5, output: 10 }
 }
@@ -29,7 +37,7 @@ export interface GenerateOptions<A, I extends Record<string, unknown>> {
   readonly kind: string
   readonly system: string
   readonly prompt: string
-  readonly schema: Schema.Schema<A, I>
+  readonly schema: Schema.Codec<A, I>
   /** Some providers use this as extra guidance for the structured output. */
   readonly objectName: string
   /** A different model for this one call, with its own transport and cache entries. */
@@ -54,45 +62,44 @@ export interface GenerateTextOptions {
 
 /** 429, 5xx and transport failures; a 400 or a malformed input/output is the same answer on every attempt. */
 export const isTransient = (error: AiError.AiError): boolean => {
-  switch (error._tag) {
-    case "HttpRequestError":
-      return error.reason === "Transport"
-    case "HttpResponseError":
-      return error.reason !== "StatusCode" || error.response.status === 429 || error.response.status >= 500
-    case "MalformedOutput":
-    case "UnknownError":
-      return true
-    default:
-      return false
-  }
+  return error.isRetryable
 }
 
 const make = Effect.gen(function* () {
   const model = configuredModel("PALIMPSEST_MODEL") ?? DEFAULT_MODEL
+  const defaultLanguageModel = yield* LanguageModel.LanguageModel
   const cacheDir = yield* Config.string("PALIMPSEST_LLM_CACHE").pipe(
     Config.withDefault(defaultCacheDir())
   )
-  const concurrency = yield* Config.integer("PALIMPSEST_LLM_CONCURRENCY").pipe(Config.withDefault(8))
+  const concurrency = yield* Config.int("PALIMPSEST_LLM_CONCURRENCY").pipe(Config.withDefault(8))
 
   const usageRef = yield* Ref.make(new Map<string, Usage>())
-  const gate = yield* Effect.makeSemaphore(concurrency)
+  const gate = yield* Semaphore.make(concurrency)
 
   const retrySchedule = Schedule.exponential("1 second", 2).pipe(
     Schedule.jittered,
-    Schedule.compose(Schedule.recurs(4))
+    Schedule.upTo({ times: 4 })
   )
 
-  const layers = new Map<string, Layer.Layer<LanguageModel.LanguageModel>>()
   const scope = yield* Effect.scope
-  const layerFor = (name: string): Effect.Effect<Layer.Layer<LanguageModel.LanguageModel>> =>
-    Effect.gen(function* () {
-      const found = layers.get(name)
-      if (found !== undefined) return found
-      const memoized = yield* Layer.memoize(languageModelLayer(name))
-      const erased = memoized as unknown as Layer.Layer<LanguageModel.LanguageModel>
-      layers.set(name, erased)
-      return erased
-    }).pipe(Effect.provideService(Scope.Scope, scope), Effect.orDie)
+  const memoMap = yield* Layer.makeMemoMap
+  const layers = new Map<string, Layer.Layer<LanguageModel.LanguageModel>>()
+  const layerFor = (name: string): Layer.Layer<LanguageModel.LanguageModel> => {
+    const found = layers.get(name)
+    if (found !== undefined) return found
+    const created = languageModelLayer(name).pipe(Layer.orDie)
+    layers.set(name, created)
+    return created
+  }
+
+  const languageModelFor = (
+    name: string
+  ): Effect.Effect<LanguageModel.LanguageModel["Service"]> => {
+    if (name === model) return Effect.succeed(defaultLanguageModel)
+    return Layer.buildWithMemoMap(layerFor(name), memoMap, scope).pipe(
+      Effect.map((context) => Context.get(context, LanguageModel.LanguageModel))
+    )
+  }
 
   const record = (name: string, inputTokens: number, outputTokens: number, hit: boolean) =>
     Ref.update(usageRef, (all) => {
@@ -110,19 +117,21 @@ const make = Effect.gen(function* () {
   const withModel = <A, E>(
     name: string,
     call: Effect.Effect<A, E, LanguageModel.LanguageModel>
-  ): Effect.Effect<A, E, LanguageModel.LanguageModel> =>
+  ): Effect.Effect<A, E> =>
     Effect.gen(function* () {
       const gated = gate.withPermits(1)(call)
-      if (name === model) return yield* gated
-      return yield* gated.pipe(Effect.provide(yield* layerFor(name)))
+      const selectedModel = yield* languageModelFor(name)
+      return yield* gated.pipe(
+        Effect.provideService(LanguageModel.LanguageModel, selectedModel)
+      )
     })
 
   const generateObject = <A, I extends Record<string, unknown>>(
     options: GenerateOptions<A, I>
-  ): Effect.Effect<Generated<A>, AiError.AiError, LanguageModel.LanguageModel> =>
+  ): Effect.Effect<Generated<A>, AiError.AiError> =>
     Effect.gen(function* () {
       const using = options.model ?? model
-      const schemaJson = JSONSchema.make(options.schema)
+      const schemaJson = Schema.toJsonSchemaDocument(options.schema)
       const key = cacheKey({
         model: using,
         system: options.system,
@@ -132,7 +141,7 @@ const make = Effect.gen(function* () {
 
       const cached = yield* Effect.promise(() => readCache(cacheDir, options.kind, key))
       if (cached !== undefined) {
-        const decoded = yield* Schema.decodeUnknown(options.schema)(cached.value).pipe(Effect.option)
+        const decoded = yield* Schema.decodeUnknownEffect(options.schema)(cached.value).pipe(Effect.option)
         if (decoded._tag === "Some") {
           yield* record(using, 0, 0, true)
           return {
@@ -157,11 +166,11 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.retry({ schedule: retrySchedule, while: isTransient }))
       )
 
-      const inputTokens = response.usage.inputTokens ?? 0
-      const outputTokens = response.usage.outputTokens ?? 0
+      const inputTokens = response.usage.inputTokens.total ?? 0
+      const outputTokens = response.usage.outputTokens.total ?? 0
       yield* record(using, inputTokens, outputTokens, false)
 
-      const encoded = yield* Schema.encode(options.schema)(response.value).pipe(Effect.orDie)
+      const encoded = yield* Schema.encodeEffect(options.schema)(response.value).pipe(Effect.orDie)
       yield* Effect.promise(() =>
         writeCache(cacheDir, options.kind, key, {
           model: using,
@@ -178,7 +187,7 @@ const make = Effect.gen(function* () {
 
   const generateText = (
     options: GenerateTextOptions
-  ): Effect.Effect<Generated<string>, AiError.AiError, LanguageModel.LanguageModel> =>
+  ): Effect.Effect<Generated<string>, AiError.AiError> =>
     Effect.gen(function* () {
       const using = options.model ?? model
       const key = cacheKey({
@@ -189,7 +198,7 @@ const make = Effect.gen(function* () {
       })
 
       const cached = yield* Effect.promise(() => readCache(cacheDir, options.kind, key))
-      if (cached !== undefined && typeof cached.value === "string") {
+      if (cached !== undefined && Schema.is(Schema.String)(cached.value)) {
         yield* record(using, 0, 0, true)
         return {
           value: cached.value,
@@ -208,14 +217,14 @@ const make = Effect.gen(function* () {
             system === undefined
               ? [{ role: "user" as const, content: [{ type: "text" as const, text: options.prompt }] }]
               : [
-                  { role: "system" as const, content: system },
-                  { role: "user" as const, content: [{ type: "text" as const, text: options.prompt }] }
-                ]
+                { role: "system" as const, content: system },
+                { role: "user" as const, content: [{ type: "text" as const, text: options.prompt }] }
+              ]
         }).pipe(Effect.retry({ schedule: retrySchedule, while: isTransient }))
       )
 
-      const inputTokens = response.usage.inputTokens ?? 0
-      const outputTokens = response.usage.outputTokens ?? 0
+      const inputTokens = response.usage.inputTokens.total ?? 0
+      const outputTokens = response.usage.outputTokens.total ?? 0
       yield* record(using, inputTokens, outputTokens, false)
       yield* Effect.promise(() =>
         writeCache(cacheDir, options.kind, key, {
@@ -268,4 +277,6 @@ const make = Effect.gen(function* () {
   } as const
 })
 
-export class Llm extends Effect.Service<Llm>()("palimpsest/Llm", { scoped: make }) {}
+export type Llm = Effect.Success<typeof make>
+const LlmTag = Context.Service<Llm>("palimpsest/Llm")
+export const Llm = Object.assign(LlmTag, { layer: Layer.effect(LlmTag, make) })

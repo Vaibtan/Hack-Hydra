@@ -32,12 +32,12 @@ describe("Receipt schema", () => {
     const result = receipt()
 
     expect(JSON.parse(JSON.stringify(result.query1Params))).toEqual(result.query1Params)
-    expect(Schema.decodeUnknownEither(Receipt)(result)).toMatchObject({ _tag: "Right" })
+    expect(Schema.decodeUnknownResult(Receipt)(result)).toMatchObject({ _tag: "Success" })
   })
 
   it("rejects a receipt that drops the Query 1 parameters needed for replay", () => {
     const { query1Params: _query1Params, ...withoutParameters } = receipt()
 
-    expect(Schema.decodeUnknownEither(Receipt)(withoutParameters)._tag).toBe("Left")
+    expect(Schema.decodeUnknownResult(Receipt)(withoutParameters)._tag).toBe("Failure")
   })
 })

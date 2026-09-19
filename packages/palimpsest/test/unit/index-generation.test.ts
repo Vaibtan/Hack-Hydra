@@ -33,12 +33,12 @@ describe("IndexGeneration", () => {
     expect(first.id).toBe(equivalent.id)
     expect(first.id).not.toBe(changedSchema.id)
     expect(parseIndexGeneration(first.id, first.canonicalJson)).toMatchObject({
-      _tag: "Right",
-      right: { id: first.id, extractionGenerationId: extraction.id }
+      _tag: "Success",
+      success: { id: first.id, extractionGenerationId: extraction.id }
     })
     expect(parseIndexGeneration(first.id, changedSchema.canonicalJson)).toMatchObject({
-      _tag: "Left",
-      left: { reason: "identifierMismatch" }
+      _tag: "Failure",
+      failure: { reason: "identifierMismatch" }
     })
   })
 })

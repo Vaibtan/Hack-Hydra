@@ -181,11 +181,18 @@ describe("the reader's sentence", () => {
 })
 
 
+interface ClaimFixture {
+  readonly tEvent: number
+  readonly tPrec: string
+  readonly sessionDate: number
+  readonly id: string
+}
+
 const claim = (
   tEvent: number,
   tPrec: string,
   sessionDate = 20230101
-): { tEvent: number; tPrec: string; sessionDate: number; id: string } => ({
+): ClaimFixture => ({
   tEvent,
   tPrec,
   sessionDate,

@@ -1,9 +1,9 @@
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { parseQuestion, type DatasetQuestion, type RawQuestion } from "./LongMemEval.js"
+import { parseQuestion, RawQuestion, type DatasetQuestion } from "./LongMemEval.js"
 
 export const DATASET_FILES = {
   oracle: "longmemeval_oracle.json",
@@ -11,6 +11,11 @@ export const DATASET_FILES = {
 } as const
 
 export type DatasetName = keyof typeof DATASET_FILES
+
+export const parseDatasetName = (value: string): DatasetName => {
+  if (Object.hasOwn(DATASET_FILES, value)) return value === "oracle" ? "oracle" : "s"
+  throw new Error(`unknown dataset ${JSON.stringify(value)}`)
+}
 
 export class DatasetUnavailable extends Error {
   constructor(readonly path: string, override readonly cause: unknown) {
@@ -42,7 +47,7 @@ export const loadDataset = (
   return Effect.tryPromise({
     try: async () => {
       const text = await readFile(path, "utf8")
-      return (JSON.parse(text) as ReadonlyArray<RawQuestion>).map(parseQuestion)
+      return Schema.decodeUnknownSync(Schema.Array(RawQuestion))(JSON.parse(text)).map(parseQuestion)
     },
     catch: (cause) => new DatasetUnavailable(path, cause)
   })

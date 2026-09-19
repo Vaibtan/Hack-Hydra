@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { open } from "node:fs/promises"
 import { Schema } from "effect"
 import { benchmarkSlice } from "./Slice.js"
+import type { JsonObject } from "./JsonValue.js"
 import {
   EXCLUSION_REASONS,
   Exclusion,
@@ -26,7 +27,7 @@ import {
 export const PopulationRecord = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   /** `dev`, `test`, or another split label; says which population this record describes. */
-  split: Schema.NullOr(Schema.Literal("dev", "test")),
+  split: Schema.NullOr(Schema.Literals(["dev", "test"])),
   dataset: Schema.String,
   datasetSha256: Schema.String,
   slice: Schema.Number,
@@ -40,14 +41,14 @@ export const PopulationRecord = Schema.Struct({
   answerable: Schema.Number,
   abstention: Schema.Number,
   ingested: Schema.Struct({
-    state: Schema.Literal("unknown", "declared", "verified"),
+    state: Schema.Literals(["unknown", "declared", "verified"]),
     count: Schema.NullOr(Schema.Number),
-    evidenceKind: Schema.Literal("manifest-committed", "legacy-query-visible", "declared", "unknown"),
+    evidenceKind: Schema.Literals(["manifest-committed", "legacy-query-visible", "declared", "unknown"]),
     verifiedAt: Schema.NullOr(Schema.String),
     witness: Schema.NullOr(Schema.String)
   }),
   capacityGateTripped: Schema.Boolean,
-  completion: Schema.Literal("complete", "capacity-capped", "unknown"),
+  completion: Schema.Literals(["complete", "capacity-capped", "unknown"]),
   exclusions: Schema.Array(Exclusion),
   observed: Schema.Struct({ dev: Schema.Boolean, test: Schema.Boolean, note: Schema.String }),
   /** The deterministic membership every downstream result must share. */
@@ -87,7 +88,7 @@ export const ReconciledUser = Schema.Struct({
   missingSessionKeys: Schema.Array(Schema.String),
   unexpectedSessionKeys: Schema.Array(Schema.String),
   duplicateSessionKeys: Schema.Array(Schema.String),
-  status: Schema.Literal(...RECONCILIATION_STATUSES)
+  status: Schema.Literals([...RECONCILIATION_STATUSES])
 })
 /** Parsed exact session-membership witness for one user. */
 export type ReconciledUser = typeof ReconciledUser.Type
@@ -112,13 +113,17 @@ export const ReconcileWitness = Schema.Struct({
 /** Parsed immutable legacy reconciliation artifact. */
 export type ReconcileWitness = typeof ReconcileWitness.Type
 
-const assertReconcileWitness: (input: unknown) => asserts input is ReconcileWitness = Schema.asserts(
-  ReconcileWitness,
-  { errors: "all" }
-)
+export interface WitnessQuestionIds {
+  readonly complete: ReadonlyArray<string>
+  readonly missing: ReadonlyArray<string>
+  readonly partial: ReadonlyArray<string>
+}
+
+const assertReconcileWitness: (input: unknown) => asserts input is ReconcileWitness = (input) =>
+  Schema.asserts(ReconcileWitness, input)
 
 /** Parse an untrusted reconciliation artifact before it influences population status. */
-export const parseReconcileWitness = (input: unknown): ReconcileWitness => {
+export const parseReconcileWitness = (input: JsonObject): ReconcileWitness => {
   assertReconcileWitness(input)
   return input
 }
@@ -194,11 +199,7 @@ export const buildReconciledUser = (input: BuildReconciledUserInput): Reconciled
 /** Deterministic complete/missing/partial question IDs derived from detailed witness rows. */
 export const witnessQuestionIds = (
   witness: ReconcileWitness
-): {
-  readonly complete: ReadonlyArray<string>
-  readonly missing: ReadonlyArray<string>
-  readonly partial: ReadonlyArray<string>
-} => ({
+): WitnessQuestionIds => ({
   complete: witness.users.filter((user) => user.status === "complete").map((user) => user.questionId).sort(),
   missing: witness.users.filter((user) => user.status === "missing").map((user) => user.questionId).sort(),
   partial: witness.users.filter((user) => user.status === "partial").map((user) => user.questionId).sort()

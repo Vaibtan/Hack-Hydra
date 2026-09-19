@@ -1,10 +1,9 @@
-import type { LanguageModel } from "@effect/ai"
 import type { DatasetSession } from "@palimpsest/dataset"
 import { Llm } from "@palimpsest/llm"
-import { Effect, JSONSchema, Schema } from "effect"
+import { Effect, Schema } from "effect"
 import {
   createExtractionGeneration,
-  parseCanonicalJson,
+  CanonicalJsonSchema,
   type ExtractionGeneration,
   type VersionedDependency
 } from "./SourceIdentity.js"
@@ -49,7 +48,7 @@ export const ATTRIBUTE_VOCABULARY = [
 
 const Entity = Schema.Struct({
   canon: Schema.String,
-  etype: Schema.Literal(...ENTITY_TYPES),
+  etype: Schema.Literals([...ENTITY_TYPES]),
   aliases: Schema.Array(Schema.String)
 })
 
@@ -60,8 +59,8 @@ const Slot = Schema.Struct({
 
 const RawClaim = Schema.Struct({
   text: Schema.String,
-  speaker: Schema.Literal("user", "assistant"),
-  ctype: Schema.Literal("fact", "event", "preference", "assistant_output"),
+  speaker: Schema.Literals(["user", "assistant"]),
+  ctype: Schema.Literals(["fact", "event", "preference", "assistant_output"]),
   entities: Schema.Array(Entity),
   slot: Schema.NullOr(Slot),
   /** `YYYY-MM-DD`, `YYYY-MM` or `YYYY`, resolved against the session date. */
@@ -120,12 +119,22 @@ export interface SessionExtraction {
   readonly cached: boolean
 }
 
+interface NormalisedText {
+  readonly value: string
+  readonly origin: ReadonlyArray<number>
+}
+
+interface ParsedEventDate {
+  readonly tEvent: number
+  readonly tPrec: "day" | "month" | "year" | "none"
+}
+
 const MARKDOWN_NOISE = new Set(["*", "_", "`", "#", "~"])
 
 const normalise = (
   text: string,
   stripMarkdown = false
-): { readonly value: string; readonly origin: ReadonlyArray<number> } => {
+): NormalisedText => {
   let value = ""
   const origin: Array<number> = []
   let previousWasSpace = false
@@ -176,7 +185,7 @@ export const locateSpan = (
 /** `2023-04-10` / `2023-04` / `2023` → a `YYYYMMDD` integer plus its precision. */
 export const parseEventDate = (
   value: string | null
-): { readonly tEvent: number; readonly tPrec: "day" | "month" | "year" | "none" } => {
+): ParsedEventDate => {
   if (value === null) return { tEvent: 0, tPrec: "none" }
   const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
   if (day !== null) return { tEvent: Number(`${day[1]}${day[2]}${day[3]}`), tPrec: "day" }
@@ -248,11 +257,11 @@ Fields
 Return only claims grounded in this session's text.`
 
 const extractionOutputSchema = (() => {
-  const parsed = parseCanonicalJson(JSONSchema.make(RawExtraction))
-  if (parsed._tag === "Left") {
-    throw new Error(`Raw extraction schema cannot be canonicalised: ${parsed.left.reason}`)
+  const parsed = Schema.decodeUnknownResult(CanonicalJsonSchema)(Schema.toJsonSchemaDocument(RawExtraction))
+  if (parsed._tag === "Failure") {
+    throw new Error(`Raw extraction schema cannot be canonicalised: ${String(parsed.failure)}`)
   }
-  return parsed.right
+  return parsed.success
 })()
 
 export interface ExtractionRuntimeDependencies {
@@ -315,7 +324,7 @@ export const withQuotedVerseNote = (prompt: string): string => `${prompt}\n${QUO
 export const extractSession = (
   session: DatasetSession,
   knownEntities: ReadonlyArray<ExtractedEntity> = []
-): Effect.Effect<SessionExtraction, never, Llm | LanguageModel.LanguageModel> =>
+): Effect.Effect<SessionExtraction, never, Llm> =>
   Effect.gen(function* () {
     const llm = yield* Llm
     const request = (prompt: string) =>
@@ -328,7 +337,11 @@ export const extractSession = (
       })
     const prompt = renderPrompt(session, knownEntities)
     const generated = yield* request(prompt).pipe(
-      Effect.catchTag("MalformedOutput", () => request(withQuotedVerseNote(prompt))),
+      Effect.catchTag("AiError", (error) =>
+        error.reason._tag === "StructuredOutputError" || error.reason._tag === "InvalidOutputError"
+          ? request(withQuotedVerseNote(prompt))
+          : Effect.fail(error)
+      ),
       Effect.orDie
     )
 

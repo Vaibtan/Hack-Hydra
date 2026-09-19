@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { Effect, Either, Layer } from "effect"
+import { Context, Effect, Layer, Result } from "effect"
 import { extractSession } from "./Extract.js"
 import type { IngestGenerationConfig } from "./GenerationConfig.js"
 import { IndexGraph } from "./IndexGraph.js"
@@ -25,21 +25,26 @@ export interface PlanSourceIndexSession {
   readonly generation: IngestGenerationConfig
 }
 
+interface SourceIndexFailureClassification {
+  readonly code: string
+  readonly retryable: boolean
+}
+
 /** Validates tenant/uid into a `MemoryScope` at the new-plane entry boundary (S01). */
 export const planSourceIndexSession = (
   input: PlanSourceIndexSession
-): Either.Either<SourceIndexSessionPlan, InvalidMemoryScope> => {
+): Result.Result<SourceIndexSessionPlan, InvalidMemoryScope> => {
   const scope = parseMemoryScope(input.tenant, input.uid)
-  if (scope._tag === "Left") return Either.left(scope.left)
-  return Either.right({
-    sourceRevision: sourceRevisionInputForSession(scope.right, input.session, input.generation.extractionGeneration),
+  if (scope._tag === "Failure") return Result.fail(scope.failure)
+  return Result.succeed({
+    sourceRevision: sourceRevisionInputForSession(scope.success, input.session, input.generation.extractionGeneration),
     indexGeneration: input.generation.indexGeneration
   })
 }
 
 const classifyFailure = (input: {
   readonly error: SourceIndexStageError<never>
-}): { readonly code: string; readonly retryable: boolean } => {
+}): SourceIndexFailureClassification => {
   switch (input.error._tag) {
     case "HydraEngineError":
       return { code: `HYDRA_${input.error.code}`, retryable: input.error.retryable }
@@ -64,10 +69,10 @@ const classifyFailure = (input: {
 export const indexSourceSession = (input: PlanSourceIndexSession) =>
   Effect.gen(function* () {
     const plan = planSourceIndexSession(input)
-    if (plan._tag === "Left") return yield* Effect.fail(plan.left)
+    if (plan._tag === "Failure") return yield* Effect.fail(plan.failure)
     return yield* runTransactionalSourceIndex({
-      sourceRevision: plan.right.sourceRevision,
-      indexGeneration: plan.right.indexGeneration,
+      sourceRevision: plan.success.sourceRevision,
+      indexGeneration: plan.success.indexGeneration,
       session: input.session,
       extract: extractSession,
       classifyFailure: ({ error }) => classifyFailure({ error })
@@ -91,13 +96,15 @@ const make = Effect.gen(function* () {
   return { indexSession } as const
 })
 
-export class SourceIndex extends Effect.Service<SourceIndex>()("palimpsest/SourceIndex", { effect: make }) {}
+export type SourceIndex = Effect.Success<typeof make>
+const SourceIndexTag = Context.Service<SourceIndex>("palimpsest/SourceIndex")
+export const SourceIndex = Object.assign(SourceIndexTag, { layer: Layer.effect(SourceIndexTag, make) })
 
-export const SourceIndexLive = SourceIndex.Default.pipe(
+export const SourceIndexLive = SourceIndex.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      SourceTranscript.Default,
-      IndexGraph.Default,
+      SourceTranscript.layer,
+      IndexGraph.layer,
       IngestManifestLive,
       IngestCommitLockLive
     )

@@ -4,6 +4,7 @@ import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { Supersede, foldSupersessionEdges, type SlotClaim } from "../../src/Supersede.js"
+import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 const claim = (ckey: string, sessionOrd: number, text: string, tEvent = 0): SlotClaim => ({
   ckey,
@@ -17,26 +18,26 @@ const stubLlm = (
   replacements: ReadonlyArray<{ older: number; newer: number; reason: string }>,
   calls: Array<string>
 ) =>
-  Layer.succeed(Llm, {
+  Layer.succeed(Llm, behaviorFake<Llm>({
     model: "stub",
     cacheDir: "",
     concurrency: 1,
-    generateObject: (options: { prompt: string; schema: Schema.Schema<unknown, never> }) =>
+    generateObject: (options: { prompt: string; schema: Schema.Top }) =>
       Effect.sync(() => {
         calls.push(options.prompt)
         return { value: { replacements }, cached: false }
       }),
     usage: Effect.succeed({ inputTokens: 0, outputTokens: 0, calls: 0, cacheHits: 0 }),
     resetUsage: Effect.void
-  } as unknown as Llm)
+  }))
 
 const layerWith = (
   replacements: ReadonlyArray<{ older: number; newer: number; reason: string }>,
   calls: Array<string>
 ) =>
-  Supersede.Default.pipe(
+  Supersede.layer.pipe(
     Layer.provide(stubLlm(replacements, calls)),
-    Layer.provideMerge(HydraClient.Default),
+    Layer.provideMerge(HydraClient.layer),
     Layer.provide(NodeHttpClient.layerUndici)
   )
 
@@ -45,14 +46,14 @@ const detect = (
   replacements: ReadonlyArray<{ older: number; newer: number; reason: string }>,
   calls: Array<string> = []
 ) =>
-  Effect.runPromise(
+  runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
         const supersede = yield* Supersede
         return yield* supersede.detect("me", "residence", claims)
       }),
       layerWith(replacements, calls)
-    ) as Effect.Effect<{ edges: ReadonlyArray<{ olderCkey: string; newerCkey: string; atSession: number }>; cached: boolean }, never, never>
+    )
   )
 
 const nyc = claim("c1", 2, "The user lives in NYC.")

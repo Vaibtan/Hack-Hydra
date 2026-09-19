@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { Data, Either } from "effect"
+import { Data, Result, Schema } from "effect"
 import {
   canonicalJson,
   type ExtractionGeneration,
@@ -67,49 +67,42 @@ const generationFromDescriptor = (descriptor: IndexGenerationDescriptor): IndexG
   }
 }
 
-const dependencyFrom = (value: unknown): VersionedDependency | undefined => {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined
-  const record = value as Readonly<Record<string, unknown>>
-  if (typeof record["id"] !== "string" || typeof record["revision"] !== "string") return undefined
-  if (record["id"].trim().length === 0 || record["revision"].trim().length === 0) return undefined
-  return { id: record["id"], revision: record["revision"] }
-}
+const VersionedDependencySchema = Schema.Struct({ id: Schema.String, revision: Schema.String })
+const IndexGenerationDescriptorSchema = Schema.Struct({
+  format: Schema.Literal("palimpsest.index-generation.v1"),
+  extraction_generation: Schema.String,
+  graph_schema: VersionedDependencySchema,
+  graph_writer: VersionedDependencySchema
+})
 
 export const parseIndexGeneration = (
   id: string,
   serialized: string
-): Either.Either<IndexGeneration, InvalidIndexGeneration> => {
+): Result.Result<IndexGeneration, InvalidIndexGeneration> => {
   try {
-    const parsed = JSON.parse(serialized) as unknown
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return Either.left(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
+    const decoded = Schema.decodeUnknownResult(IndexGenerationDescriptorSchema)(JSON.parse(serialized))
+    if (Result.isFailure(decoded)) {
+      return Result.fail(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
     }
-    const record = parsed as Readonly<Record<string, unknown>>
-    const graphWriter = dependencyFrom(record["graph_writer"])
-    const graphSchema = dependencyFrom(record["graph_schema"])
+    const descriptor = decoded.success
     if (
-      record["format"] !== "palimpsest.index-generation.v1" ||
-      typeof record["extraction_generation"] !== "string" ||
-      record["extraction_generation"].trim().length === 0 ||
-      graphWriter === undefined ||
-      graphSchema === undefined
+      descriptor.extraction_generation.trim().length === 0 ||
+      descriptor.graph_schema.id.trim().length === 0 ||
+      descriptor.graph_schema.revision.trim().length === 0 ||
+      descriptor.graph_writer.id.trim().length === 0 ||
+      descriptor.graph_writer.revision.trim().length === 0
     ) {
-      return Either.left(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
+      return Result.fail(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
     }
-    const reconstituted = generationFromDescriptor({
-      format: "palimpsest.index-generation.v1",
-      extraction_generation: record["extraction_generation"],
-      graph_writer: graphWriter,
-      graph_schema: graphSchema
-    })
+    const reconstituted = generationFromDescriptor(descriptor)
     if (reconstituted.canonicalJson !== serialized) {
-      return Either.left(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
+      return Result.fail(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
     }
     if (reconstituted.id !== id) {
-      return Either.left(new InvalidIndexGeneration({ reason: "identifierMismatch" }))
+      return Result.fail(new InvalidIndexGeneration({ reason: "identifierMismatch" }))
     }
-    return Either.right(reconstituted)
+    return Result.succeed(reconstituted)
   } catch {
-    return Either.left(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
+    return Result.fail(new InvalidIndexGeneration({ reason: "invalidEncoding" }))
   }
 }

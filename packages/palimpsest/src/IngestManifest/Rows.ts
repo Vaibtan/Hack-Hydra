@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import { Schema } from "effect"
 import { frameSegment, scopePrefix, type MemoryScope } from "../MemoryScope.js"
 import { INGEST_STATES, type IngestState, type SourceRevision, type SourceRevisionIdentity } from "./Types.js"
 
@@ -6,13 +7,13 @@ export type DatabaseRow = Readonly<Record<string, string | number | bigint | nul
 
 export const text = (row: DatabaseRow, column: string): string => {
   const value = row[column]
-  if (typeof value !== "string") throw new Error(`manifest column ${column} was not text`)
+  if (!Schema.is(Schema.String)(value)) throw new Error(`manifest column ${column} was not text`)
   return value
 }
 
 export const integer = (row: DatabaseRow, column: string): number => {
   const value = row[column]
-  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+  if (!Schema.is(Schema.Number)(value) || !Number.isSafeInteger(value)) {
     throw new Error(`manifest column ${column} was not a safe integer`)
   }
   return value
@@ -21,7 +22,7 @@ export const integer = (row: DatabaseRow, column: string): number => {
 export const nullableText = (row: DatabaseRow, column: string): string | null => {
   const value = row[column]
   if (value === null) return null
-  if (typeof value !== "string") throw new Error(`manifest column ${column} was not nullable text`)
+  if (!Schema.is(Schema.String)(value)) throw new Error(`manifest column ${column} was not nullable text`)
   return value
 }
 
@@ -33,8 +34,8 @@ export const nullableBoolean = (row: DatabaseRow, column: string): boolean | nul
   throw new Error(`manifest column ${column} was not nullable boolean`)
 }
 
-const isIngestState = (value: unknown): value is IngestState =>
-  typeof value === "string" && INGEST_STATES.some((state) => state === value)
+const isIngestState = (value: string): value is IngestState =>
+  INGEST_STATES.some((state) => state === value)
 
 /** Fields appended to a parsed memory scope to identify one source revision. */
 export type ScopedSourceRevisionIdentity = Pick<

@@ -2,7 +2,7 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath, loadDataset } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { LlmLive } from "@palimpsest/llm"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -18,24 +18,22 @@ const hasDataset = existsSync(datasetPath("s"))
 const splitPath = resolve(import.meta.dirname, "../../../../data/splits/retrieval-v2.json")
 const hasSplit = existsSync(splitPath)
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Reader.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Reader.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
-const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.runPromise(Effect.provide(effect, AppLive) as unknown as Effect.Effect<A, E, never>)
+const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof AppLive>>) =>
+  Effect.runPromise(Effect.provide(effect, AppLive))
 
-interface Split {
-  readonly prefix: string
-  readonly dev: ReadonlyArray<string>
-}
+const Split = Schema.Struct({ prefix: Schema.String, dev: Schema.Array(Schema.String) })
+type Split = typeof Split.Type
 
 const split: Split | null = hasSplit
-  ? (JSON.parse(readFileSync(splitPath, "utf8")) as Split)
+  ? Schema.decodeUnknownSync(Split)(JSON.parse(readFileSync(splitPath, "utf8")))
   : null
 
 const uidFor = (questionId: string): string =>

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
+import { Schema } from "effect"
 
 /** `runtime_config_sha256`: the running node's effective configuration via `docker inspect`; both phases run at a 120 s cap and differ in the read cache. */
 const PROJECT = "palimpsest-hydradb-benchmark"
@@ -37,6 +38,10 @@ export interface RuntimeConfigInput {
   readonly env: Readonly<Record<string, string>>
 }
 
+interface RuntimeEnvironment {
+  [name: string]: string
+}
+
 export const canonicalise = (input: RuntimeConfigInput): string =>
   JSON.stringify({
     env: Object.fromEntries(
@@ -53,8 +58,8 @@ export const hashRuntimeConfig = (input: RuntimeConfigInput): string =>
 
 export const configEnv = (
   containerEnv: ReadonlyArray<string>
-): Readonly<Record<string, string>> => {
-  const out: Record<string, string> = {}
+): RuntimeEnvironment => {
+  const out: RuntimeEnvironment = {}
   for (const entry of containerEnv) {
     const eq = entry.indexOf("=")
     if (eq === -1) continue
@@ -74,6 +79,12 @@ export interface InspectedContainer {
     readonly NanoCpus: number
   }
 }
+
+const InspectedContainerSchema = Schema.Struct({
+  Image: Schema.String,
+  Config: Schema.Struct({ Env: Schema.Array(Schema.String) }),
+  HostConfig: Schema.Struct({ Memory: Schema.Number, NanoCpus: Schema.Number })
+})
 
 export const fromInspected = (container: InspectedContainer): HydraRuntimeConfig => {
   const env = configEnv(container.Config.Env)
@@ -121,7 +132,9 @@ export const readRuntimeConfig = (): RuntimeConfigResult => {
     }
   }
   try {
-    const inspected = JSON.parse(docker(["inspect", ids[0]!])) as ReadonlyArray<InspectedContainer>
+    const inspected = Schema.decodeUnknownSync(Schema.Array(InspectedContainerSchema))(
+      JSON.parse(docker(["inspect", ids[0]!]))
+    )
     if (inspected.length !== 1) {
       return { sha256: null, reason: `docker inspect returned ${inspected.length} containers` }
     }

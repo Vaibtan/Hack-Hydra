@@ -7,4 +7,4 @@ export { OpenAiLive, languageModelLayer } from "./Provider.js"
 
 /** The default stack: Llm over `DEFAULT_MODEL`, or `PALIMPSEST_MODEL`. */
 export const LlmLive = (model = configuredModel("PALIMPSEST_MODEL") ?? DEFAULT_MODEL) =>
-  Layer.mergeAll(Llm.Default, languageModelLayer(model))
+  Llm.layer.pipe(Layer.provide(languageModelLayer(model)))

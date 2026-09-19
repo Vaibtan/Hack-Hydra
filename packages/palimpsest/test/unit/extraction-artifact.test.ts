@@ -45,12 +45,12 @@ describe("ExtractionArtifact", () => {
     })
 
     expect(parseExtractionArtifact(artifact.id, artifact.canonicalJson)).toMatchObject({
-      _tag: "Right",
-      right: { id: artifact.id, extraction: { claims: [claim] } }
+      _tag: "Success",
+      success: { id: artifact.id, extraction: { claims: [claim] } }
     })
     expect(parseExtractionArtifact(artifact.id, altered.canonicalJson)).toMatchObject({
-      _tag: "Left",
-      left: { reason: "identifierMismatch" }
+      _tag: "Failure",
+      failure: { reason: "identifierMismatch" }
     })
   })
 })

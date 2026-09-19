@@ -6,10 +6,10 @@ import { HydraClient, HydraParseError, vertexId } from "../../src/index.js"
 const UID = "probe-hydra-1"
 const k = (suffix: string) => `${UID}|${suffix}`
 
-const layer = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const layer = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const run = <A, E>(effect: Effect.Effect<A, E, HydraClient>): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, layer) as Effect.Effect<A, E, never>)
+  Effect.runPromise(Effect.provide(effect, layer))
 
 const CLAIM_KIND = k("claim")
 
@@ -250,11 +250,11 @@ describe("HydraClient against the live node", () => {
           .query("MATCH (n:Token) WHERE n.tkey STARTS WITH $prefix RETURN n.tkey AS tkey", {
             prefix: `${UID}|t|`
           })
-          .pipe(Effect.either)
+          .pipe(Effect.result)
       })
     )
-    if (refused._tag === "Left") {
-      expect(refused.left.reason).toMatch(/cypher_vertex_label_index_candidates|exceeds limit/)
+    if (refused._tag === "Failure") {
+      expect(refused.failure.reason).toMatch(/cypher_vertex_label_index_candidates|exceeds limit/)
     }
   })
 
@@ -266,7 +266,8 @@ describe("HydraClient against the live node", () => {
       })
     )
     expect(failure).toBeInstanceOf(HydraParseError)
-    expect((failure as HydraParseError).reason).toContain("RETURN * is not executable")
+    if (!(failure instanceof HydraParseError)) throw new Error("expected HydraParseError")
+    expect(failure.reason).toContain("RETURN * is not executable")
   })
 
   it("threads the last write's bookmark into the next read", async () => {

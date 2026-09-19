@@ -1,4 +1,4 @@
-import { Data, Either } from "effect"
+import { Data, Result } from "effect"
 
 const memoryScopeBrand: unique symbol = Symbol("palimpsest.MemoryScope")
 
@@ -24,14 +24,14 @@ export class InvalidMemoryScope extends Data.TaggedError("InvalidMemoryScope")<{
 }
 
 /** Non-empty scope segments; length-prefix framing makes separators unambiguous. */
-export const parseMemoryScope = (tenantId: string, uid: string): Either.Either<MemoryScope, InvalidMemoryScope> => {
+export const parseMemoryScope = (tenantId: string, uid: string): Result.Result<MemoryScope, InvalidMemoryScope> => {
   if (tenantId.trim().length === 0) {
-    return Either.left(new InvalidMemoryScope({ field: "tenantId", reason: "must not be empty" }))
+    return Result.fail(new InvalidMemoryScope({ field: "tenantId", reason: "must not be empty" }))
   }
   if (uid.trim().length === 0) {
-    return Either.left(new InvalidMemoryScope({ field: "uid", reason: "must not be empty" }))
+    return Result.fail(new InvalidMemoryScope({ field: "uid", reason: "must not be empty" }))
   }
-  return Either.right({ tenantId, uid, [memoryScopeBrand]: "MemoryScope" })
+  return Result.succeed({ tenantId, uid, [memoryScopeBrand]: "MemoryScope" })
 }
 
 /**
@@ -44,8 +44,8 @@ export const memoryScopeFromRevision = (revision: {
   readonly uid: string
 }): MemoryScope => {
   const parsed = parseMemoryScope(revision.tenant, revision.uid)
-  if (parsed._tag === "Left") throw parsed.left
-  return parsed.right
+  if (parsed._tag === "Failure") throw parsed.failure
+  return parsed.success
 }
 
 /**

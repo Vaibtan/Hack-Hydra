@@ -1,24 +1,24 @@
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform"
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import { Schema } from "effect"
 
 /** The graph is unreachable, over its limits, or refused the statement. */
 export class GraphError extends Schema.TaggedError<GraphError>()(
   "GraphError",
   { reason: Schema.String },
-  HttpApiSchema.annotations({ status: 503 })
+  { httpApiStatus: 503 }
 ) {}
 
 /** No such user, session or slot. */
 export class NotFound extends Schema.TaggedError<NotFound>()(
   "NotFound",
   { what: Schema.String, key: Schema.String },
-  HttpApiSchema.annotations({ status: 404 })
+  { httpApiStatus: 404 }
 ) {}
 
 export class BadRequest extends Schema.TaggedError<BadRequest>()(
   "BadRequest",
   { reason: Schema.String },
-  HttpApiSchema.annotations({ status: 400 })
+  { httpApiStatus: 400 }
 ) {}
 
 export const Highlight = Schema.Struct({
@@ -35,7 +35,7 @@ export const EvidenceSpan = Schema.Struct({
   sessionDate: Schema.Number,
   tEvent: Schema.Number,
   speaker: Schema.String,
-  status: Schema.Literal("CURRENT", "SUPERSEDED"),
+  status: Schema.Literals(["CURRENT", "SUPERSEDED"]),
   atSession: Schema.NullOr(Schema.Number),
   excerpt: Schema.String,
   highlight: Highlight
@@ -48,16 +48,16 @@ export const ConvergenceRow = Schema.Struct({
   anchors: Schema.Array(Schema.String)
 })
 
-export const QueryParameters = Schema.Record({
-  key: Schema.String,
-  value: Schema.Union(Schema.String, Schema.Number)
-})
+export const QueryParameters = Schema.Record(
+  Schema.String,
+  Schema.Union([Schema.String, Schema.Number])
+)
 
 /** A replayable decision trace; it is not a completeness or integrity proof. */
 export const Receipt = Schema.Struct({
   question: Schema.String,
   uid: Schema.String,
-  profile: Schema.Literal("full", "fast"),
+  profile: Schema.Literals(["full", "fast"]),
   asOf: Schema.NullOr(Schema.Number),
   anchorTerms: Schema.Array(Schema.String),
   anchorsReachingClaims: Schema.Array(Schema.String),
@@ -80,7 +80,7 @@ export const Receipt = Schema.Struct({
   convergence: Schema.Array(ConvergenceRow)
 })
 
-export const ArmKind = Schema.Literal("probe", "subQuestion", "convergence", "discovery", "slotMate")
+export const ArmKind = Schema.Literals(["probe", "subQuestion", "convergence", "discovery", "slotMate"])
 
 export const PlanArm = Schema.Struct({
   label: Schema.String,
@@ -93,7 +93,7 @@ export const PlanArm = Schema.Struct({
 
 export const PlanTimeScope = Schema.Struct({
   phrase: Schema.NullOr(Schema.String),
-  interval: Schema.NullOr(Schema.Tuple(Schema.Number, Schema.Number)),
+  interval: Schema.NullOr(Schema.Tuple([Schema.Number, Schema.Number])),
   inScope: Schema.Number,
   outOfScope: Schema.Number,
   applied: Schema.Boolean
@@ -102,15 +102,15 @@ export const PlanTimeScope = Schema.Struct({
 export const PlanSelection = Schema.Struct({
   kept: Schema.Array(Schema.String),
   dropped: Schema.Array(
-    Schema.Struct({ id: Schema.String, reason: Schema.Literal("selector", "turn_cap") })
+    Schema.Struct({ id: Schema.String, reason: Schema.Literals(["selector", "turn_cap"]) })
   ),
-  reasons: Schema.Record({ key: Schema.String, value: Schema.String }),
+  reasons: Schema.Record(Schema.String, Schema.String),
   fallback: Schema.Boolean
 })
 
 export const PlanSufficiency = Schema.Struct({
   /** `skipped` when the check never ran. */
-  tier: Schema.Literal("EXACT", "INFERRABLE", "PARTIAL", "skipped"),
+  tier: Schema.Literals(["EXACT", "INFERRABLE", "PARTIAL", "skipped"]),
   missing: Schema.String,
   premise: Schema.String,
   /** Excerpt ids the check cited that are in the pack and CURRENT. */
@@ -128,7 +128,7 @@ export const PlanBudget = Schema.Struct({
   overBudget: Schema.Boolean
 })
 
-export const Route = Schema.Literal(
+export const Route = Schema.Literals([
   "fact",
   "preference",
   "assistant_output",
@@ -136,7 +136,7 @@ export const Route = Schema.Literal(
   "count",
   "temporal",
   "multi_fact"
-)
+])
 
 export const RetrievalPlan = Schema.Struct({
   route: Route,
@@ -152,7 +152,7 @@ export const RetrievalPlan = Schema.Struct({
   sufficiency: PlanSufficiency,
   budget: PlanBudget,
   intervalSentence: Schema.NullOr(Schema.String),
-  stages: Schema.Record({ key: Schema.String, value: Schema.Number }),
+  stages: Schema.Record(Schema.String, Schema.Number),
   askMs: Schema.Number,
   /** The HydraDB stages alone. */
   graphMs: Schema.Number
@@ -170,18 +170,18 @@ export const AskRequest = Schema.Struct({
   /** Skip the pack and the reader: the retrieval verdict, plan and hydrated evidence only. */
   retrieveOnly: Schema.optional(Schema.Boolean),
   /** `fast` drops the sufficiency check and its second pass. Defaults to `fast`. */
-  profile: Schema.optional(Schema.Literal("full", "fast"))
+  profile: Schema.optional(Schema.Literals(["full", "fast"]))
 })
 
-export const AbstentionReason = Schema.Literal(
+export const AbstentionReason = Schema.Literals([
   "A1_no_anchors",
   "A2_no_convergence",
   "INSUFFICIENT_EVIDENCE",
   "CONTRADICTED_PREMISE"
-)
+])
 
 export const AskResponse = Schema.Struct({
-  verdict: Schema.Literal("ANSWER", "ABSENT"),
+  verdict: Schema.Literals(["ANSWER", "ABSENT"]),
   reason: Schema.NullOr(AbstentionReason),
   answer: Schema.NullOr(Schema.String),
   /** The reader declined: distinct from a structural ABSENT. */
@@ -197,7 +197,7 @@ export const AskResponse = Schema.Struct({
 })
 
 export const IngestTurn = Schema.Struct({
-  role: Schema.Literal("user", "assistant"),
+  role: Schema.Literals(["user", "assistant"]),
   content: Schema.String
 })
 
@@ -240,7 +240,7 @@ export const SourceIndexSessionResponse = Schema.Struct({
   sourceDigest: Schema.String,
   extractionGeneration: Schema.String,
   indexGeneration: Schema.String,
-  state: Schema.Literal("INDEXED", "ENRICHED", "CONSOLIDATED", "COMMITTED"),
+  state: Schema.Literals(["INDEXED", "ENRICHED", "CONSOLIDATED", "COMMITTED"]),
   alreadyAtTarget: Schema.Boolean,
   queryVisible: Schema.Literal(false)
 })
@@ -327,56 +327,57 @@ export const WarmResponse = Schema.Struct({
 
 export const users = HttpApiGroup.make("users")
   .add(
-    HttpApiEndpoint.post("ingestSession", "/users/:uid/sessions")
-      .setPath(UidPath)
-      .setPayload(IngestSessionRequest)
-      .addSuccess(IngestSessionResponse)
-      .addError(GraphError)
-      .addError(BadRequest)
+    HttpApiEndpoint.post("ingestSession", "/users/:uid/sessions", {
+      params: UidPath,
+      payload: IngestSessionRequest,
+      success: IngestSessionResponse,
+      error: [GraphError, BadRequest]
+    })
   )
   .add(
-    HttpApiEndpoint.post("sourceIndexSession", "/users/:uid/source-index")
-      .setPath(UidPath)
-      .setPayload(IngestSessionRequest)
-      .addSuccess(SourceIndexSessionResponse)
-      .addError(GraphError)
-      .addError(BadRequest)
+    HttpApiEndpoint.post("sourceIndexSession", "/users/:uid/source-index", {
+      params: UidPath,
+      payload: IngestSessionRequest,
+      success: SourceIndexSessionResponse,
+      error: [GraphError, BadRequest]
+    })
   )
   .add(
-    HttpApiEndpoint.post("ask", "/users/:uid/ask")
-      .setPath(UidPath)
-      .setPayload(AskRequest)
-      .addSuccess(AskResponse)
-      .addError(GraphError)
-      .addError(NotFound)
+    HttpApiEndpoint.post("ask", "/users/:uid/ask", {
+      params: UidPath,
+      payload: AskRequest,
+      success: AskResponse,
+      error: [GraphError, NotFound]
+    })
   )
   .add(
-    HttpApiEndpoint.get("sessions", "/users/:uid/sessions")
-      .setPath(UidPath)
-      .addSuccess(Schema.Array(SessionRow))
-      .addError(GraphError)
+    HttpApiEndpoint.get("sessions", "/users/:uid/sessions", {
+      params: UidPath,
+      success: Schema.Array(SessionRow),
+      error: GraphError
+    })
   )
   .add(
-    HttpApiEndpoint.get("slot", "/users/:uid/slots/:skey")
-      .setPath(SlotPath)
-      .setUrlParams(AsOfQuery)
-      .addSuccess(SlotChainResponse)
-      .addError(GraphError)
-      .addError(NotFound)
+    HttpApiEndpoint.get("slot", "/users/:uid/slots/:skey", {
+      params: SlotPath,
+      query: AsOfQuery,
+      success: SlotChainResponse,
+      error: [GraphError, NotFound]
+    })
   )
   .add(
-    HttpApiEndpoint.get("stats", "/users/:uid/stats")
-      .setPath(UidPath)
-      .addSuccess(StatsResponse)
-      .addError(GraphError)
-      .addError(NotFound)
+    HttpApiEndpoint.get("stats", "/users/:uid/stats", {
+      params: UidPath,
+      success: StatsResponse,
+      error: [GraphError, NotFound]
+    })
   )
   .add(
-    HttpApiEndpoint.post("warm", "/users/:uid/warm")
-      .setPath(UidPath)
-      .addSuccess(WarmResponse)
-      .addError(GraphError)
-      .addError(NotFound)
+    HttpApiEndpoint.post("warm", "/users/:uid/warm", {
+      params: UidPath,
+      success: WarmResponse,
+      error: [GraphError, NotFound]
+    })
   )
 
 export class PalimpsestApi extends HttpApi.make("palimpsest").add(users) {}

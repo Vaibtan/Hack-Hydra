@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc --build",
+    "lint": "oxlint .",
     "typecheck": "tsc --build --force",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
@@ -42,8 +43,10 @@
     "trajectory": "pnpm --filter @palimpsest/palimpsest run trajectory"
   },
   "devDependencies": {
-    "@effect/vitest": "0.30.0",
+    "@effect/vitest": "4.0.0-beta.107",
+    "@oxlint/plugins": "1.82.0",
     "@types/node": "^22.10.2",
+    "oxlint": "1.82.0",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"

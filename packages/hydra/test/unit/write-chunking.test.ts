@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest"
 import { DELETE_ROWS_PER_CHUNK, writeChunked } from "../../src/Chunking.js"
 import { isLimit } from "../../src/Classify.js"
 import { HydraLimitError, HydraParseError } from "../../src/Errors.js"
+import type { JsonObject } from "../../src/JsonValue.js"
 
-const rows = (n: number): Array<Record<string, unknown>> =>
+const rows = (n: number): Array<JsonObject> =>
   Array.from({ length: n }, (_, i) => ({ id: i }))
 
 const limit = (reason = "client_query_runtime exceeded query timeout after 30000 ms"): HydraLimitError =>
@@ -13,11 +14,11 @@ const limit = (reason = "client_query_runtime exceeded query timeout after 30000
 /** Refuses any chunk larger than `ceiling`, and records what it was sent. */
 const engine = (ceiling: number) => {
   const sizes: Array<number> = []
-  const send = (chunk: ReadonlyArray<Readonly<Record<string, unknown>>>) => {
+  const send = (chunk: ReadonlyArray<JsonObject>) => {
     sizes.push(chunk.length)
     return chunk.length > ceiling
       ? Effect.fail(limit())
-      : Effect.succeed(undefined as unknown)
+      : Effect.succeed(undefined)
   }
   return { send, sizes }
 }
@@ -46,10 +47,10 @@ describe("write chunking", () => {
   it("re-chunks only what is left, when a LATER chunk is the one refused", async () => {
     let calls = 0
     const sizes: Array<number> = []
-    const send = (chunk: ReadonlyArray<Readonly<Record<string, unknown>>>) => {
+    const send = (chunk: ReadonlyArray<JsonObject>) => {
       calls++
       sizes.push(chunk.length)
-      return calls === 3 && chunk.length > 500 ? Effect.fail(limit()) : Effect.succeed(undefined as unknown)
+      return calls === 3 && chunk.length > 500 ? Effect.fail(limit()) : Effect.succeed(undefined)
     }
     expect(await run(writeChunked(send, rows(3000), { maxRows: 1000 }))).toBe(3000)
     expect(sizes).toEqual([1000, 1000, 1000, 500, 500])
@@ -57,10 +58,10 @@ describe("write chunking", () => {
 
   it("loses no rows when it re-chunks mid-write", async () => {
     let seen = 0
-    const send = (chunk: ReadonlyArray<Readonly<Record<string, unknown>>>) => {
+    const send = (chunk: ReadonlyArray<JsonObject>) => {
       if (chunk.length > 100) return Effect.fail(limit())
       seen += chunk.length
-      return Effect.succeed(undefined as unknown)
+      return Effect.succeed(undefined)
     }
     expect(await run(writeChunked(send, rows(613), { maxRows: 800 }))).toBe(613)
     expect(seen).toBe(613)
@@ -68,20 +69,20 @@ describe("write chunking", () => {
 
   it("gives up rather than looping once a single row is refused", async () => {
     const { send } = engine(0)
-    const outcome = await run(Effect.either(writeChunked(send, rows(4), { maxRows: 4 })))
-    expect(outcome._tag).toBe("Left")
+    const outcome = await run(Effect.result(writeChunked(send, rows(4), { maxRows: 4 })))
+    expect(outcome._tag).toBe("Failure")
   })
 
   it("does not halve on an error that halving cannot fix", async () => {
     const sizes: Array<number> = []
-    const send = (chunk: ReadonlyArray<Readonly<Record<string, unknown>>>) => {
+    const send = (chunk: ReadonlyArray<JsonObject>) => {
       sizes.push(chunk.length)
       return Effect.fail(
         new HydraParseError({ reason: "syntax", code: "invalid_request", query: "<test>" })
       )
     }
-    const outcome = await run(Effect.either(writeChunked(send, rows(1000), { maxRows: 1000 })))
-    expect(outcome._tag).toBe("Left")
+    const outcome = await run(Effect.result(writeChunked(send, rows(1000), { maxRows: 1000 })))
+    expect(outcome._tag).toBe("Failure")
     expect(sizes).toEqual([1000])
   })
 
@@ -110,16 +111,16 @@ describe("delete chunking", () => {
 
   it("fails at once on the store-wide edge-scan cap, which no batch size fixes", async () => {
     const sizes: Array<number> = []
-    const send = (chunk: ReadonlyArray<Readonly<Record<string, unknown>>>) => {
+    const send = (chunk: ReadonlyArray<JsonObject>) => {
       sizes.push(chunk.length)
       return Effect.fail(
         limit("delete_vertex_scan_edges rejected by admission control: actual 1000001 exceeds limit 1000000")
       )
     }
     const outcome = await run(
-      Effect.either(writeChunked(send, rows(40), { maxRows: DELETE_ROWS_PER_CHUNK, halveOn }))
+      Effect.result(writeChunked(send, rows(40), { maxRows: DELETE_ROWS_PER_CHUNK, halveOn }))
     )
-    expect(outcome._tag).toBe("Left")
+    expect(outcome._tag).toBe("Failure")
     expect(sizes).toEqual([40])
   })
 })

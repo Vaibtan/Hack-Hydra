@@ -1,41 +1,50 @@
-import type { JudgeTemplate } from "./Judge.js"
+import { Schema } from "effect"
 import { median } from "./Stats.js"
 
-export interface ReaderAbRow {
-  readonly questionId: string
-  readonly questionType: string
-  readonly judgeTemplate: JudgeTemplate
-  readonly route: string | null
-  readonly spanHash: string
-  readonly excerpts: number
-  readonly withRoute: ReaderAbArm
-  readonly withoutRoute: ReaderAbArm
-}
+export const ReaderAbArm = Schema.Struct({
+  answer: Schema.String,
+  correct: Schema.Boolean,
+  judgeReply: Schema.String,
+  notInMemory: Schema.Boolean,
+  recited: Schema.Boolean,
+  inputTokens: Schema.Number,
+  outputTokens: Schema.Number
+})
+export type ReaderAbArm = typeof ReaderAbArm.Type
 
-export interface ReaderAbArm {
-  readonly answer: string
-  readonly correct: boolean
-  readonly judgeReply: string
-  readonly notInMemory: boolean
-  readonly recited: boolean
-  readonly inputTokens: number
-  readonly outputTokens: number
-}
+export const ReaderAbRow = Schema.Struct({
+  questionId: Schema.String,
+  questionType: Schema.String,
+  judgeTemplate: Schema.Literals([
+    "default",
+    "temporal-reasoning",
+    "knowledge-update",
+    "single-session-preference",
+    "abstention"
+  ]),
+  route: Schema.NullOr(Schema.String),
+  spanHash: Schema.String,
+  excerpts: Schema.Number,
+  withRoute: ReaderAbArm,
+  withoutRoute: ReaderAbArm
+})
+export type ReaderAbRow = typeof ReaderAbRow.Type
 
 /** Both arms read identical packed excerpts; only the reader prompt differs. */
-export interface ReaderAbFile {
-  readonly kind: "reader-ab"
-  readonly split: string
-  readonly prefix: string
-  readonly profile: string
-  readonly readerModel: string
-  readonly judgeModel: string
-  readonly extractionGeneration: string
-  readonly runtimeConfig?: unknown
-  readonly questionTypes: ReadonlyArray<string>
-  readonly batch?: { readonly index: number; readonly count: number }
-  readonly rows: ReadonlyArray<ReaderAbRow>
-}
+export const ReaderAbFile = Schema.Struct({
+  kind: Schema.Literal("reader-ab"),
+  split: Schema.String,
+  prefix: Schema.String,
+  profile: Schema.String,
+  readerModel: Schema.String,
+  judgeModel: Schema.String,
+  extractionGeneration: Schema.String,
+  runtimeConfig: Schema.optionalKey(Schema.ObjectKeyword),
+  questionTypes: Schema.Array(Schema.String),
+  batch: Schema.optionalKey(Schema.Struct({ index: Schema.Number, count: Schema.Number })),
+  rows: Schema.Array(ReaderAbRow)
+})
+export type ReaderAbFile = typeof ReaderAbFile.Type
 
 export interface ReaderAbSummary {
   readonly type: string

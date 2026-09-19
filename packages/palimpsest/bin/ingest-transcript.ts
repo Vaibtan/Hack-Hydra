@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadQuestion, type DatasetName } from "@palimpsest/dataset"
+import { loadQuestion, parseDatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { Transcript } from "../src/Transcript.js"
@@ -10,7 +10,7 @@ const arg = (name: string): string | undefined => {
 }
 
 const uid = arg("uid")
-const dataset = (arg("dataset") ?? "oracle") as DatasetName
+const dataset = parseDatasetName(arg("dataset") ?? "oracle")
 const reset = process.argv.includes("--reset")
 
 if (uid === undefined) {
@@ -43,8 +43,8 @@ const program = Effect.gen(function* () {
 Effect.runPromise(
   program.pipe(
     Effect.provide(
-      Transcript.Default.pipe(
-        Layer.provideMerge(HydraClient.Default),
+      Transcript.layer.pipe(
+        Layer.provideMerge(HydraClient.layer),
         Layer.provide(NodeHttpClient.layerUndici)
       )
     )

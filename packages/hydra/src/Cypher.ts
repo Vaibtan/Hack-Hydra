@@ -73,7 +73,7 @@ export const renderMsPathsQuery = (config: MsPathsConfig): RenderedQuery => {
   parts.push("relDirection:$relDirection")
   parts.push("maxLen:$maxLen")
 
-  const parameters: Record<string, string | number> = {
+  const parameters: RenderedQuery["parameters"] = {
     relDirection: config.relDirection,
     maxLen: config.maxLen
   }

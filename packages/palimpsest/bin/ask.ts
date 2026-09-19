@@ -28,10 +28,10 @@ if (profileArg !== "full" && profileArg !== "fast") {
 }
 const profile: "full" | "fast" = profileArg
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Reader.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Reader.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -41,7 +41,7 @@ const program = Effect.gen(function* () {
   const retrieve = yield* Retrieve
   const reader = yield* Reader
   const started = Date.now()
-  const answerOptions = { maxLen, profile, ...(asOfRaw === "" ? {} : { asOf: Number(asOfRaw) }) }
+  const answerOptions = { maxLen, profile, ...(asOfRaw !== "" && { asOf: Number(asOfRaw) }) }
   const answered = noRead
     ? unreadAnswer(yield* retrieve.ask(uid, question, answerOptions))
     : yield* answerV2(retrieve, reader, uid, question, questionDate, answerOptions)
@@ -125,7 +125,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

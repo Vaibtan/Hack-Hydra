@@ -1,14 +1,16 @@
 import { datasetPath, loadQuestion } from "@palimpsest/dataset"
 import { Llm, LlmLive } from "@palimpsest/llm"
-import { Effect } from "effect"
+import { NodeHttpClient } from "@effect/platform-node"
+import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { extractSession, mergeEntities } from "../../src/Extract.js"
 
 const hasOracle = existsSync(datasetPath("oracle"))
 
-const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.runPromise(Effect.provide(effect, LlmLive()) as unknown as Effect.Effect<A, E, never>)
+const LlmTestLive = LlmLive().pipe(Layer.provide(NodeHttpClient.layerUndici))
+const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof LlmTestLive>>) =>
+  Effect.runPromise(Effect.provide(effect, LlmTestLive))
 
 const UID = "gpt4_2655b836"
 

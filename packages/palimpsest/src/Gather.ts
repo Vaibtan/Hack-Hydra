@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import { HydraClient, HydraLimitError, type HydraError } from "@palimpsest/hydra"
 import { Llm, readPathModels, type ReadPathModels } from "@palimpsest/llm"
 import { Duration, Effect, Fiber } from "effect"
@@ -37,14 +36,16 @@ export const withReadTimeout = <A>(
 ): Effect.Effect<A, HydraError> =>
   Effect.suspend(() => {
     const ceiling = readTimeoutMs()
-    return Effect.timeoutFail(effect, {
+    return Effect.timeoutOrElse(effect, {
       duration: Duration.millis(ceiling),
-      onTimeout: () =>
-        new HydraLimitError({
-          reason: `retrieval stage ${stage} exceeded ${ceiling} ms`,
-          status: 408,
-          query: `<ask:${stage}>`
-        })
+      orElse: () =>
+        Effect.fail(
+          new HydraLimitError({
+            reason: `retrieval stage ${stage} exceeded ${ceiling} ms`,
+            status: 408,
+            query: `<ask:${stage}>`
+          })
+        )
     })
   })
 
@@ -102,7 +103,7 @@ export const gather = (
   uid: string,
   question: string,
   options: AskOptions
-): Effect.Effect<Gathered, HydraError, LanguageModel.LanguageModel | Llm> =>
+): Effect.Effect<Gathered, HydraError, Llm> =>
   Effect.gen(function* () {
     const askStarted = Date.now()
     const models = readPathModels((yield* Llm).model)
@@ -114,7 +115,7 @@ export const gather = (
     const topK = options.topK ?? DEFAULT_TOP_K
     const questionDate = questionDateInt(options.questionDate)
 
-    const statsFiber = yield* Effect.fork(timed("userStats", totalClaims(uid)))
+    const statsFiber = yield* Effect.forkChild(timed("userStats", totalClaims(uid)))
     const understood = yield* timed(
       "understand",
       understand(question, questionDate, options.questionDate)

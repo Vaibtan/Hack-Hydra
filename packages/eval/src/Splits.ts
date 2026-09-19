@@ -11,6 +11,11 @@ export const SPLIT_FILE = "data/splits/retrieval-v2.json"
 
 export type SplitName = "dev" | "test"
 
+export interface SplitAssignment {
+  readonly dev: ReadonlyArray<string>
+  readonly test: ReadonlyArray<string>
+}
+
 const Revision = (id: string, revision: string) =>
   Schema.Struct({ id: Schema.Literal(id), revision: Schema.Literal(revision) })
 
@@ -24,10 +29,10 @@ export const BENCHMARK_EXTRACTION_DEPENDENCIES = {
 export const GateRecord = Schema.Struct({
   readAt: Schema.String,
   passed: Schema.Boolean,
-  numbers: Schema.Record({
-    key: Schema.String,
-    value: Schema.NullOr(Schema.Union(Schema.Number, Schema.String, Schema.Boolean))
-  })
+  numbers: Schema.Record(
+    Schema.String,
+    Schema.NullOr(Schema.Union([Schema.Number, Schema.String, Schema.Boolean]))
+  )
 })
 export type GateRecord = typeof GateRecord.Type
 
@@ -51,10 +56,10 @@ export type IngestionState = (typeof INGESTION_STATES)[number]
 
 /** Persisted shape of an ingestion count and its evidence reference. */
 export const IngestedPopulation = Schema.Struct({
-  state: Schema.Literal(...INGESTION_STATES),
+  state: Schema.Literals([...INGESTION_STATES]),
   /** Present only when a reconciliation supplied one; null is honest, not zero. */
   count: Schema.NullOr(Schema.Number),
-  evidenceKind: Schema.Literal(...INGESTION_EVIDENCE_KINDS),
+  evidenceKind: Schema.Literals([...INGESTION_EVIDENCE_KINDS]),
   verifiedAt: Schema.NullOr(Schema.String),
   /** Repo-relative path/hash of the reconciliation witness this count came from. */
   witness: Schema.NullOr(Schema.String)
@@ -63,13 +68,13 @@ export const IngestedPopulation = Schema.Struct({
 export type IngestedPopulation = typeof IngestedPopulation.Type
 
 /** A legacy scalar `ingested` (the unsupported `= requested` claim) or the structured record. */
-export const PopulationCount = Schema.Union(IngestedPopulation, Schema.Number)
+export const PopulationCount = Schema.Union([IngestedPopulation, Schema.Number])
 /** Backward-compatible persisted ingestion field. */
 export type PopulationCount = typeof PopulationCount.Type
 
 /** Convert legacy scalar counts into unverified declarations without preserving the claimed count. */
 export const normaliseIngested = (value: PopulationCount): IngestedPopulation =>
-  typeof value === "number"
+  Schema.is(Schema.Number)(value)
     ? { state: "declared", count: null, evidenceKind: "declared", verifiedAt: null, witness: null }
     : value
 
@@ -94,7 +99,7 @@ export type ExclusionReason = (typeof EXCLUSION_REASONS)[number]
 /** Persisted reason-coded population exclusion. */
 export const Exclusion = Schema.Struct({
   questionId: Schema.String,
-  reason: Schema.Literal(...EXCLUSION_REASONS)
+  reason: Schema.Literals([...EXCLUSION_REASONS])
 })
 /** Parsed population exclusion. */
 export type Exclusion = typeof Exclusion.Type
@@ -113,7 +118,7 @@ export const COMPLETIONS = ["complete", "capacity-capped", "unknown"] as const
 /** Selected population completion branch. */
 export type Completion = (typeof COMPLETIONS)[number]
 
-const opt = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true })
+const opt = <S extends Schema.Top>(schema: S) => Schema.optionalKey(schema)
 
 /**
  * The population section. Legacy rows carry only `requested`/`ingested`/`capacityGateTripped`;
@@ -124,7 +129,7 @@ export const PopulationSection = Schema.Struct({
   ingested: PopulationCount,
   capacityGateTripped: Schema.Boolean,
   selected: opt(Schema.Number),
-  completion: opt(Schema.NullOr(Schema.Literal(...COMPLETIONS))),
+  completion: opt(Schema.NullOr(Schema.Literals([...COMPLETIONS]))),
   datasetSha256: opt(Schema.NullOr(Schema.String)),
   answerable: opt(Schema.NullOr(Schema.Number)),
   abstention: opt(Schema.NullOr(Schema.Number)),
@@ -242,7 +247,7 @@ export const assertGenerationMatches = (file: SplitFile): void => {
 export const splitByCached = (
   population: ReadonlyArray<DatasetQuestion>,
   cachedIds: ReadonlyArray<string>
-): { readonly dev: ReadonlyArray<string>; readonly test: ReadonlyArray<string> } => {
+): SplitAssignment => {
   const cached = new Set(cachedIds)
   const ids = population.map((question) => question.questionId).sort((a, b) => a.localeCompare(b))
   return {

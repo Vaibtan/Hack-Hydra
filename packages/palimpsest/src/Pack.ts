@@ -160,7 +160,12 @@ export const spanHash = (
     .update([...new Set(spans.map(spanTuple))].sort().join("\n"), "utf8")
     .digest("hex")
 
-const excerptWindow = (span: Packable): { readonly from: number; readonly to: number } => {
+interface ExcerptWindow {
+  readonly from: number
+  readonly to: number
+}
+
+const excerptWindow = (span: Packable): ExcerptWindow => {
   const from = span.cs - span.highlight.start
   return { from, to: from + span.excerpt.length }
 }

@@ -38,7 +38,11 @@ const WEEKDAYS = [
   "saturday"
 ] as const
 
-const NUMBER_WORDS: Readonly<Record<string, number>> = {
+interface NumberWords {
+  readonly [word: string]: number
+}
+
+const NUMBER_WORDS: NumberWords = {
   a: 1,
   an: 1,
   one: 1,

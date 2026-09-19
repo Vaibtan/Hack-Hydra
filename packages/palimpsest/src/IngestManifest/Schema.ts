@@ -1,6 +1,21 @@
 import { DatabaseSync } from "node:sqlite"
+import { Schema } from "effect"
 import { memoryScopeFromRevision } from "../MemoryScope.js"
-import { integer, nullableBoolean, nullableText, revisionKey, text, type DatabaseRow } from "./Rows.js"
+import { integer, nullableBoolean, nullableText, revisionKey, text } from "./Rows.js"
+
+/** Current SQLite manifest schema (`PRAGMA user_version`); recorded inside every snapshot descriptor. */
+export const MANIFEST_SCHEMA_VERSION = 10
+
+class UnsupportedManifestSchemaVersion extends Error {
+  readonly _tag = "UnsupportedManifestSchemaVersion" as const
+
+  constructor(readonly actualVersion: number) {
+    super(
+      `manifest schema version ${actualVersion} is newer than supported version ${MANIFEST_SCHEMA_VERSION}`
+    )
+    this.name = "UnsupportedManifestSchemaVersion"
+  }
+}
 
 const V2_REVISION_IDENTITY =
   "UNIQUE (tenant, uid, logical_session_id, source_digest, extraction_generation)"
@@ -141,6 +156,49 @@ const TABLES = `
     detected_at_ms INTEGER NOT NULL,
     PRIMARY KEY (reduced_id, kind)
   ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS user_index_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    canonical_view_id TEXT NOT NULL,
+    manifest_schema_version INTEGER NOT NULL CHECK (manifest_schema_version >= 1),
+    source_revisions_hash TEXT NOT NULL,
+    source_revision_count INTEGER NOT NULL CHECK (source_revision_count >= 0),
+    state TEXT NOT NULL CHECK (state IN ('BUILDING', 'VERIFIED', 'ACTIVE', 'SUPERSEDED', 'FAILED')),
+    build_attempt INTEGER NOT NULL CHECK (build_attempt >= 1),
+    verification_digest TEXT,
+    graph_roots_json TEXT,
+    counts_json TEXT,
+    failure_code TEXT,
+    canonical_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (generation_id) REFERENCES index_generations (generation_id),
+    FOREIGN KEY (tenant, uid, canonical_view_id)
+      REFERENCES entity_canonical_views (tenant, uid, view_id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS user_index_snapshot_revisions (
+    snapshot_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    commit_id TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, position),
+    UNIQUE (snapshot_id, commit_id),
+    FOREIGN KEY (snapshot_id) REFERENCES user_index_snapshots (snapshot_id),
+    FOREIGN KEY (commit_id) REFERENCES source_revisions (commit_id)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS active_index_snapshots (
+    tenant TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    manifest_version INTEGER NOT NULL CHECK (manifest_version >= 0),
+    activated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (tenant, uid),
+    FOREIGN KEY (snapshot_id) REFERENCES user_index_snapshots (snapshot_id)
+  ) STRICT;
 `
 
 const migrateRevisionsV1 = (database: DatabaseSync): void => {
@@ -151,7 +209,7 @@ const migrateRevisionsV1 = (database: DatabaseSync): void => {
              failure_code, failure_retryable, created_at_ms, updated_at_ms
         FROM source_revisions_v1
     `)
-    .all() as ReadonlyArray<DatabaseRow>
+    .all()
   const insert = database.prepare(`
     INSERT INTO source_revisions (
       revision_key, tenant, uid, logical_session_id, source_digest, source_bytes,
@@ -196,7 +254,7 @@ const migrateRevisionKeysV3 = (database: DatabaseSync): void => {
       SELECT revision_key, tenant, uid, logical_session_id, source_digest, extraction_generation
         FROM source_revisions
     `)
-    .all() as ReadonlyArray<DatabaseRow>
+    .all()
   const update = database.prepare(`UPDATE source_revisions SET revision_key = ? WHERE revision_key = ?`)
   for (const row of rows) {
     const identity = {
@@ -217,8 +275,14 @@ export const createDatabase = (path: string): DatabaseSync => {
     enableForeignKeyConstraints: true,
     timeout: 5_000
   })
-  database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
   try {
+    const versionRow = database.prepare("PRAGMA user_version").get()
+    if (versionRow === undefined) throw new Error("manifest schema version was not readable")
+    const actualVersion = integer(versionRow, "user_version")
+    if (actualVersion > MANIFEST_SCHEMA_VERSION) {
+      throw new UnsupportedManifestSchemaVersion(actualVersion)
+    }
+    database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
     database.exec("BEGIN IMMEDIATE")
     database.exec(`
       CREATE TABLE IF NOT EXISTS user_manifests (
@@ -232,8 +296,9 @@ export const createDatabase = (path: string): DatabaseSync => {
 
     const existing = database
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'source_revisions'")
-      .get() as { readonly sql?: unknown } | undefined
-    const oldIdentity = typeof existing?.sql === "string" && !existing.sql.includes(V2_REVISION_IDENTITY)
+      .get()
+    const sql = existing?.["sql"]
+    const oldIdentity = Schema.is(Schema.String)(sql) && !sql.includes(V2_REVISION_IDENTITY)
     if (oldIdentity) database.exec("ALTER TABLE source_revisions RENAME TO source_revisions_v1")
 
     database.exec(TABLES)
@@ -242,7 +307,9 @@ export const createDatabase = (path: string): DatabaseSync => {
     database.exec(`
       CREATE INDEX IF NOT EXISTS source_revisions_logical_session
         ON source_revisions (tenant, uid, logical_session_id, extraction_generation, created_at_ms);
-      PRAGMA user_version = 9;
+      CREATE INDEX IF NOT EXISTS user_index_snapshots_scope
+        ON user_index_snapshots (tenant, uid, created_at_ms, snapshot_id);
+      PRAGMA user_version = ${MANIFEST_SCHEMA_VERSION};
       COMMIT;
     `)
   } catch (cause) {

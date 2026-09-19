@@ -7,7 +7,7 @@ import { parseMemoryScope } from "../../src/MemoryScope.js"
 import { createExtractionGeneration } from "../../src/SourceIdentity.js"
 import { sourceSessionKey, sourceTurnKey } from "../../src/SourceTranscript.js"
 import { canonicalSessionSource } from "../../src/SourceIdentity.js"
-import { Either } from "effect"
+import { Result } from "effect"
 import { describe, expect, it } from "vitest"
 
 const session: DatasetSession = {
@@ -20,8 +20,8 @@ const session: DatasetSession = {
 
 const source = canonicalSessionSource(session)
 
-const scope = Either.getOrThrow(parseMemoryScope("default", "user-a"))
-const otherTenantScope = Either.getOrThrow(parseMemoryScope("other-tenant", "user-a"))
+const scope = Result.getOrThrow(parseMemoryScope("default", "user-a"))
+const otherTenantScope = Result.getOrThrow(parseMemoryScope("other-tenant", "user-a"))
 const revision: SourceRevision = {
   tenant: "default",
   uid: "user-a",
@@ -66,16 +66,16 @@ describe("planIndexGraphWrite", () => {
   it("isolates every derived record by source revision and index generation", () => {
     const plan = planIndexGraphWrite({ generation, revision, session, claims: [claim] })
 
-    expect(plan._tag).toBe("Right")
-    if (plan._tag === "Left") return
+    expect(plan._tag).toBe("Success")
+    if (plan._tag === "Failure") return
 
-    expect(plan.right.entities).toHaveLength(1)
-    expect(plan.right.claims).toHaveLength(1)
-    expect(plan.right.slots).toHaveLength(1)
-    expect(plan.right.tokens.length).toBeGreaterThan(0)
-    expect(plan.right.claims[0]?.properties["index_generation"]).toBe(generation.id)
-    expect(plan.right.claims[0]?.properties["source_digest"]).toBe(source.sourceDigest)
-    expect(plan.right.relations).toContainEqual(
+    expect(plan.success.entities).toHaveLength(1)
+    expect(plan.success.claims).toHaveLength(1)
+    expect(plan.success.slots).toHaveLength(1)
+    expect(plan.success.tokens.length).toBeGreaterThan(0)
+    expect(plan.success.claims[0]?.properties["index_generation"]).toBe(generation.id)
+    expect(plan.success.claims[0]?.properties["source_digest"]).toBe(source.sourceDigest)
+    expect(plan.success.relations).toContainEqual(
       expect.objectContaining({
         type: "INDEX_EVIDENCE",
         dstLabel: "SourceTurn",
@@ -88,7 +88,7 @@ describe("planIndexGraphWrite", () => {
         })
       })
     )
-    expect(plan.right.entityIdentities[0]).toMatchObject({ canon: "the user", etype: "self" })
+    expect(plan.success.entityIdentities[0]).toMatchObject({ canon: "the user", etype: "self" })
   })
 
   it("rejects a claim whose evidence span cannot resolve inside the source revision", () => {
@@ -99,26 +99,26 @@ describe("planIndexGraphWrite", () => {
       claims: [{ ...claim, span: { ...claim.span, turnIdx: 9 } }]
     })
 
-    expect(plan).toMatchObject({ _tag: "Left", left: { reason: "unknownTurn" } })
+    expect(plan).toMatchObject({ _tag: "Failure", failure: { reason: "unknownTurn" } })
   })
 
   it("scopes every derived key by tenant so equal user ids cannot share graph keys", () => {
     const plan = planIndexGraphWrite({ generation, revision, session, claims: [claim] })
-    if (plan._tag === "Left") return expect.unreachable()
+    if (plan._tag === "Failure") return expect.unreachable()
 
     const otherRevision: SourceRevision = { ...revision, tenant: "other-tenant" }
     const other = planIndexGraphWrite({ generation, revision: otherRevision, session, claims: [claim] })
-    if (other._tag === "Left") return expect.unreachable()
+    if (other._tag === "Failure") return expect.unreachable()
 
     const keys = [
-      ...plan.right.claims.map((vertex) => vertex.key),
-      ...plan.right.slots.map((vertex) => vertex.key),
-      ...plan.right.tokens.map((vertex) => vertex.key)
+      ...plan.success.claims.map((vertex) => vertex.key),
+      ...plan.success.slots.map((vertex) => vertex.key),
+      ...plan.success.tokens.map((vertex) => vertex.key)
     ]
     const otherKeys = [
-      ...other.right.claims.map((vertex) => vertex.key),
-      ...other.right.slots.map((vertex) => vertex.key),
-      ...other.right.tokens.map((vertex) => vertex.key)
+      ...other.success.claims.map((vertex) => vertex.key),
+      ...other.success.slots.map((vertex) => vertex.key),
+      ...other.success.tokens.map((vertex) => vertex.key)
     ]
     expect(keys.length).toBeGreaterThan(0)
     for (const key of keys) {

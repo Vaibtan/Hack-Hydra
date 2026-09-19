@@ -2,6 +2,8 @@ import { Data } from "effect"
 import type { EntityCanonicalView } from "../EntityCanonicalView.js"
 import type { ExtractionArtifact, InvalidExtractionArtifact } from "../ExtractionArtifact.js"
 import type { IndexGeneration, InvalidIndexGeneration } from "../IndexGeneration.js"
+import type { InvalidMemoryScope } from "../MemoryScope.js"
+import type { InvalidUserIndexSnapshot, UserIndexSnapshot } from "../UserIndexSnapshot.js"
 import type { UserStats } from "../User.js"
 
 export const INGEST_STATES = [
@@ -14,6 +16,17 @@ export const INGEST_STATES = [
 ] as const
 
 export type IngestState = (typeof INGEST_STATES)[number]
+
+export const SNAPSHOT_STATES = [
+  "BUILDING",
+  "VERIFIED",
+  "ACTIVE",
+  "SUPERSEDED",
+  "FAILED"
+] as const
+
+/** Lifecycle of one immutable user index snapshot (D1, ADR-0003). */
+export type SnapshotState = (typeof SNAPSHOT_STATES)[number]
 
 /** An extraction-generation id with the canonical descriptor bytes it names. */
 export interface ExtractionGenerationReference {
@@ -142,6 +155,73 @@ export interface CompleteGraphIdRekey {
   readonly rejectedIdentity: string
   readonly replacementReducedId: number
   readonly replacementCanonicalIdentity: string
+}
+
+export interface UserIndexSnapshotScope {
+  readonly tenant: string
+  readonly uid: string
+}
+
+/** Read-back evidence recorded when a build transitions BUILDING -> VERIFIED. */
+export interface SnapshotProjectionCounts {
+  readonly sourceRevisions: number
+  readonly vertices: number
+  readonly relationships: number
+}
+
+/** Persist a content-addressed snapshot identity as a new BUILDING row. */
+export interface RegisterUserIndexSnapshot {
+  readonly snapshot: UserIndexSnapshot
+}
+
+/** Verification evidence produced by the aggregate build's read-back (S03). */
+export interface VerifyUserIndexSnapshot {
+  readonly snapshotId: string
+  readonly verificationDigest: string
+  readonly graphRoots: ReadonlyArray<string>
+  readonly counts: SnapshotProjectionCounts
+}
+
+export interface FailUserIndexSnapshot {
+  readonly snapshotId: string
+  readonly code: string
+}
+
+/**
+ * Compare-and-swap the per-scope active pointer. `expectedManifestVersion`
+ * proves the snapshot was verified against the current committed revision set;
+ * `expectedActiveSnapshotId` proves no competing activation changed the
+ * pointer after the caller read it. Use `null` when no snapshot is active.
+ */
+export interface ActivateIndexSnapshot extends UserIndexSnapshotScope {
+  readonly snapshotId: string
+  readonly expectedManifestVersion: number
+  readonly expectedActiveSnapshotId: string | null
+}
+
+/**
+ * The durable manifest record for one immutable per-user projection. It
+ * reconstructs the snapshot's full content without reading mutable session
+ * counters: identity, ordered committed revisions, build/verification outputs,
+ * and lifecycle state.
+ */
+export interface UserIndexSnapshotRecord {
+  readonly snapshot: UserIndexSnapshot
+  readonly state: SnapshotState
+  readonly buildAttempt: number
+  readonly verificationDigest: string | null
+  readonly graphRoots: ReadonlyArray<string> | null
+  readonly counts: SnapshotProjectionCounts | null
+  readonly failureCode: string | null
+  readonly createdAtMs: number
+  readonly updatedAtMs: number
+}
+
+/** The resolved per-scope active pointer plus the snapshot row it names. */
+export interface ActiveIndexSnapshot {
+  readonly record: UserIndexSnapshotRecord
+  readonly manifestVersion: number
+  readonly activatedAtMs: number
 }
 
 export class InvalidGraphIdClaim extends Data.TaggedError("InvalidGraphIdClaim")<{
@@ -324,6 +404,136 @@ export class ExtractionArtifactConflict extends Data.TaggedError("ExtractionArti
   }
 }
 
+export class UserIndexSnapshotConflict extends Data.TaggedError("UserIndexSnapshotConflict")<{
+  readonly snapshotId: string
+}> {
+  override get message(): string {
+    return `User index snapshot ${this.snapshotId} conflicts with its recorded definition`
+  }
+}
+
+export class UserIndexSnapshotNotFound extends Data.TaggedError("UserIndexSnapshotNotFound")<{
+  readonly snapshotId: string
+}> {
+  override get message(): string {
+    return `User index snapshot ${this.snapshotId} was not found`
+  }
+}
+
+export class InvalidSnapshotTransition extends Data.TaggedError("InvalidSnapshotTransition")<{
+  readonly snapshotId: string
+  readonly current: SnapshotState
+  readonly requested: SnapshotState
+}> {
+  override get message(): string {
+    return `Cannot move user index snapshot ${this.snapshotId} from ${this.current} to ${this.requested}`
+  }
+}
+
+/** A verify/fail/activate input failed validation before any transition. */
+export class InvalidSnapshotUpdate extends Data.TaggedError("InvalidSnapshotUpdate")<{
+  readonly snapshotId: string
+  readonly field:
+    | "verificationDigest"
+    | "graphRoots"
+    | "counts"
+    | "failureCode"
+    | "expectedManifestVersion"
+    | "expectedActiveSnapshotId"
+  readonly reason: string
+}> {
+  override get message(): string {
+    return `Invalid user index snapshot update ${this.field}: ${this.reason}`
+  }
+}
+
+/** A stored revision reference did not bind to the snapshot's own scope. */
+export class UserIndexSnapshotBindingMismatch extends Data.TaggedError(
+  "UserIndexSnapshotBindingMismatch"
+)<{
+  readonly snapshotId: string
+  readonly commitId: string
+  readonly reason: "unknownRevision" | "scopeMismatch"
+}> {
+  override get message(): string {
+    return `User index snapshot ${this.snapshotId} has a ${this.reason} binding mismatch on ${this.commitId}`
+  }
+}
+
+/** A repeated verification reported different evidence than the stored one. */
+export class SnapshotVerificationConflict extends Data.TaggedError(
+  "SnapshotVerificationConflict"
+)<{
+  readonly snapshotId: string
+}> {
+  override get message(): string {
+    return `User index snapshot ${this.snapshotId} verification conflicts with its recorded evidence`
+  }
+}
+
+/** A snapshot references a source revision that has not reached COMMITTED. */
+export class SnapshotRevisionNotCommitted extends Data.TaggedError(
+  "SnapshotRevisionNotCommitted"
+)<{
+  readonly snapshotId: string
+  readonly commitId: string
+  readonly state: IngestState
+}> {
+  override get message(): string {
+    return `User index snapshot ${this.snapshotId} lists ${this.commitId} at ${this.state}, not COMMITTED`
+  }
+}
+
+/** A verified snapshot cannot activate while committed revisions are uncovered. */
+export class SnapshotRevisionCoverageMismatch extends Data.TaggedError(
+  "SnapshotRevisionCoverageMismatch"
+)<{
+  readonly snapshotId: string
+  readonly missingCommitIds: ReadonlyArray<string>
+}> {
+  override get message(): string {
+    return `User index snapshot ${this.snapshotId} does not cover committed revisions ${this.missingCommitIds.join(", ")}`
+  }
+}
+
+export class SnapshotScopeMismatch extends Data.TaggedError("SnapshotScopeMismatch")<{
+  readonly snapshotId: string
+  readonly tenant: string
+  readonly uid: string
+}> {
+  override get message(): string {
+    return `User index snapshot ${this.snapshotId} does not belong to ${this.tenant}/${this.uid}`
+  }
+}
+
+/** The active-pointer compare-and-swap observed a newer committed manifest. */
+export class SnapshotActivationConflict extends Data.TaggedError("SnapshotActivationConflict")<{
+  readonly tenant: string
+  readonly uid: string
+  readonly snapshotId: string
+  readonly expectedManifestVersion: number
+  readonly actualManifestVersion: number
+}> {
+  override get message(): string {
+    return `Activating ${this.snapshotId} for ${this.tenant}/${this.uid} expected manifest version ${this.expectedManifestVersion}, found ${this.actualManifestVersion}`
+  }
+}
+
+/** The active-pointer compare-and-swap observed a different current snapshot. */
+export class SnapshotActivePointerConflict extends Data.TaggedError(
+  "SnapshotActivePointerConflict"
+)<{
+  readonly tenant: string
+  readonly uid: string
+  readonly snapshotId: string
+  readonly expectedActiveSnapshotId: string | null
+  readonly actualActiveSnapshotId: string | null
+}> {
+  override get message(): string {
+    return `Activating ${this.snapshotId} for ${this.tenant}/${this.uid} expected active snapshot ${this.expectedActiveSnapshotId ?? "none"}, found ${this.actualActiveSnapshotId ?? "none"}`
+  }
+}
+
 export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestUnavailable")<{
   readonly operation:
     | "open"
@@ -349,6 +559,13 @@ export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestU
     | "readGraphIdQuarantine"
     | "listGraphIdQuarantine"
     | "completeGraphIdRekey"
+    | "registerUserIndexSnapshot"
+    | "verifyUserIndexSnapshot"
+    | "failUserIndexSnapshot"
+    | "readUserIndexSnapshot"
+    | "listUserIndexSnapshots"
+    | "readActiveIndexSnapshot"
+    | "activateIndexSnapshot"
   readonly cause: unknown
 }> {
   override get message(): string {
@@ -376,4 +593,17 @@ export type IngestManifestError =
   | InvalidGraphIdClaim
   | GraphIdCollision
   | GraphIdRecoveryRejected
+  | InvalidMemoryScope
+  | InvalidUserIndexSnapshot
+  | UserIndexSnapshotConflict
+  | UserIndexSnapshotNotFound
+  | InvalidSnapshotTransition
+  | InvalidSnapshotUpdate
+  | UserIndexSnapshotBindingMismatch
+  | SnapshotVerificationConflict
+  | SnapshotRevisionNotCommitted
+  | SnapshotRevisionCoverageMismatch
+  | SnapshotScopeMismatch
+  | SnapshotActivationConflict
+  | SnapshotActivePointerConflict
   | IngestManifestUnavailable

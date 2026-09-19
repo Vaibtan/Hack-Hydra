@@ -77,6 +77,12 @@ export interface PairedResult extends PairedTable {
   readonly ciHighPoints: number
 }
 
+export interface PairedDifferenceInterval {
+  readonly points: number
+  readonly lowPoints: number
+  readonly highPoints: number
+}
+
 export const mcnemarExact = (leftOnly: number, rightOnly: number): number => {
   const discordant = leftOnly + rightOnly
   if (discordant === 0) return 1
@@ -90,7 +96,7 @@ const Z95 = 1.959963984540054
 
 export const pairedDifferenceCi = (
   table: PairedTable
-): { readonly points: number; readonly lowPoints: number; readonly highPoints: number } => {
+): PairedDifferenceInterval => {
   const { leftOnly, rightOnly, n } = table
   if (n === 0) return { points: 0, lowPoints: 0, highPoints: 0 }
   const mean = (leftOnly - rightOnly) / n

@@ -23,8 +23,10 @@ export const parseTurns = (
   for (const line of text.split(/\r?\n/)) {
     const match = /^\s*(user|assistant)\s*:\s*(.*)$/i.exec(line)
     if (match !== null) {
+      const role = match[1]?.toLowerCase()
+      if (role !== "user" && role !== "assistant") continue
       turns.push({
-        role: match[1]!.toLowerCase() as "user" | "assistant",
+        role,
         content: match[2] ?? ""
       })
     } else if (line.trim() !== "" && turns.length > 0) {

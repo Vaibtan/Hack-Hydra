@@ -1,4 +1,4 @@
-import { loadDataset, type DatasetName } from "@palimpsest/dataset"
+import { loadDataset, parseDatasetName } from "@palimpsest/dataset"
 import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { extractSession, mergeEntities, type ExtractedEntity } from "@palimpsest/palimpsest"
 import { Effect } from "effect"
@@ -14,7 +14,7 @@ const arg = (name: string, fallback: string): string => {
 
 const program = Effect.gen(function* () {
   yield* Llm
-  const questions = yield* loadDataset(arg("dataset", "oracle") as DatasetName).pipe(Effect.orDie)
+  const questions = yield* loadDataset(parseDatasetName(arg("dataset", "oracle"))).pipe(Effect.orDie)
   const slice = stratifiedSlice(questions, Number(arg("slice", "20")))
 
   const reasons = new Map<string, number>()
@@ -56,7 +56,7 @@ const program = Effect.gen(function* () {
   console.log(samples.join("\n"))
 })
 
-Effect.runPromise(Effect.provide(program, LlmLive()) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, LlmLive())).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

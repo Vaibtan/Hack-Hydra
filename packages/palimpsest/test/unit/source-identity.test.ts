@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Either } from "effect"
+import { Result } from "effect"
 import { parseMemoryScope } from "../../src/MemoryScope.js"
 import { canonicalSessionSource, createExtractionGeneration, parseExtractionGeneration, sourceRevisionInputForSession } from "../../src/SourceIdentity.js"
 
@@ -67,14 +67,14 @@ describe("source identity", () => {
     expect(extractionGeneration.outputSchemaSha256).toMatch(/^[a-f0-9]{64}$/)
     expect(
       parseExtractionGeneration(extractionGeneration.id, extractionGeneration.canonicalJson)
-    ).toMatchObject({ _tag: "Right", right: extractionGeneration })
+    ).toMatchObject({ _tag: "Success", success: extractionGeneration })
     expect(
       parseExtractionGeneration("extract-v1-" + "0".repeat(64), extractionGeneration.canonicalJson)
-    ).toMatchObject({ _tag: "Left", left: { reason: "identifierMismatch" } })
+    ).toMatchObject({ _tag: "Failure", failure: { reason: "identifierMismatch" } })
   })
 
   it("makes the manifest input use the logical session key and canonical source", () => {
-    const scope = Either.getOrThrow(parseMemoryScope("default", "user-a"))
+    const scope = Result.getOrThrow(parseMemoryScope("default", "user-a"))
     expect(sourceRevisionInputForSession(scope, session, extractionGeneration)).toEqual({
       tenant: "default",
       uid: "user-a",

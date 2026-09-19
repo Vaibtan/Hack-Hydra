@@ -21,8 +21,40 @@ export interface BaselineOutcome {
 
 export interface V2Outcome {
   readonly kind: "v2"
-  readonly answered: V2Answer
+  readonly answered: V2EvaluationAnswer
   readonly ablations: ReadonlyArray<string>
+}
+
+export interface V2EvaluationAnswer {
+  readonly ask: {
+    readonly reason: V2Answer["ask"]["reason"]
+    readonly hash: string
+    readonly timings: V2Answer["ask"]["timings"]
+    readonly receipt: Pick<V2Answer["ask"]["receipt"], "anchorTerms" | "anchorsReachingClaims">
+    readonly plan: {
+      readonly route: V2Answer["ask"]["plan"]["route"]
+      readonly flags: V2Answer["ask"]["plan"]["flags"]
+      readonly selection: Pick<V2Answer["ask"]["plan"]["selection"], "fallback">
+      readonly unionSessions: ReadonlyArray<string>
+      readonly sufficiency: Pick<V2Answer["ask"]["plan"]["sufficiency"], "missing" | "premise" | "tier">
+      readonly budget: {
+        readonly estimatedTokens: number
+        readonly dropped: ReadonlyArray<{ readonly id: string }>
+        readonly overBudget: boolean
+      }
+    }
+  }
+  readonly read: null | (Pick<
+    NonNullable<V2Answer["read"]>,
+    "answer" | "granularity" | "hydrateMs" | "inputTokens" | "notInMemory" | "outputTokens" | "readMs" | "recited" | "spans"
+  > & {
+    readonly pack: null | { readonly dropped: ReadonlyArray<HydratedSpan> }
+  })
+  readonly verdict: V2Answer["verdict"]
+  readonly reason: V2Answer["reason"]
+  readonly sufficiency: Pick<V2Answer["sufficiency"], "premise">
+  readonly secondPass: boolean
+  readonly hash: string
 }
 
 export type SystemOutcome = BaselineOutcome | V2Outcome
@@ -100,7 +132,7 @@ export const rowFromBaseline = (
   })
 
 /** HydraDB time of the ask plus the read's hydration, and nothing else. */
-export const graphMsOf = (answered: V2Answer): number =>
+export const graphMsOf = (answered: V2EvaluationAnswer): number =>
   answered.ask.timings.graphMs + (answered.read?.hydrateMs ?? 0)
 
 export const rowFromV2 = (
@@ -141,17 +173,15 @@ export const rowFromV2 = (
     selectorFallback: plan.selection.fallback,
     unionSessions: plan.unionSessions,
     sufficiencyTier: plan.sufficiency.tier,
-    ...(plan.sufficiency.missing === "" ? {} : { sufficiencyMissing: plan.sufficiency.missing }),
-    ...(plan.sufficiency.premise === "" ? {} : { sufficiencyPremise: plan.sufficiency.premise }),
+    ...(plan.sufficiency.missing !== "" && { sufficiencyMissing: plan.sufficiency.missing }),
+    ...(plan.sufficiency.premise !== "" && { sufficiencyPremise: plan.sufficiency.premise }),
     secondPass: answered.secondPass,
-    ...(read === null
-      ? {}
-      : {
+    ...(read !== null && {
           budgetDroppedSessions: read.pack === null ? [] : sessionsOf(read.pack.dropped),
-          ...(plan.budget.dropped.length === 0
-            ? {}
-            : { budgetDropIds: plan.budget.dropped.map((drop) => drop.id) }),
-          ...(plan.budget.overBudget ? { overBudget: true } : {}),
+          ...(plan.budget.dropped.length > 0 && {
+            budgetDropIds: plan.budget.dropped.map((drop) => drop.id)
+          }),
+          ...(plan.budget.overBudget && { overBudget: true }),
           granularity: read.granularity,
           estimatedTokens: plan.budget.estimatedTokens,
           recited: read.recited

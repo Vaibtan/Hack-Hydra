@@ -28,7 +28,7 @@ export const Determinism = ({
           question,
           questionDate,
           retrieveOnly: true,
-          ...(asOf === undefined ? {} : { asOf })
+          ...(asOf !== undefined && { asOf })
         })
         seen.push(result.hash)
         setHashes([...seen])

@@ -4,25 +4,26 @@ import {
   MAX_SUB_QUESTIONS,
   anchorStems,
   applyRouteCues,
-  shapeUnderstanding,
-  type Route
+  assembleUnderstanding,
 } from "../../src/Understand.js"
 
 const QUESTION_DATE = 20230520
 
-const model = (over: Partial<Parameters<typeof shapeUnderstanding>[2]> = {}) => ({
+const model = (
+  over: Partial<Parameters<typeof assembleUnderstanding>[2]> = {}
+): Parameters<typeof assembleUnderstanding>[2] => ({
   anchor_terms: [],
   historical: false,
   wants_count: false,
   time_ref: null,
-  route: "fact" as Route,
+  route: "fact",
   sub_questions: [],
   probes: [],
   ...over
 })
 
-const shape = (question: string, over: Partial<Parameters<typeof shapeUnderstanding>[2]> = {}) =>
-  shapeUnderstanding(question, QUESTION_DATE, model(over), true)
+const understandFixture = (question: string, over: Partial<Parameters<typeof assembleUnderstanding>[2]> = {}) =>
+  assembleUnderstanding(question, QUESTION_DATE, model(over), true)
 
 describe("deterministic route cues", () => {
   it("calls a how-many question a count whatever the model said", () => {
@@ -78,7 +79,7 @@ describe("deterministic route cues", () => {
 
 describe("flags", () => {
   it("are independent of the route", () => {
-    const understood = shape("How many museums did I visit two months ago?", {
+    const understood = understandFixture("How many museums did I visit two months ago?", {
       route: "preference",
       time_ref: "two months ago",
       sub_questions: [{ question: "Which museums did I visit?", anchor_terms: ["museum"] }]
@@ -92,17 +93,17 @@ describe("flags", () => {
   })
 
   it("take the cue as evidence of a count even when the model said otherwise", () => {
-    expect(shape("How many pets do I have?", { wants_count: false }).flags.wantsCount).toBe(true)
+    expect(understandFixture("How many pets do I have?", { wants_count: false }).flags.wantsCount).toBe(true)
   })
 
   it("do not see a time reference in an empty phrase", () => {
-    expect(shape("Where do I live?", { time_ref: "  " }).flags.hasTimeRef).toBe(false)
+    expect(understandFixture("Where do I live?", { time_ref: "  " }).flags.hasTimeRef).toBe(false)
   })
 })
 
 describe("the interval", () => {
   it("is resolved in code from the phrase the model copied out", () => {
-    const understood = shape("Which museum did I visit two months ago?", {
+    const understood = understandFixture("Which museum did I visit two months ago?", {
       time_ref: "two months ago"
     })
     expect(understood.timeRef).toBe("two months ago")
@@ -110,7 +111,7 @@ describe("the interval", () => {
   })
 
   it("is null when the phrase is not one of the supported forms", () => {
-    const understood = shape("What did I say a while back?", { time_ref: "a while back" })
+    const understood = understandFixture("What did I say a while back?", { time_ref: "a while back" })
     expect(understood.flags.hasTimeRef).toBe(true)
     expect(understood.timeInterval).toBeNull()
   })
@@ -118,7 +119,7 @@ describe("the interval", () => {
 
 describe("sub-questions and probes", () => {
   it("carry their own stems so no second round trip is needed", () => {
-    const understood = shape("How much older is my grandma than me?", {
+    const understood = understandFixture("How much older is my grandma than me?", {
       sub_questions: [
         { question: "How old is my grandma?", anchor_terms: ["age", "birthday"] },
         { question: "How old am I?", anchor_terms: ["age"] }
@@ -133,7 +134,7 @@ describe("sub-questions and probes", () => {
   })
 
   it("are capped, and empty entries dropped", () => {
-    const understood = shape("q", {
+    const understood = understandFixture("q", {
       sub_questions: Array.from({ length: 9 }, (_, i) => ({
         question: i === 0 ? "  " : `sub ${i}`,
         anchor_terms: []
@@ -146,12 +147,12 @@ describe("sub-questions and probes", () => {
   })
 
   it("normalise a probe to the case and spacing a Slot key uses", () => {
-    const understood = shape("q", { probes: [{ entity_canon: "  Grandma ", attr: " AGE " }] })
+    const understood = understandFixture("q", { probes: [{ entity_canon: "  Grandma ", attr: " AGE " }] })
     expect(understood.probes[0]).toEqual({ entityCanon: "grandma", attr: "age" })
   })
 
   it("leave needsDecomposition false when the question needs one fact", () => {
-    expect(shape("What is my hamster called?").flags.needsDecomposition).toBe(false)
+    expect(understandFixture("What is my hamster called?").flags.needsDecomposition).toBe(false)
   })
 })
 

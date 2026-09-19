@@ -16,6 +16,7 @@ export {
   datasetPath,
   defaultDataDir,
   loadDataset,
-  loadQuestion
+  loadQuestion,
+  parseDatasetName
 } from "./Load.js"
 export type { DatasetName } from "./Load.js"

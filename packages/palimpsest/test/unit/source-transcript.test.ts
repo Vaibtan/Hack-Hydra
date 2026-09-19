@@ -7,7 +7,7 @@ import {
   sourceTurnKey
 } from "../../src/SourceTranscript.js"
 import { canonicalSessionSource } from "../../src/SourceIdentity.js"
-import { Either } from "effect"
+import { Result } from "effect"
 import { describe, expect, it } from "vitest"
 
 const session: DatasetSession = {
@@ -51,21 +51,21 @@ describe("planSourceTranscriptWrite", () => {
     }
     const second = planSourceTranscriptWrite(revisionFor(replacement), replacement)
 
-    expect(first._tag).toBe("Right")
-    expect(second._tag).toBe("Right")
-    if (first._tag === "Left" || second._tag === "Left") return
+    expect(first._tag).toBe("Success")
+    expect(second._tag).toBe("Success")
+    if (first._tag === "Failure" || second._tag === "Failure") return
 
-    expect(first.right.session.key).toBe(
-      sourceSessionKey(Either.getOrThrow(parseMemoryScope("default", "user-a")), "session-a", first.right.sourceDigest)
+    expect(first.success.session.key).toBe(
+      sourceSessionKey(Result.getOrThrow(parseMemoryScope("default", "user-a")), "session-a", first.success.sourceDigest)
     )
-    expect(first.right.turns[0]?.key).toBe(
-      sourceTurnKey(Either.getOrThrow(parseMemoryScope("default", "user-a")), "session-a", first.right.sourceDigest, 0)
+    expect(first.success.turns[0]?.key).toBe(
+      sourceTurnKey(Result.getOrThrow(parseMemoryScope("default", "user-a")), "session-a", first.success.sourceDigest, 0)
     )
-    expect(first.right.session.key).not.toBe(second.right.session.key)
-    expect(first.right.session.properties["source_digest"]).toBe(first.right.sourceDigest)
-    expect(second.right.session.properties["source_digest"]).toBe(second.right.sourceDigest)
-    expect(first.right.turns[1]?.properties["text"]).toBe("world")
-    expect(second.right.turns[1]?.properties["text"]).toBe("revised")
+    expect(first.success.session.key).not.toBe(second.success.session.key)
+    expect(first.success.session.properties["source_digest"]).toBe(first.success.sourceDigest)
+    expect(second.success.session.properties["source_digest"]).toBe(second.success.sourceDigest)
+    expect(first.success.turns[1]?.properties["text"]).toBe("world")
+    expect(second.success.turns[1]?.properties["text"]).toBe("revised")
   })
 
   it("rejects a session whose bytes or logical id do not name the claimed source revision", () => {
@@ -82,36 +82,36 @@ describe("planSourceTranscriptWrite", () => {
       key: "other-session"
     })
 
-    expect(byteMismatch).toMatchObject({ _tag: "Left", left: { field: "sourceDigest" } })
+    expect(byteMismatch).toMatchObject({ _tag: "Failure", failure: { field: "sourceDigest" } })
     expect(logicalIdMismatch).toMatchObject({
-      _tag: "Left",
-      left: { field: "logicalSessionId" }
+      _tag: "Failure",
+      failure: { field: "logicalSessionId" }
     })
   })
 
   it("links each source revision to its tenant-scoped memory root", () => {
-    const sameUser = Either.getOrThrow(parseMemoryScope("default", "user-a"))
-    const otherTenant = Either.getOrThrow(parseMemoryScope("other", "user-a"))
+    const sameUser = Result.getOrThrow(parseMemoryScope("default", "user-a"))
+    const otherTenant = Result.getOrThrow(parseMemoryScope("other", "user-a"))
     const digest = canonicalSessionSource(session).sourceDigest
 
     expect(sourceSessionKey(sameUser, "session-a", digest)).not.toBe(
       sourceSessionKey(otherTenant, "session-a", digest)
     )
     const planned = planSourceTranscriptWrite(revisionFor(session), session)
-    if (planned._tag === "Left") return expect.unreachable()
-    expect(planned.right.scope.key).toBe(memoryScopeKey(sameUser))
-    expect(planned.right.session.key).toBe(sourceSessionKey(sameUser, "session-a", digest))
-    expect(planned.right.relations).toContainEqual({
+    if (planned._tag === "Failure") return expect.unreachable()
+    expect(planned.success.scope.key).toBe(memoryScopeKey(sameUser))
+    expect(planned.success.session.key).toBe(sourceSessionKey(sameUser, "session-a", digest))
+    expect(planned.success.relations).toContainEqual({
       type: "HAS_SOURCE_REVISION",
       srcLabel: "MemoryScope",
       srcKey: memoryScopeKey(sameUser),
       dstLabel: "SourceSession",
-      dstKey: planned.right.session.key
+      dstKey: planned.success.session.key
     })
 
     const otherRevision = { ...revisionFor(session), tenant: "other" }
     const otherPlanned = planSourceTranscriptWrite(otherRevision, session)
-    if (otherPlanned._tag === "Left") return expect.unreachable()
-    expect(otherPlanned.right.scope.key).not.toBe(planned.right.scope.key)
+    if (otherPlanned._tag === "Failure") return expect.unreachable()
+    expect(otherPlanned.success.scope.key).not.toBe(planned.success.scope.key)
   })
 })

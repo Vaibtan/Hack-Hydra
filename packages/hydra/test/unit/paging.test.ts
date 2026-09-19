@@ -66,15 +66,15 @@ describe("followCursor", () => {
     const source = pager(Number.MAX_SAFE_INTEGER)
     const outcome = await Effect.runPromise(
       followCursor<never>(source.page(), () => Effect.succeed(source.page()), "MATCH (n) RETURN n").pipe(
-        Effect.either
+        Effect.result
       )
     )
-    expect(outcome._tag).toBe("Left")
-    if (outcome._tag === "Left") {
-      expect(outcome.left._tag).toBe("HydraLimitError")
-      expect(outcome.left.reason).toContain(`${MAX_RESULT_PAGES} pages`)
-      expect(outcome.left.reason).toContain("truncated")
-      expect(outcome.left.query).toBe("MATCH (n) RETURN n")
+    expect(outcome._tag).toBe("Failure")
+    if (outcome._tag === "Failure") {
+      expect(outcome.failure._tag).toBe("HydraLimitError")
+      expect(outcome.failure.reason).toContain(`${MAX_RESULT_PAGES} pages`)
+      expect(outcome.failure.reason).toContain("truncated")
+      expect(outcome.failure.query).toBe("MATCH (n) RETURN n")
     }
     expect(source.seen()).toBe(MAX_RESULT_PAGES + 1)
   })

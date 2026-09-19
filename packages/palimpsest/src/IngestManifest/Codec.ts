@@ -1,3 +1,4 @@
+import { Result, Schema } from "effect"
 import { canonicalJson } from "../SourceIdentity.js"
 import type { UserStats } from "../User.js"
 import { InvalidProjectionDelta, type ApplyProjectionDelta } from "./Types.js"
@@ -35,27 +36,30 @@ const statsFrom = (read: (field: StatField) => number): UserStats => ({
   contestedSlots: read("contestedSlots")
 })
 
-const statsRecord = (stats: UserStats): Record<StatField, number> =>
-  Object.fromEntries(STAT_FIELDS.map((field) => [field, stats[field]])) as Record<StatField, number>
+const statsRecord = (stats: UserStats): Record<StatField, number> => ({
+  claims: stats.claims,
+  entities: stats.entities,
+  slots: stats.slots,
+  tokens: stats.tokens,
+  sessions: stats.sessions,
+  turns: stats.turns,
+  supersessions: stats.supersessions,
+  contestedSlots: stats.contestedSlots
+})
 
 export const assertNonNegativeSafeInteger = (
-  value: unknown,
+  value: number,
   field: InvalidProjectionDelta["field"],
   detail: string
 ): number => {
-  if (!Number.isSafeInteger(value) || typeof value !== "number" || value < 0) {
+  if (!Number.isSafeInteger(value) || value < 0) {
     throw new InvalidProjectionDelta({ field, reason: `${detail} must be a non-negative safe integer` })
   }
   return value
 }
 
-export const validateStats = (value: unknown): UserStats => {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new InvalidProjectionDelta({ field: "stats", reason: "must be an object" })
-  }
-  const record = value as Record<string, unknown>
-  return statsFrom((field) => assertNonNegativeSafeInteger(record[field], "stats", field))
-}
+export const validateStats = (value: UserStats): UserStats =>
+  statsFrom((field) => assertNonNegativeSafeInteger(value[field], "stats", field))
 
 const validateCountMap = (
   value: ReadonlyMap<string, number>,
@@ -98,32 +102,39 @@ export const projectionPayload = (input: ApplyProjectionDelta): ProjectionDeltaP
   )
 
 const decodeEntries = (
-  entries: ReadonlyArray<unknown>,
+  entries: ReadonlyArray<readonly [string, number]>,
   field: "tokenDf" | "slotClaims"
 ): ReadonlyMap<string, number> => {
   const result = new Map<string, number>()
   for (const entry of entries) {
-    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") {
-      throw new Error(`projection delta ${field} entry was invalid`)
-    }
     result.set(entry[0], assertNonNegativeSafeInteger(entry[1], field, `value for ${entry[0]}`))
   }
   return result
 }
 
+const UserStatsSchema = Schema.Struct({
+  claims: Schema.Number,
+  entities: Schema.Number,
+  slots: Schema.Number,
+  tokens: Schema.Number,
+  sessions: Schema.Number,
+  turns: Schema.Number,
+  supersessions: Schema.Number,
+  contestedSlots: Schema.Number
+})
+
+const CountEntriesSchema = Schema.Array(Schema.Tuple([Schema.String, Schema.Number]))
+const ProjectionDeltaDescriptorSchema = Schema.Struct({
+  format: Schema.Literal(PROJECTION_DELTA_FORMAT),
+  slot_claims: CountEntriesSchema,
+  stats: UserStatsSchema,
+  token_df: CountEntriesSchema
+})
+
 export const decodeProjectionPayload = (serialized: string): ProjectionDeltaPayload => {
-  const parsed = JSON.parse(serialized) as {
-    readonly format?: unknown
-    readonly stats?: unknown
-    readonly token_df?: unknown
-    readonly slot_claims?: unknown
-  }
-  if (parsed.format !== PROJECTION_DELTA_FORMAT) {
-    throw new Error("projection delta format was invalid")
-  }
-  if (!Array.isArray(parsed.token_df) || !Array.isArray(parsed.slot_claims)) {
-    throw new Error("projection delta count maps were invalid")
-  }
+  const decoded = Schema.decodeUnknownResult(ProjectionDeltaDescriptorSchema)(JSON.parse(serialized))
+  if (Result.isFailure(decoded)) throw new Error("projection delta encoding was invalid")
+  const parsed = decoded.success
   const payload = encodePayload(
     validateStats(parsed.stats),
     validateCountMap(decodeEntries(parsed.token_df, "tokenDf"), "tokenDf"),
@@ -137,7 +148,11 @@ export const decodeProjectionPayload = (serialized: string): ProjectionDeltaPayl
 
 export const statsJson = (stats: UserStats): string => canonicalJson(statsRecord(stats))
 
-export const decodeStatsJson = (value: string): UserStats => validateStats(JSON.parse(value) as unknown)
+export const decodeStatsJson = (value: string): UserStats => {
+  const decoded = Schema.decodeUnknownResult(UserStatsSchema)(JSON.parse(value))
+  if (Result.isFailure(decoded)) throw new Error("projection stats encoding was invalid")
+  return validateStats(decoded.success)
+}
 
 export const addStats = (left: UserStats, right: UserStats): UserStats =>
   statsFrom((field) => left[field] + right[field])

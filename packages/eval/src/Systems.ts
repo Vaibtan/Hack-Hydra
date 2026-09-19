@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import type { DatasetQuestion } from "@palimpsest/dataset"
 import type { Llm } from "@palimpsest/llm"
 import { answerV2, determinismHash, type HydratedSpan, type Reader, type Retrieve } from "@palimpsest/palimpsest"
@@ -23,7 +22,7 @@ export interface SystemDeps {
   readonly fullCtxChars: number
 }
 
-export type SystemRun = Effect.Effect<SystemOutcome, unknown, LanguageModel.LanguageModel | Llm>
+export type SystemRun = Effect.Effect<SystemOutcome, unknown, Llm>
 
 export interface SystemSpec {
   readonly needsGraph: boolean
@@ -35,7 +34,7 @@ const readBaseline = (
   question: DatasetQuestion,
   spans: ReadonlyArray<HydratedSpan>,
   sessionsDropped: number
-): Effect.Effect<BaselineOutcome, never, LanguageModel.LanguageModel | Llm> =>
+): Effect.Effect<BaselineOutcome, never, Llm> =>
   deps.reader
     .readSpans(question.question, question.questionDate.raw, spans)
     .pipe(
@@ -53,9 +52,9 @@ const runV2: SystemSpec["run"] = (question, deps) => {
   return answerV2(deps.retrieve, deps.reader, deps.uid, question.question, question.questionDate.raw, {
     profile: deps.v2.profile,
     ablations,
-    ...(noSufficiency === true ? { noSufficiency: true } : {}),
-    ...(noReaderRoute === true ? { noReaderRoute: true } : {}),
-    ...(deps.v2.granularity === null ? {} : { granularity: deps.v2.granularity })
+    ...(noSufficiency === true && { noSufficiency: true }),
+    ...(noReaderRoute === true && { noReaderRoute: true }),
+    ...(deps.v2.granularity !== null && { granularity: deps.v2.granularity })
   }).pipe(
     Effect.map((answered) => ({
       kind: "v2" as const,

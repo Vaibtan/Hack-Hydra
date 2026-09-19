@@ -322,7 +322,7 @@ export const slotMateArm = (
   guard: StageGuard
 ): Effect.Effect<SlotMateArm, HydraError> =>
   Effect.gen(function* () {
-    const expansion = yield* Effect.either(
+    const expansion = yield* Effect.result(
       Effect.gen(function* () {
         const fills = yield* guard(
           "slotKeys",
@@ -359,11 +359,11 @@ export const slotMateArm = (
         return { candidateSlotOf, arm, slotOf }
       })
     )
-    if (expansion._tag === "Left") {
-      if (expansion.left._tag !== "HydraLimitError") return yield* Effect.fail(expansion.left)
+    if (expansion._tag === "Failure") {
+      if (expansion.failure._tag !== "HydraLimitError") return yield* Effect.fail(expansion.failure)
       return { ...emptyArm("slotMate", "slotMate", true), slotOf: new Map<string, string>() }
     }
-    const { candidateSlotOf, arm, slotOf } = expansion.right
+    const { candidateSlotOf, arm, slotOf } = expansion.success
     return {
       ...arm,
       claims: groupSlotMates(arm.claims, slotOf, alreadyReached, MAX_SLOT_EXPANSION),

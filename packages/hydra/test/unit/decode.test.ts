@@ -1,5 +1,6 @@
+import { Result, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { decodeResponse } from "../../src/Decode.js"
+import { decodeResponse, RawResponseSchema, type RawResponse } from "../../src/Decode.js"
 
 /** Oracle: verbatim response bodies captured from HydraDB 0.1.0 during the #1 probe run. */
 const SCALAR_RESPONSE = {
@@ -15,7 +16,7 @@ const SCALAR_RESPONSE = {
   read_epoch: 47,
   next_cursor: null,
   bookmark: "sgk:1:64656661756c74:64656661756c74:63656c6c2d30:47"
-}
+} as const satisfies RawResponse
 
 const PATH_RESPONSE = {
   query_id: "http-query-14",
@@ -54,7 +55,7 @@ const PATH_RESPONSE = {
   read_epoch: 59,
   next_cursor: null,
   bookmark: "bm-59"
-}
+} as const satisfies RawResponse
 
 describe("decodeResponse", () => {
   it("turns typed scalar cells into plain values keyed by column", () => {
@@ -91,5 +92,34 @@ describe("decodeResponse", () => {
   it("reports an empty result set without inventing rows", () => {
     const result = decodeResponse({ ...SCALAR_RESPONSE, columns: ["c"], rows: [] })
     expect(result.rows).toEqual([])
+  })
+
+  it("rejects missing envelopes, mismatched cell variants, and malformed row widths", () => {
+    const malformed = [
+      {},
+      {
+        ...SCALAR_RESPONSE,
+        rows: [[{ type: "integer", value: "10" }, { type: "string", value: "a" }, { type: "integer", value: 10 }]]
+      },
+      {
+        ...SCALAR_RESPONSE,
+        rows: [[{ type: "boolean", value: "true" }, { type: "string", value: "a" }, { type: "integer", value: 10 }]]
+      },
+      { ...SCALAR_RESPONSE, rows: [[{ type: "string", value: "only-one-cell" }]] }
+    ]
+
+    for (const response of malformed) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(RawResponseSchema)(response))).toBe(true)
+    }
+  })
+
+  it("decodes discriminated boolean and null cells", () => {
+    const parsed = Schema.decodeUnknownSync(RawResponseSchema)({
+      ...SCALAR_RESPONSE,
+      columns: ["enabled", "missing"],
+      rows: [[{ type: "boolean", value: true }, { type: "null" }]]
+    })
+
+    expect(decodeResponse(parsed).rows).toEqual([{ enabled: true, missing: null }])
   })
 })

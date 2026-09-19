@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Schema } from "effect"
 import { ATTRIBUTE_VOCABULARY } from "./Extract.js"
@@ -25,7 +24,7 @@ const Understanding = Schema.Struct({
   historical: Schema.Boolean,
   wants_count: Schema.Boolean,
   time_ref: Schema.NullOr(Schema.String),
-  route: Schema.Literal(...ROUTES),
+  route: Schema.Literals([...ROUTES]),
   sub_questions: Schema.Array(
     Schema.Struct({
       question: Schema.String,
@@ -68,6 +67,11 @@ export interface Understood {
   readonly probes: ReadonlyArray<Probe>
   readonly expanded: ReadonlyArray<string>
   readonly cached: boolean
+}
+
+export interface RouteCue {
+  readonly route: Route
+  readonly reason: string
 }
 
 const SYSTEM = `You read one question about a person's chat history and describe what answering it needs.
@@ -122,7 +126,7 @@ export const applyRouteCues = (
   question: string,
   modelRoute: Route,
   timeRef: string | null
-): { readonly route: Route; readonly reason: string } => {
+): RouteCue => {
   const text = question.toLowerCase()
   if (COUNT_PHRASE.test(text) && modelRoute !== "temporal") {
     return { route: "count", reason: "cue:how_many" }
@@ -151,7 +155,7 @@ export const anchorStems = (
   return [...terms].sort()
 }
 
-export const shapeUnderstanding = (
+export const assembleUnderstanding = (
   question: string,
   questionDate: number,
   value: Schema.Schema.Type<typeof Understanding>,
@@ -196,7 +200,7 @@ export const understand = (
   question: string,
   questionDate: number,
   questionDateRaw?: string
-): Effect.Effect<Understood, never, LanguageModel.LanguageModel | Llm> =>
+): Effect.Effect<Understood, never, Llm> =>
   Effect.gen(function* () {
     const llm = yield* Llm
     const generated = yield* llm
@@ -211,5 +215,5 @@ export const understand = (
         objectName: "understanding"
       })
       .pipe(Effect.orDie)
-    return shapeUnderstanding(question, questionDate, generated.value, generated.cached)
+    return assembleUnderstanding(question, questionDate, generated.value, generated.cached)
   })

@@ -6,10 +6,10 @@ import { HydraClient, vertexId } from "../../src/index.js"
 const UID = "probe-byid"
 const ROWS = 50_000
 
-const layer = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const layer = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const run = <A, E>(effect: Effect.Effect<A, E, HydraClient>): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, layer) as Effect.Effect<A, E, never>)
+  Effect.runPromise(Effect.provide(effect, layer))
 
 const keys = Array.from({ length: ROWS }, (_, i) => `${UID}|s|${String(i).padStart(6, "0")}`)
 const target = keys[ROWS - 1]!
@@ -28,7 +28,7 @@ beforeAll(() =>
 
 const timed = async <A>(effect: Effect.Effect<A, unknown, HydraClient>): Promise<[A, number]> => {
   const started = Date.now()
-  const value = await run(effect as Effect.Effect<A, never, HydraClient>)
+  const value = await run(effect)
   return [value, Date.now() - started]
 }
 
@@ -101,7 +101,7 @@ describe("id-keyed reads versus label scans", () => {
         return yield* hydra
           .query(
             "UNWIND $rows AS row MATCH (n:ProbeScan {id: row.id}) RETURN n.skey AS skey",
-            { rows: [{ id: vertexId(target) }] } as never
+            { rows: [{ id: vertexId(target) }] }
           )
           .pipe(Effect.flip)
       })

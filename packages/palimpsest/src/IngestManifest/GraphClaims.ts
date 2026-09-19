@@ -47,6 +47,12 @@ export interface GraphClaimOperations {
 
 const isKind = (value: unknown): value is GraphIdKind => value === "vertex" || value === "relationship"
 
+const graphIdKind = (row: DatabaseRow): GraphIdKind => {
+  const kind = text(row, "kind")
+  if (!isKind(kind)) throw new Error(`manifest graph id kind ${kind} was invalid`)
+  return kind
+}
+
 const validateClaim = (input: ClaimGraphId, numericIdForKey: NumericIdForKey): void => {
   if (!Number.isSafeInteger(input.reducedId) || input.reducedId < 0) {
     throw new InvalidGraphIdClaim({ field: "reducedId", reason: "must be a non-negative safe integer" })
@@ -76,7 +82,7 @@ const validateScope = (input: Pick<ClaimGraphId, "kind" | "reducedId">): void =>
 
 const decodeClaim = (row: DatabaseRow): GraphIdClaim => ({
   reducedId: integer(row, "reduced_id"),
-  kind: text(row, "kind") as GraphIdKind,
+  kind: graphIdKind(row),
   canonicalIdentity: text(row, "canonical_identity"),
   claimedAtMs: integer(row, "claimed_at_ms")
 })
@@ -88,7 +94,7 @@ const selectClaim = (
 ): GraphIdClaim | undefined => {
   const row = database
     .prepare(`SELECT reduced_id, kind, canonical_identity, claimed_at_ms FROM graph_id_claims WHERE reduced_id = ? AND kind = ?`)
-    .get(reducedId, kind) as DatabaseRow | undefined
+    .get(reducedId, kind)
   return row === undefined ? undefined : decodeClaim(row)
 }
 
@@ -153,10 +159,10 @@ const listQuarantine = (database: DatabaseSync): ReadonlyArray<GraphIdQuarantine
       `SELECT reduced_id, kind, existing_identity, rejected_identity, detected_at_ms
          FROM graph_id_quarantine ORDER BY detected_at_ms, reduced_id`
     )
-    .all() as ReadonlyArray<DatabaseRow>
+    .all()
   return rows.map((row) => ({
     reducedId: integer(row, "reduced_id"),
-    kind: text(row, "kind") as GraphIdKind,
+    kind: graphIdKind(row),
     existingIdentity: text(row, "existing_identity"),
     rejectedIdentity: text(row, "rejected_identity"),
     detectedAtMs: integer(row, "detected_at_ms")
@@ -173,11 +179,11 @@ const readQuarantine = (
       `SELECT reduced_id, kind, existing_identity, rejected_identity, detected_at_ms
          FROM graph_id_quarantine WHERE reduced_id = ? AND kind = ?`
     )
-    .get(input.reducedId, input.kind) as DatabaseRow | undefined
+    .get(input.reducedId, input.kind)
   if (row === undefined) return null
   return {
     reducedId: integer(row, "reduced_id"),
-    kind: text(row, "kind") as GraphIdKind,
+    kind: graphIdKind(row),
     existingIdentity: text(row, "existing_identity"),
     rejectedIdentity: text(row, "rejected_identity"),
     detectedAtMs: integer(row, "detected_at_ms")
@@ -215,7 +221,7 @@ const completeRekey = (
 }
 
 /** Build durable graph-id claim operations with an injectable reducer for deterministic collision tests. */
-export const makeGraphClaimOperations = (
+export const createGraphClaimOperations = (
   database: DatabaseSync,
   numericIdForKey: NumericIdForKey = vertexId
 ): GraphClaimOperations => ({

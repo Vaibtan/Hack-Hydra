@@ -1,9 +1,9 @@
 import type { DatasetSession } from "@palimpsest/dataset"
 import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
-import { Effect } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
 import { createHash } from "node:crypto"
 import { reconcile, type Reconciled } from "./Canon.js"
-import type { ExtractedClaim, ExtractedEntity } from "./Extract.js"
+import { ENTITY_TYPES, type ExtractedClaim, type ExtractedEntity } from "./Extract.js"
 import { claimKey, claimKind, entityKey, slotKey, tokenKey, turnKey } from "./Keys.js"
 import { claimTokens } from "./Tokenize.js"
 import { canonicalSessionSource } from "./SourceIdentity.js"
@@ -11,6 +11,7 @@ import { EMPTY_STATS, linkToUser, readUserStats, readUserVertices, type UserStat
 
 // HydraDB has no list type; aliases are one string joined by the ASCII unit separator.
 const ALIAS_SEPARATOR = "\u001f"
+const EntityType = Schema.Literals([...ENTITY_TYPES])
 
 /** A Claim's identity is its text plus the exact Span it points at. */
 export const claimDigest = (claim: ExtractedClaim, sid: string): string =>
@@ -46,7 +47,7 @@ const make = Effect.gen(function* () {
         rows
           .map((row) => ({
             canon: String(row["name"] ?? ""),
-            etype: String(row["etype"] ?? "topic") as ExtractedEntity["etype"],
+            etype: Schema.decodeUnknownSync(EntityType)(row["etype"] ?? "topic"),
             aliases: String(row["aliases"] ?? "")
               .split(ALIAS_SEPARATOR)
               .filter((alias) => alias !== "")
@@ -424,6 +425,6 @@ const make = Effect.gen(function* () {
   } as const
 })
 
-export class ClaimGraph extends Effect.Service<ClaimGraph>()("palimpsest/ClaimGraph", {
-  effect: make
-}) {}
+export type ClaimGraph = Effect.Success<typeof make>
+const ClaimGraphTag = Context.Service<ClaimGraph>("palimpsest/ClaimGraph")
+export const ClaimGraph = Object.assign(ClaimGraphTag, { layer: Layer.effect(ClaimGraphTag, make) })

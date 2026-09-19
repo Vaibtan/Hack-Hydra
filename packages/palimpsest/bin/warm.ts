@@ -22,7 +22,7 @@ if (uids.length === 0) {
   process.exit(2)
 }
 
-const AppLive = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const AppLive = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const program = Effect.gen(function* () {
   const hydra = yield* HydraClient
@@ -30,7 +30,7 @@ const program = Effect.gen(function* () {
   for (const uid of uids) {
     const report = yield* warmUser(hydra, uid, {
       deep,
-      ...(budgetMs === undefined || !Number.isFinite(budgetMs) ? {} : { budgetMs })
+      ...(budgetMs !== undefined && Number.isFinite(budgetMs) && { budgetMs })
     })
     if (Option.isNone(report)) {
       console.log(`${uid.padEnd(24)} no User vertex — nothing to warm`)
@@ -51,7 +51,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

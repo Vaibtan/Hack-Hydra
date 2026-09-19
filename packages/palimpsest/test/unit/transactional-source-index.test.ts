@@ -9,8 +9,9 @@ import { canonicalSessionSource, createExtractionGeneration } from "../../src/So
 import { SourceTranscript } from "../../src/SourceTranscript.js"
 import { sourceSessionKey } from "../../src/SourceTranscript.js"
 import { runTransactionalSourceIndex } from "../../src/TransactionalSourceIndex.js"
-import { Effect, Either, Layer, Option } from "effect"
+import { Effect, Result, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
+import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 const session: DatasetSession = {
   sid: "session-a",
@@ -59,39 +60,29 @@ describe("runTransactionalSourceIndex", () => {
         session,
         extract: () => Effect.die("must not extract"),
         classifyFailure: () => ({ code: "UNREACHABLE", retryable: false })
-      }).pipe(Effect.either)
-    const outcome = await Effect.runPromise(
-      program as Effect.Effect<
-        typeof program extends Effect.Effect<infer Success, infer _Failure, infer _Requirements>
-          ? Success
-          : never,
-        typeof program extends Effect.Effect<infer _Success, infer Failure, infer _Requirements>
-          ? Failure
-          : never,
-        never
-      >
-    )
+      }).pipe(Effect.result)
+    const outcome = await runWithBehaviorFakes(program)
 
     expect(outcome).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "SourceIndexGenerationMismatch" }
+      _tag: "Failure",
+      failure: { _tag: "SourceIndexGenerationMismatch" }
     })
   })
 
   it("adopts a pre-S01 graph identity and quarantines its collision before upsert", async () => {
     const source = canonicalSessionSource(session)
-    const scope = Either.getOrThrow(parseMemoryScope("default", "user-a"))
+    const scope = Result.getOrThrow(parseMemoryScope("default", "user-a"))
     const sessionKey = sourceSessionKey(scope, session.key, source.sourceDigest)
     const collidingIdentity = "forced-collision"
     const collisionReducer = (key: string): number =>
       key === collidingIdentity ? vertexId(sessionKey) : vertexId(key)
-    const existingGraphIdentityLookup = Layer.succeed(HydraClient, {
+    const existingGraphIdentityLookup = Layer.succeed(HydraClient, behaviorFake<HydraClient>({
       readGraphIdentities: (_kind: "relationship" | "vertex", reducedId: number) =>
         Effect.succeed(reducedId === vertexId(sessionKey) ? [collidingIdentity] : [])
-    } as unknown as HydraClient)
+    }))
     let writes = 0
 
-    const transcriptStub = Layer.succeed(SourceTranscript, {
+    const transcriptStub = Layer.succeed(SourceTranscript, behaviorFake<SourceTranscript>({
       write: () => {
         writes += 1
         return Effect.succeed({
@@ -101,8 +92,8 @@ describe("runTransactionalSourceIndex", () => {
           bookmark: Option.none<string>()
         })
       }
-    } as unknown as SourceTranscript)
-    const indexStub = Layer.succeed(IndexGraph, {
+    }))
+    const indexStub = Layer.succeed(IndexGraph, behaviorFake<IndexGraph>({
       write: () =>
         Effect.succeed({
           generationId: "index-unused",
@@ -112,7 +103,7 @@ describe("runTransactionalSourceIndex", () => {
           slots: 0,
           tokens: 0
         })
-    } as unknown as IndexGraph)
+    }))
 
     const outcome = await Effect.runPromise(
       Effect.scoped(
@@ -144,7 +135,7 @@ describe("runTransactionalSourceIndex", () => {
                 dropped: []
               }),
             classifyFailure: ({ error }) => ({ code: error._tag, retryable: false })
-          }).pipe(Effect.either)
+          }).pipe(Effect.result)
           const quarantine = yield* manifest.listGraphIdQuarantine()
           return { result, quarantine }
         }).pipe(
@@ -158,8 +149,8 @@ describe("runTransactionalSourceIndex", () => {
     )
 
     expect(outcome.result).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "IngestStageFailed", code: "GraphIdCollision" }
+      _tag: "Failure",
+      failure: { _tag: "IngestStageFailed", code: "GraphIdCollision" }
     })
     expect(outcome.quarantine).toMatchObject([
       { existingIdentity: collidingIdentity, rejectedIdentity: sessionKey }

@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
+import { loadDataset, parseDatasetName, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import {
@@ -25,7 +25,7 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const sliceSize = Number(arg("slice", "20"))
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const prefix = arg("prefix", "")
 const extraUids = arg("uid", "")
   .split(",")
@@ -33,8 +33,8 @@ const extraUids = arg("uid", "")
   .filter((uid) => uid !== "")
 const userConcurrency = Number(arg("users", "2"))
 
-const AppLive = ClaimGraph.Default.pipe(
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = ClaimGraph.layer.pipe(
+  Layer.provideMerge(HydraClient.layer),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
@@ -172,7 +172,7 @@ const program = Effect.gen(function* () {
   console.log(`wall clock ${((Date.now() - started) / 60_000).toFixed(1)} min`)
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

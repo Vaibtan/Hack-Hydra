@@ -169,7 +169,7 @@ describe("latency table", () => {
 
 describe("ablation table", () => {
   const answerable = (id: string, judged: boolean, askMs?: number): EvalRow =>
-    row({ questionId: id, judged, ...(askMs === undefined ? {} : { askMs }) })
+    row({ questionId: id, judged, ...(askMs !== undefined && { askMs }) })
 
   const full = [
     answerable("1", true, 5000),

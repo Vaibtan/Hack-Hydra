@@ -1,4 +1,4 @@
-import { Either } from "effect"
+import { Result } from "effect"
 import { describe, expect, it } from "vitest"
 import { contentAddressedId } from "../../src/Identity.js"
 import { edgeId, verifyStoredGraphIdentity, vertexId } from "../../src/Ids.js"
@@ -23,7 +23,7 @@ describe("relationship identity from a path", () => {
       requestedKey: FULL_KEY,
       storedKey: FULL_KEY
     })
-    expect(Either.isRight(outcome)).toBe(true)
+    expect(Result.isSuccess(outcome)).toBe(true)
   })
 
   it("rejects the engine's own relationship id, which is what the bug compared", () => {
@@ -33,8 +33,8 @@ describe("relationship identity from a path", () => {
       requestedKey: FULL_KEY,
       storedKey: FULL_KEY
     })
-    expect(Either.isLeft(outcome)).toBe(true)
-    if (Either.isLeft(outcome)) expect(outcome.left.reason).toBe("numericMismatch")
+    expect(Result.isFailure(outcome)).toBe(true)
+    if (Result.isFailure(outcome)) expect(outcome.failure.reason).toBe("numericMismatch")
   })
 
   it("treats a missing id property as a mismatch rather than a pass", () => {
@@ -44,7 +44,7 @@ describe("relationship identity from a path", () => {
       requestedKey: FULL_KEY,
       storedKey: FULL_KEY
     })
-    expect(Either.isLeft(outcome)).toBe(true)
+    expect(Result.isFailure(outcome)).toBe(true)
   })
 
   it("still reports an edge with no stored full key", () => {
@@ -54,7 +54,7 @@ describe("relationship identity from a path", () => {
       requestedKey: "",
       storedKey: null
     })
-    expect(Either.isLeft(outcome)).toBe(true)
-    if (Either.isLeft(outcome)) expect(outcome.left.reason).toBe("missingFullKey")
+    expect(Result.isFailure(outcome)).toBe(true)
+    if (Result.isFailure(outcome)) expect(outcome.failure.reason).toBe("missingFullKey")
   })
 })

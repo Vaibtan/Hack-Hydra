@@ -1,7 +1,7 @@
 import type { DatasetSession } from "@palimpsest/dataset"
 import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
 import { createHash } from "node:crypto"
-import { Data, Effect, Either } from "effect"
+import { Context, Data, Effect, Layer, Result } from "effect"
 import { claimDigest } from "./ClaimGraph.js"
 import type { EntityIdentity } from "./EntityCanonicalView.js"
 import type { ExtractedClaim, ExtractedEntity } from "./Extract.js"
@@ -120,7 +120,7 @@ const sourceProperties = (
   generation: IndexGeneration,
   revision: SourceRevision,
   sourceSession: string
-): Readonly<Record<string, Scalar>> => ({
+): IndexGraphVertex["properties"] => ({
   index_generation: generation.id,
   source_digest: revision.sourceDigest,
   source_session: sourceSession,
@@ -136,7 +136,7 @@ const entityForSlot = (
 /** Pure plan of Index* vertices and INDEX_* edges for one source revision and generation. */
 export const planIndexGraphWrite = (
   input: PlanIndexGraphWrite
-): Either.Either<IndexGraphWritePlan, IndexGraphWriteRejected> => {
+): Result.Result<IndexGraphWritePlan, IndexGraphWriteRejected> => {
   const { generation, revision, session, claims } = input
   const canonical = canonicalSessionSource(session)
   if (
@@ -144,13 +144,13 @@ export const planIndexGraphWrite = (
     canonical.sourceDigest !== revision.sourceDigest ||
     canonical.sourceBytes !== revision.sourceBytes
   ) {
-    return Either.left(new IndexGraphWriteRejected({ reason: "sourceRevisionMismatch" }))
+    return Result.fail(new IndexGraphWriteRejected({ reason: "sourceRevisionMismatch" }))
   }
 
   const turns = new Map(session.turns.map((turn) => [turn.turnIdx, turn]))
   for (const claim of claims) {
     const turn = turns.get(claim.span.turnIdx)
-    if (turn === undefined) return Either.left(new IndexGraphWriteRejected({ reason: "unknownTurn" }))
+    if (turn === undefined) return Result.fail(new IndexGraphWriteRejected({ reason: "unknownTurn" }))
     if (
       !Number.isSafeInteger(claim.span.cs) ||
       !Number.isSafeInteger(claim.span.ce) ||
@@ -158,7 +158,7 @@ export const planIndexGraphWrite = (
       claim.span.ce <= claim.span.cs ||
       claim.span.ce > turn.text.length
     ) {
-      return Either.left(new IndexGraphWriteRejected({ reason: "invalidSpan" }))
+      return Result.fail(new IndexGraphWriteRejected({ reason: "invalidSpan" }))
     }
   }
 
@@ -358,7 +358,7 @@ export const planIndexGraphWrite = (
     }
   }
 
-  return Either.right({
+  return Result.succeed({
     generationId: generation.id,
     sourceDigest: revision.sourceDigest,
     entityIdentities,
@@ -378,26 +378,28 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<IndexGraphWriteReport, HydraError | IndexGraphWriteRejected> =>
     Effect.gen(function* () {
       const plan = planIndexGraphWrite(input)
-      if (plan._tag === "Left") return yield* Effect.fail(plan.left)
-      yield* hydra.batchMerge("IndexEntity", plan.right.entities)
-      yield* hydra.batchMerge("IndexClaim", plan.right.claims)
-      yield* hydra.batchMerge("IndexSlot", plan.right.slots)
-      yield* hydra.batchMerge("IndexToken", plan.right.tokens)
+      if (plan._tag === "Failure") return yield* Effect.fail(plan.failure)
+      yield* hydra.batchMerge("IndexEntity", plan.success.entities)
+      yield* hydra.batchMerge("IndexClaim", plan.success.claims)
+      yield* hydra.batchMerge("IndexSlot", plan.success.slots)
+      yield* hydra.batchMerge("IndexToken", plan.success.tokens)
       for (const type of ["INDEX_EVIDENCE", "INDEX_MENTIONS", "INDEX_FILLS", "INDEX_HITS", "INDEX_NAMES"] as const) {
-        const relations = plan.right.relations.filter((relation) => relation.type === type)
+        const relations = plan.success.relations.filter((relation) => relation.type === type)
         if (relations.length > 0) yield* hydra.batchRel(type, relations)
       }
       return {
-        generationId: plan.right.generationId,
-        sourceDigest: plan.right.sourceDigest,
-        entities: plan.right.entities.length,
-        claims: plan.right.claims.length,
-        slots: plan.right.slots.length,
-        tokens: plan.right.tokens.length
+        generationId: plan.success.generationId,
+        sourceDigest: plan.success.sourceDigest,
+        entities: plan.success.entities.length,
+        claims: plan.success.claims.length,
+        slots: plan.success.slots.length,
+        tokens: plan.success.tokens.length
       }
     })
 
   return { write } as const
 })
 
-export class IndexGraph extends Effect.Service<IndexGraph>()("palimpsest/IndexGraph", { effect: make }) {}
+export type IndexGraph = Effect.Success<typeof make>
+const IndexGraphTag = Context.Service<IndexGraph>("palimpsest/IndexGraph")
+export const IndexGraph = Object.assign(IndexGraphTag, { layer: Layer.effect(IndexGraphTag, make) })

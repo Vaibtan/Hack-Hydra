@@ -1,7 +1,6 @@
-import type { LanguageModel } from "@effect/ai"
 import { HydraClient, type HydraError, type HydraPath } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
-import { Effect, Schema } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
 import { claimKind } from "./Keys.js"
 import { readUserVertices } from "./User.js"
 
@@ -196,7 +195,7 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<
     { readonly edges: ReadonlyArray<SupersessionEdge>; readonly cached: boolean },
     never,
-    LanguageModel.LanguageModel | Llm
+    Llm
   > =>
     Effect.gen(function* () {
       if (claims.length < 2) return { edges: [], cached: true }
@@ -234,7 +233,7 @@ const make = Effect.gen(function* () {
   const run = (
     uid: string,
     slots: ReadonlyArray<{ readonly skey: string; readonly entityName: string; readonly attr: string }>
-  ): Effect.Effect<SupersedeReport, HydraError, LanguageModel.LanguageModel | Llm> =>
+  ): Effect.Effect<SupersedeReport, HydraError, Llm> =>
     Effect.gen(function* () {
       const bySlot = yield* readSlotClaims(uid, slots.map((slot) => slot.skey))
       const contested = slots.filter((slot) => (bySlot.get(slot.skey)?.length ?? 0) >= 2)
@@ -363,6 +362,6 @@ const make = Effect.gen(function* () {
   return { readSlotClaims, readEdges, detect, run, contestedSlots, chain, chains } as const
 })
 
-export class Supersede extends Effect.Service<Supersede>()("palimpsest/Supersede", {
-  effect: make
-}) {}
+export type Supersede = Effect.Success<typeof make>
+const SupersedeTag = Context.Service<Supersede>("palimpsest/Supersede")
+export const Supersede = Object.assign(SupersedeTag, { layer: Layer.effect(SupersedeTag, make) })

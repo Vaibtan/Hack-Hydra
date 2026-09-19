@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import type { DatasetQuestion } from "@palimpsest/dataset"
 import { Llm } from "@palimpsest/llm"
 import { Effect } from "effect"
@@ -71,7 +70,7 @@ export const judge = (
   question: DatasetQuestion,
   response: string,
   model: string = JUDGE_MODEL
-): Effect.Effect<Judgement, never, LanguageModel.LanguageModel | Llm> =>
+): Effect.Effect<Judgement, never, Llm> =>
   Effect.gen(function* () {
     const llm = yield* Llm
     const template = judgeTemplate(question)

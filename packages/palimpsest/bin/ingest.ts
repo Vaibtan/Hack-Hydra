@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadDataset, type DatasetName } from "@palimpsest/dataset"
+import { loadDataset, parseDatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
@@ -18,15 +18,15 @@ const arg = (name: string, fallback: string): string => {
 
 const uid = arg("uid", "")
 const asUid = arg("as", "")
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const concurrency = Number(arg("concurrency", "4"))
 const reset = process.argv.includes("--reset")
 
-const AppLive = Ingest.Default.pipe(
-  Layer.provideMerge(Transcript.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Ingest.layer.pipe(
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -93,7 +93,7 @@ const program = Effect.gen(function* () {
   console.log(`wall clock ${((Date.now() - started) / 1000).toFixed(1)} s`)
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

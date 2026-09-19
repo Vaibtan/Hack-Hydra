@@ -1,7 +1,6 @@
-import type { LanguageModel } from "@effect/ai"
 import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import type { Llm } from "@palimpsest/llm"
-import { Effect } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { gather } from "./Gather.js"
 import {
   abstentionReason,
@@ -34,9 +33,11 @@ const make = Effect.gen(function* () {
               claimTotals.set(uid, stats.value.claims)
               return stats.value.claims
             })
-          : Effect.dieMessage(
-              `user ${uid} has no User vertex — ingest it, or run ` +
-                `\`pnpm backfill-user\` if it was ingested before the vertex existed`
+          : Effect.die(
+              new Error(
+                `user ${uid} has no User vertex — ingest it, or run ` +
+                  `\`pnpm backfill-user\` if it was ingested before the vertex existed`
+              )
             )
       )
     )
@@ -52,7 +53,7 @@ const make = Effect.gen(function* () {
     uid: string,
     question: string,
     options: AskOptions = {}
-  ): Effect.Effect<AskResult, HydraError, LanguageModel.LanguageModel | Llm> =>
+  ): Effect.Effect<AskResult, HydraError, Llm> =>
     Effect.gen(function* () {
       const gathered = yield* gather(hydra, supersede, totalClaims, uid, question, options)
       const planned = planFromArms(gathered)
@@ -120,6 +121,6 @@ const make = Effect.gen(function* () {
   return { ask, totalClaims, forgetUser } as const
 })
 
-export class Retrieve extends Effect.Service<Retrieve>()("palimpsest/Retrieve", {
-  effect: make
-}) {}
+export type Retrieve = Effect.Success<typeof make>
+const RetrieveTag = Context.Service<Retrieve>("palimpsest/Retrieve")
+export const Retrieve = Object.assign(RetrieveTag, { layer: Layer.effect(RetrieveTag, make) })

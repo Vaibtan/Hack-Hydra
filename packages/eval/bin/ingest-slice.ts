@@ -1,12 +1,12 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadDataset, type DatasetName } from "@palimpsest/dataset"
+import { loadDataset, parseDatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, Ingest, Supersede, Transcript, readUserStats } from "@palimpsest/palimpsest"
-import { Effect, Layer, Option } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { benchmarkSlice, SPLIT_FILE, type SplitFile } from "../src/index.js"
+import { benchmarkSlice, SPLIT_FILE, SplitFile } from "../src/index.js"
 
 /** `ingest-slice --slice 20 [--dataset s] [--users 3] [--prefix g2] [--skip-existing] [--split dev|test] [--retries 1]` */
 loadDotEnv()
@@ -28,7 +28,7 @@ const workspaceRoot = (): string => {
 }
 
 const sliceSize = Number(arg("slice", "20"))
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const userConcurrency = Number(arg("users", "3"))
 const prefix = arg("prefix", "")
 const skipExisting = process.argv.includes("--skip-existing")
@@ -40,11 +40,11 @@ const RETRY_PAUSE_MS = 30_000
 export const uidFor = (questionId: string, tag: string): string =>
   tag === "" ? questionId : `${tag}-${questionId}`
 
-const AppLive = Ingest.Default.pipe(
-  Layer.provideMerge(Transcript.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Ingest.layer.pipe(
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -66,7 +66,7 @@ const program = Effect.gen(function* () {
       console.error(`--split ${splitName} needs ${SPLIT_FILE}; run \`pnpm splits\` first`)
       return yield* Effect.sync(() => process.exit(2))
     }
-    const file = JSON.parse(readFileSync(path, "utf8")) as SplitFile
+    const file = Schema.decodeUnknownSync(SplitFile)(JSON.parse(readFileSync(path, "utf8")))
     const wanted = new Set(splitName === "dev" ? file.dev : file.test)
     slice = population.filter((question) => wanted.has(question.questionId))
     if (slice.length !== wanted.size) {
@@ -112,29 +112,32 @@ const program = Effect.gen(function* () {
           console.log(`[${String(done).padStart(3)}/${slice.length}] ${uid.padEnd(22)} deferred: stop requested`)
           return null
         }
-        let outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
-        for (let attempt = 0; attempt < retries && outcome._tag === "Left"; attempt++) {
-          const tag = outcome.left._tag
+        let outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.result)
+        for (let attempt = 0; attempt < retries && outcome._tag === "Failure"; attempt++) {
+          const tag = outcome.failure._tag
           if (tag !== "HydraLimitError" && tag !== "HydraUnavailable" && tag !== "HydraEngineError") {
             break
           }
           console.log(
-            `     ${uid.padEnd(22)} retrying after ${outcome.left.message.slice(0, 80)}`
+            `     ${uid.padEnd(22)} retrying after ${outcome.failure.message.slice(0, 80)}`
           )
           yield* Effect.sleep(RETRY_PAUSE_MS)
-          outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.either)
+          outcome = yield* ingest.ingestUser(uid, question).pipe(Effect.result)
         }
         done++
-        if (outcome._tag === "Left") {
-          const failure = outcome.left as { message: string; query?: string }
+        if (outcome._tag === "Failure") {
+          const failure = outcome.failure
+          const query = Schema.is(Schema.Struct({ query: Schema.String }))(failure)
+            ? failure.query
+            : undefined
           console.log(
             `[${String(done).padStart(3)}/${slice.length}] ${uid.padEnd(22)} FAILED  ${failure.message}` +
-              (failure.query === undefined ? "" : `
-${" ".repeat(10)}query: ${failure.query.slice(0, 300)}`)
+              (query === undefined ? "" : `
+${" ".repeat(10)}query: ${query.slice(0, 300)}`)
           )
           return null
         }
-        const report = outcome.right
+        const report = outcome.success
         console.log(
           `[${String(done).padStart(3)}/${slice.length}] ${uid.padEnd(22)} ` +
             `${String(report.stats.sessions).padStart(2)} sessions  ` +
@@ -163,7 +166,7 @@ ${" ".repeat(10)}query: ${failure.query.slice(0, 300)}`)
   console.log(`wall clock ${((Date.now() - started) / 60_000).toFixed(1)} min`)
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

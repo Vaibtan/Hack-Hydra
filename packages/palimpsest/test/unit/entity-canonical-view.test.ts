@@ -1,4 +1,4 @@
-import { Effect, Either } from "effect"
+import { Effect, Result } from "effect"
 import { describe, expect, it } from "vitest"
 import { createEntityCanonicalView, resolveEntityInCanonicalView } from "../../src/EntityCanonicalView.js"
 import { IngestManifest, IngestManifestLayerMemory } from "../../src/IngestManifest.js"
@@ -16,25 +16,25 @@ describe("EntityCanonicalView", () => {
       equivalences: [{ leftIdentityId: "entity-hamster", rightIdentityId: "entity-nibbles" }]
     })
 
-    expect(Either.isRight(beforeBridge)).toBe(true)
-    expect(Either.isRight(afterBridge)).toBe(true)
-    if (Either.isLeft(beforeBridge) || Either.isLeft(afterBridge)) return
+    expect(Result.isSuccess(beforeBridge)).toBe(true)
+    expect(Result.isSuccess(afterBridge)).toBe(true)
+    if (Result.isFailure(beforeBridge) || Result.isFailure(afterBridge)) return
 
-    expect(beforeBridge.right.sameAs).toEqual([])
-    expect(resolveEntityInCanonicalView(beforeBridge.right, "entity-nibbles")).toEqual(
-      Either.right("entity-nibbles")
+    expect(beforeBridge.success.sameAs).toEqual([])
+    expect(resolveEntityInCanonicalView(beforeBridge.success, "entity-nibbles")).toEqual(
+      Result.succeed("entity-nibbles")
     )
-    expect(resolveEntityInCanonicalView(afterBridge.right, "entity-nibbles")).toEqual(
-      Either.right("entity-hamster")
+    expect(resolveEntityInCanonicalView(afterBridge.success, "entity-nibbles")).toEqual(
+      Result.succeed("entity-hamster")
     )
-    expect(resolveEntityInCanonicalView(afterBridge.right, "entity-goldfish")).toEqual(
-      Either.right("entity-goldfish")
+    expect(resolveEntityInCanonicalView(afterBridge.success, "entity-goldfish")).toEqual(
+      Result.succeed("entity-goldfish")
     )
-    expect(afterBridge.right.sameAs).toEqual([
+    expect(afterBridge.success.sameAs).toEqual([
       {
         fromIdentityId: "entity-nibbles",
         toCanonicalIdentityId: "entity-hamster",
-        viewId: afterBridge.right.id
+        viewId: afterBridge.success.id
       }
     ])
   })
@@ -45,11 +45,11 @@ describe("EntityCanonicalView", () => {
       equivalences: []
     })
 
-    expect(Either.isRight(view)).toBe(true)
-    if (Either.isLeft(view)) return
-    expect(resolveEntityInCanonicalView(view.right, "unknown")).toMatchObject({
-      _tag: "Left",
-      left: { _tag: "EntityNotInCanonicalView", identityId: "unknown" }
+    expect(Result.isSuccess(view)).toBe(true)
+    if (Result.isFailure(view)) return
+    expect(resolveEntityInCanonicalView(view.success, "unknown")).toMatchObject({
+      _tag: "Failure",
+      failure: { _tag: "EntityNotInCanonicalView", identityId: "unknown" }
     })
   })
 
@@ -63,22 +63,22 @@ describe("EntityCanonicalView", () => {
       identities,
       equivalences: [{ leftIdentityId: "entity-hamster", rightIdentityId: "entity-nibbles" }]
     })
-    expect(Either.isRight(original)).toBe(true)
-    expect(Either.isRight(bridged)).toBe(true)
-    if (Either.isLeft(original) || Either.isLeft(bridged)) return
+    expect(Result.isSuccess(original)).toBe(true)
+    expect(Result.isSuccess(bridged)).toBe(true)
+    if (Result.isFailure(original) || Result.isFailure(bridged)) return
 
     const outcome = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const manifest = yield* IngestManifest
           const scope = { tenant: "default", uid: "user-a" }
-          yield* manifest.storeEntityCanonicalView({ ...scope, view: original.right })
-          yield* manifest.storeEntityCanonicalView({ ...scope, view: bridged.right })
-          yield* manifest.activateEntityCanonicalView({ ...scope, viewId: original.right.id })
+          yield* manifest.storeEntityCanonicalView({ ...scope, view: original.success })
+          yield* manifest.storeEntityCanonicalView({ ...scope, view: bridged.success })
+          yield* manifest.activateEntityCanonicalView({ ...scope, viewId: original.success.id })
           const before = yield* manifest.readActiveEntityCanonicalView(scope)
-          yield* manifest.activateEntityCanonicalView({ ...scope, viewId: bridged.right.id })
+          yield* manifest.activateEntityCanonicalView({ ...scope, viewId: bridged.success.id })
           const after = yield* manifest.readActiveEntityCanonicalView(scope)
-          yield* manifest.activateEntityCanonicalView({ ...scope, viewId: original.right.id })
+          yield* manifest.activateEntityCanonicalView({ ...scope, viewId: original.success.id })
           const rolledBack = yield* manifest.readActiveEntityCanonicalView(scope)
           return { before, after, rolledBack }
         }).pipe(Effect.provide(IngestManifestLayerMemory))
@@ -90,13 +90,13 @@ describe("EntityCanonicalView", () => {
     expect(outcome.rolledBack).not.toBeNull()
     if (outcome.before === null || outcome.after === null || outcome.rolledBack === null) return
     expect(resolveEntityInCanonicalView(outcome.before, "entity-nibbles")).toEqual(
-      Either.right("entity-nibbles")
+      Result.succeed("entity-nibbles")
     )
     expect(resolveEntityInCanonicalView(outcome.after, "entity-nibbles")).toEqual(
-      Either.right("entity-hamster")
+      Result.succeed("entity-hamster")
     )
     expect(resolveEntityInCanonicalView(outcome.rolledBack, "entity-nibbles")).toEqual(
-      Either.right("entity-nibbles")
+      Result.succeed("entity-nibbles")
     )
   })
 })

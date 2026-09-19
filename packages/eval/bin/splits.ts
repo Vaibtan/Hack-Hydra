@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { datasetPath, loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
+import { datasetPath, loadDataset, parseDatasetName, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import { readUserVertices, sessionKey } from "@palimpsest/palimpsest"
@@ -42,7 +42,7 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const sliceSize = Number(arg("slice", "200"))
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const prefix = arg("prefix", "g3")
 const devFrom = arg("dev-from", "results/palimpsest-60.json")
 const check = process.argv.includes("--check")
@@ -65,7 +65,7 @@ const outPath = resolve(root, arg("out", SPLIT_FILE))
 const uidFor = (questionId: string): string =>
   prefix === "" ? questionId : `${prefix}-${questionId}`
 
-const AppLive = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const AppLive = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const cachedIds = (): ReadonlyArray<string> => {
   const path = resolve(root, devFrom)
@@ -107,10 +107,12 @@ const program = Effect.gen(function* () {
 
   const stray = outsidePopulation(population, cached)
   if (stray.length > 0) {
-    return yield* Effect.dieMessage(
-      `${stray.length} of the ${cached.length} cached ids are not in benchmarkSlice(${sliceSize}): ` +
-        `${stray.slice(0, 10).join(", ")}. Pin the population as an explicit id list instead of ` +
-        "relying on --slice."
+    return yield* Effect.die(
+      new Error(
+        `${stray.length} of the ${cached.length} cached ids are not in benchmarkSlice(${sliceSize}): ` +
+          `${stray.slice(0, 10).join(", ")}. Pin the population as an explicit id list instead of ` +
+          "relying on --slice."
+      )
     )
   }
 
@@ -175,7 +177,7 @@ const program = Effect.gen(function* () {
       expectedUsers
     })
     if (witnessFailures.length > 0) {
-      return yield* Effect.dieMessage(`invalid reconciliation witness: ${witnessFailures.join("; ")}`)
+      return yield* Effect.die(new Error(`invalid reconciliation witness: ${witnessFailures.join("; ")}`))
     }
     const summary = witnessQuestionIds(reconcile)
     yield* Effect.promise(() =>
@@ -214,7 +216,9 @@ const program = Effect.gen(function* () {
       expectedUsers
     })
     if (witnessFailures.length > 0) {
-      return yield* Effect.dieMessage(`stale or invalid reconciliation witness: ${witnessFailures.join("; ")}`)
+      return yield* Effect.die(
+        new Error(`stale or invalid reconciliation witness: ${witnessFailures.join("; ")}`)
+      )
     }
     const summary = witnessQuestionIds(witness)
     ingested = {
@@ -299,7 +303,7 @@ const program = Effect.gen(function* () {
   console.log(`wrote      ${outPath}`)
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

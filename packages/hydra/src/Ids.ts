@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { Either } from "effect"
+import { Result } from "effect"
 import { HydraIdentityIntegrityError } from "./Errors.js"
 
 export type NumericIdForKey = (key: string) => number
@@ -10,8 +10,8 @@ export interface GraphIdentity {
 }
 
 export interface GraphIdentityRegistry {
-  readonly claimRelationship: (key: string) => Either.Either<GraphIdentity, HydraIdentityIntegrityError>
-  readonly claimVertex: (key: string) => Either.Either<GraphIdentity, HydraIdentityIntegrityError>
+  readonly claimRelationship: (key: string) => Result.Result<GraphIdentity, HydraIdentityIntegrityError>
+  readonly claimVertex: (key: string) => Result.Result<GraphIdentity, HydraIdentityIntegrityError>
 }
 
 export interface VerifyStoredGraphIdentity {
@@ -38,10 +38,10 @@ const claim = (
   identities: Map<number, string>,
   key: string,
   numericIdForKey: NumericIdForKey
-): Either.Either<GraphIdentity, HydraIdentityIntegrityError> => {
+): Result.Result<GraphIdentity, HydraIdentityIntegrityError> => {
   const numericId = numericIdForKey(key)
   if (!Number.isSafeInteger(numericId) || numericId < 0) {
-    return Either.left(
+    return Result.fail(
       new HydraIdentityIntegrityError({
         kind,
         reason: "numericMismatch",
@@ -53,7 +53,7 @@ const claim = (
   }
   const existing = identities.get(numericId)
   if (existing !== undefined && existing !== key) {
-    return Either.left(
+    return Result.fail(
       new HydraIdentityIntegrityError({
         kind,
         reason: "numericCollision",
@@ -64,7 +64,7 @@ const claim = (
     )
   }
   identities.set(numericId, key)
-  return Either.right({ key, numericId })
+  return Result.succeed({ key, numericId })
 }
 
 export const createGraphIdentityRegistry = (
@@ -80,10 +80,10 @@ export const createGraphIdentityRegistry = (
 
 export const verifyStoredGraphIdentity = (
   input: VerifyStoredGraphIdentity
-): Either.Either<void, HydraIdentityIntegrityError> => {
+): Result.Result<void, HydraIdentityIntegrityError> => {
   const requestedKeyFingerprint = keyFingerprint(input.requestedKey)
   if (input.storedKey === null) {
-    return Either.left(
+    return Result.fail(
       new HydraIdentityIntegrityError({
         kind: input.kind,
         reason: "missingFullKey",
@@ -94,7 +94,7 @@ export const verifyStoredGraphIdentity = (
     )
   }
   if (input.storedKey !== input.requestedKey) {
-    return Either.left(
+    return Result.fail(
       new HydraIdentityIntegrityError({
         kind: input.kind,
         reason: "numericCollision",
@@ -106,7 +106,7 @@ export const verifyStoredGraphIdentity = (
   }
   const numericIdForKey = input.numericIdForKey ?? vertexId
   if (numericIdForKey(input.storedKey) !== input.numericId) {
-    return Either.left(
+    return Result.fail(
       new HydraIdentityIntegrityError({
         kind: input.kind,
         reason: "numericMismatch",
@@ -116,5 +116,5 @@ export const verifyStoredGraphIdentity = (
       })
     )
   }
-  return Either.right(undefined)
+  return Result.succeed(undefined)
 }

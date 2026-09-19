@@ -1,7 +1,8 @@
-import { HydraClient, type HydraPath } from "@palimpsest/hydra"
+import { HydraClient, HydraUnavailable, type HydraPath } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import { WARM_SOURCES_PER_WALK, warmUser } from "../../src/User.js"
+import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 const node = (property: string, key: string) => ({
   id: 1,
@@ -15,10 +16,10 @@ const path = (
   targetProperty: string,
   target: string
 ): HydraPath =>
-  ({
+  behaviorFake<HydraPath>({
     nodes: [node(sourceProperty, source), node(targetProperty, target)],
-    relationships: [{ id: 1, type: "REL", properties: {} }]
-  }) as unknown as HydraPath
+    relationships: [{ id: 1, type: "REL", src: 1, dst: 1, properties: {} }]
+  })
 
 interface Call {
   readonly relType: string
@@ -36,7 +37,7 @@ const stubHydra = (
     readonly now: { value: number }
   }
 ) =>
-  Layer.succeed(HydraClient, {
+  Layer.succeed(HydraClient, behaviorFake<HydraClient>({
     getById: (label: string, key: string) =>
       Effect.succeed(
         Option.some({
@@ -86,7 +87,7 @@ const stubHydra = (
         options.calls.push({ relType, sources: config.sourceValues.length })
         const answered = options.answer(relType, config.sourceValues)
         if (answered === "fail") {
-          return Effect.fail(new Error("engine refused") as never)
+          return Effect.fail(new HydraUnavailable({ reason: "engine refused" }))
         }
         const target =
           relType === "NAMES" ? "tkey" : relType === "FILLS" ? "ckey" : relType === "HITS" ? "ckey" : "turn"
@@ -96,33 +97,21 @@ const stubHydra = (
           )
         )
       })
-  } as unknown as HydraClient)
+  }))
 
 const warm = (
   options: Parameters<typeof stubHydra>[0],
   warmOptions: Parameters<typeof warmUser>[2] = {}
 ) =>
-  Effect.runPromise(
+  runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
         const hydra = yield* HydraClient
         return yield* warmUser(hydra, "u", warmOptions)
       }),
       stubHydra(options)
-    ) as unknown as Effect.Effect<Option.Option<Awaited<ReturnType<typeof describeReport>>>, never, never>
+    )
   )
-
-declare const describeReport: () => Promise<{
-  readonly entities: number
-  readonly slots: number
-  readonly sessions: number
-  readonly tokens: number
-  readonly slotClaims: number
-  readonly turns: number
-  readonly failed: number
-  readonly truncated: boolean
-  readonly ms: number
-}>
 
 describe("source keys are chunked", () => {
   it("never sends more than one walk's worth of keys", async () => {

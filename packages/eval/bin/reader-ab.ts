@@ -3,12 +3,12 @@ import { loadDataset, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv, readPathModels, verifyModels } from "@palimpsest/llm"
 import { ClaimGraph, Reader, Retrieve, Supersede } from "@palimpsest/palimpsest"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import {
   JUDGE_MODEL,
-  MEASUREMENT_FIELDS,
+  ReaderAbFile,
   SPLIT_FILE,
   arg,
   assertGenerationMatches,
@@ -31,7 +31,6 @@ import {
   uidFor,
   workspaceRoot,
   writeAtomic,
-  type ReaderAbFile,
   type ReaderAbRow
 } from "../src/index.js"
 
@@ -78,6 +77,17 @@ const batchPath = (index: number, count: number): string =>
 
 const mergedPath = resolve(outDir, `reader-ab-${split}.json`)
 
+const READER_AB_MEASUREMENT_FIELDS = [
+  "kind",
+  "split",
+  "prefix",
+  "profile",
+  "readerModel",
+  "judgeModel",
+  "extractionGeneration",
+  "questionTypes"
+] as const satisfies ReadonlyArray<keyof ReaderAbFile>
+
 if (merge) {
   const files = readdirSync(outDir)
     .filter((name) => name.startsWith(`reader-ab-${split}.batch-`) && name.endsWith(".json"))
@@ -88,10 +98,11 @@ if (merge) {
   }
   const parts = files.map((name) => ({
     name,
-    envelope: JSON.parse(readFileSync(resolve(outDir, name), "utf8")) as ReaderAbFile &
-      Record<string, unknown>
+    envelope: Schema.decodeUnknownSync(ReaderAbFile)(
+      JSON.parse(readFileSync(resolve(outDir, name), "utf8"))
+    )
   }))
-  const { refusals, merged } = mergeBatches(parts, MEASUREMENT_FIELDS)
+  const { refusals, merged } = mergeBatches(parts, READER_AB_MEASUREMENT_FIELDS)
   if (refusals.length > 0 || merged === null) {
     console.error(`refusing to merge ${files.length} file(s):`)
     for (const refusal of refusals) console.error(`  ${refusal}`)
@@ -107,11 +118,11 @@ if (merge) {
   process.exit(0)
 }
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Reader.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Reader.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -254,12 +265,12 @@ const program = Effect.gen(function* () {
             inputTokens: withoutRoute.inputTokens,
             outputTokens: withoutRoute.outputTokens
           }
-        } as ReaderAbRow
+        } satisfies ReaderAbRow
       }).pipe(Effect.orDie),
     { concurrency }
   )
 
-  const kept = rows.filter((row) => row !== null) as ReadonlyArray<ReaderAbRow>
+  const kept: ReadonlyArray<ReaderAbRow> = rows.filter((row) => row !== null)
   const file: ReaderAbFile = {
     kind: "reader-ab",
     split,
@@ -270,7 +281,7 @@ const program = Effect.gen(function* () {
     extractionGeneration: liveExtractionGeneration().id,
     runtimeConfig,
     questionTypes: types,
-    ...(batch === null ? {} : { batch: { index: batch.index, count: batch.count } }),
+    ...(batch !== null && { batch: { index: batch.index, count: batch.count } }),
     rows: kept
   }
 
@@ -290,7 +301,7 @@ const program = Effect.gen(function* () {
   console.log(`wrote        ${jsonPath}`)
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

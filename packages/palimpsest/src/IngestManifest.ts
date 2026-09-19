@@ -1,12 +1,13 @@
 import { Config, Context, Effect, Layer } from "effect"
 import type { NumericIdForKey } from "@palimpsest/hydra"
-import { makeArtifactOperations, type ArtifactOperations } from "./IngestManifest/Artifacts.js"
-import { makeCanonicalViewOperations, type CanonicalViewOperations } from "./IngestManifest/CanonicalView.js"
-import { makeGenerationOperations, type GenerationOperations } from "./IngestManifest/Generations.js"
-import { makeGraphClaimOperations, type GraphClaimOperations } from "./IngestManifest/GraphClaims.js"
-import { makeProjectionOperations, type ProjectionOperations } from "./IngestManifest/Projection.js"
-import { makeRevisionOperations, type RevisionOperations } from "./IngestManifest/Revisions.js"
+import { createArtifactOperations, type ArtifactOperations } from "./IngestManifest/Artifacts.js"
+import { createCanonicalViewOperations, type CanonicalViewOperations } from "./IngestManifest/CanonicalView.js"
+import { createGenerationOperations, type GenerationOperations } from "./IngestManifest/Generations.js"
+import { createGraphClaimOperations, type GraphClaimOperations } from "./IngestManifest/GraphClaims.js"
+import { createProjectionOperations, type ProjectionOperations } from "./IngestManifest/Projection.js"
+import { createRevisionOperations, type RevisionOperations } from "./IngestManifest/Revisions.js"
 import { createDatabase } from "./IngestManifest/Schema.js"
+import { createSnapshotOperations, type SnapshotOperations } from "./IngestManifest/Snapshots.js"
 import { IngestManifestUnavailable } from "./IngestManifest/Types.js"
 
 export {
@@ -26,13 +27,27 @@ export {
   InvalidGraphIdClaim,
   InvalidIngestTransition,
   InvalidProjectionDelta,
+  InvalidSnapshotTransition,
+  InvalidSnapshotUpdate,
   InvalidSourceRevision,
   ProjectionDeltaConflict,
-  ProjectionVersionConflict
+  ProjectionVersionConflict,
+  SNAPSHOT_STATES,
+  SnapshotActivePointerConflict,
+  SnapshotActivationConflict,
+  SnapshotRevisionCoverageMismatch,
+  SnapshotRevisionNotCommitted,
+  SnapshotScopeMismatch,
+  SnapshotVerificationConflict,
+  UserIndexSnapshotBindingMismatch,
+  UserIndexSnapshotConflict,
+  UserIndexSnapshotNotFound
 } from "./IngestManifest/Types.js"
 export type {
   ActivateEntityCanonicalView,
   ActivateIndexGeneration,
+  ActivateIndexSnapshot,
+  ActiveIndexSnapshot,
   AdvanceIngestState,
   ApplyProjectionDelta,
   BeginSourceRevision,
@@ -41,6 +56,7 @@ export type {
   CompleteGraphIdRekey,
   EntityCanonicalViewScope,
   ExtractionGenerationReference,
+  FailUserIndexSnapshot,
   GraphIdClaim,
   GraphIdClaimDisposition,
   GraphIdKind,
@@ -52,22 +68,32 @@ export type {
   ProjectionReconciliation,
   ProjectionState,
   RecordIngestFailure,
+  RegisterUserIndexSnapshot,
+  SnapshotProjectionCounts,
+  SnapshotState,
   SourceRevision,
   SourceRevisionIdentity,
   StoreEntityCanonicalView,
   StoreExtractionArtifact,
-  StoreIndexGeneration
+  StoreIndexGeneration,
+  UserIndexSnapshotRecord,
+  UserIndexSnapshotScope,
+  VerifyUserIndexSnapshot
 } from "./IngestManifest/Types.js"
 export type { GraphClaimOperations } from "./IngestManifest/GraphClaims.js"
+export type { SnapshotOperations } from "./IngestManifest/Snapshots.js"
+export { createUserIndexSnapshot, InvalidUserIndexSnapshot, parseUserIndexSnapshot } from "./UserIndexSnapshot.js"
+export type { CreateUserIndexSnapshot, UserIndexSnapshot, UserIndexSnapshotDescriptor } from "./UserIndexSnapshot.js"
 
-/** Transactional authority for source-revision state, per-user order, projections, generations and canonical views. */
+/** Transactional authority for source-revision state, per-user order, projections, generations, canonical views and index snapshots. */
 export interface IngestManifestService
   extends RevisionOperations,
     ArtifactOperations,
     ProjectionOperations,
     GenerationOperations,
     CanonicalViewOperations,
-    GraphClaimOperations {}
+    GraphClaimOperations,
+    SnapshotOperations {}
 
 const makeService = (path: string, numericIdForKey?: NumericIdForKey) =>
   Effect.acquireRelease(
@@ -78,21 +104,22 @@ const makeService = (path: string, numericIdForKey?: NumericIdForKey) =>
     (database) => Effect.sync(() => database.close())
   ).pipe(
     Effect.map((database) => ({
-      ...makeRevisionOperations(database),
-      ...makeArtifactOperations(database),
-      ...makeProjectionOperations(database),
-      ...makeGenerationOperations(database),
-      ...makeCanonicalViewOperations(database),
-      ...makeGraphClaimOperations(database, numericIdForKey)
+      ...createRevisionOperations(database),
+      ...createArtifactOperations(database),
+      ...createProjectionOperations(database),
+      ...createGenerationOperations(database),
+      ...createCanonicalViewOperations(database),
+      ...createGraphClaimOperations(database, numericIdForKey),
+      ...createSnapshotOperations(database)
     }))
   )
 
-export class IngestManifest extends Context.Tag("palimpsest/IngestManifest")<
+export class IngestManifest extends Context.Service<
   IngestManifest,
   IngestManifestService
->() {}
+>()("palimpsest/IngestManifest") {}
 
-export const IngestManifestLive = Layer.scoped(
+export const IngestManifestLive = Layer.effect(
   IngestManifest,
   Config.string("PALIMPSEST_INGEST_MANIFEST_PATH").pipe(
     Config.withDefault(".palimpsest/ingest-manifest.sqlite"),
@@ -100,8 +127,8 @@ export const IngestManifestLive = Layer.scoped(
   )
 )
 
-export const IngestManifestLayerMemory = Layer.scoped(IngestManifest, makeService(":memory:"))
+export const IngestManifestLayerMemory = Layer.effect(IngestManifest, makeService(":memory:"))
 
 /** Build an isolated manifest layer with a deterministic graph-id reducer for collision tests. */
 export const makeIngestManifestTestLayer = (numericIdForKey: NumericIdForKey) =>
-  Layer.scoped(IngestManifest, makeService(":memory:", numericIdForKey))
+  Layer.effect(IngestManifest, makeService(":memory:", numericIdForKey))

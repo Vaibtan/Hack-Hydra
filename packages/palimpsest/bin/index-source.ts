@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadQuestion, type DatasetName } from "@palimpsest/dataset"
+import { loadQuestion, parseDatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { ingestGenerationConfig } from "../src/GenerationConfig.js"
@@ -15,15 +15,14 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const uid = arg("uid", "")
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const tenant = arg("tenant", "default")
 
-const RuntimeLive = NodeHttpClient.layerUndici.pipe(
-  Layer.provideMerge(HydraClient.Default),
-  Layer.provideMerge(LlmLive())
-)
-
-const AppLive = RuntimeLive.pipe(Layer.provideMerge(SourceIndexLive))
+const HttpLive = NodeHttpClient.layerUndici
+const HydraLive = HydraClient.layer.pipe(Layer.provide(HttpLive))
+const LlmStackLive = LlmLive().pipe(Layer.provide(HttpLive))
+const SourceIndexStackLive = SourceIndexLive.pipe(Layer.provide(HydraLive))
+const AppLive = Layer.mergeAll(HydraLive, LlmStackLive, SourceIndexStackLive)
 
 const program = Effect.gen(function* () {
   yield* verifyModelsOrExit({ quiet: true })
@@ -54,7 +53,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch((error) => {
+Effect.runPromise(Effect.provide(program, AppLive)).catch((error) => {
   console.error(String(error))
   process.exit(1)
 })

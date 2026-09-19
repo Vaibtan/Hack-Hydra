@@ -9,6 +9,7 @@ import {
   rowFromBaseline,
   rowFromV2,
   type Judgement,
+  type V2EvaluationAnswer,
   type V2Outcome
 } from "../../src/index.js"
 import { Schema } from "effect"
@@ -61,21 +62,20 @@ const read = (spans: ReadonlyArray<HydratedSpan>) => ({
   recited: false
 })
 
-const answered = (over: Partial<{ read: ReturnType<typeof read> | null; verdict: "ANSWER" | "ABSENT"; reason: V2Answer["reason"] }> = {}): V2Answer =>
+const answered = (over: Partial<{ read: ReturnType<typeof read> | null; verdict: "ANSWER" | "ABSENT"; reason: V2Answer["reason"] }> = {}): V2EvaluationAnswer =>
   ({
     ask: {
-      verdict: "ANSWER",
       reason: null,
       hash: "claimhash",
       timings: { askMs: 1200, graphMs: 200, stages: { arms: 150 } },
       receipt: { anchorTerms: ["bike", "buy"], anchorsReachingClaims: ["bike"] },
       plan: {
         route: "multi_fact",
-        flags: { wantsCount: false, hasTimeRef: true },
+        flags: { wantsCount: false, hasTimeRef: true, needsDecomposition: false },
         selection: { fallback: false },
         unionSessions: ["s1", "s2", "s3"],
         sufficiency: { tier: "EXACT", missing: "", premise: "" },
-        budget: { estimatedTokens: 850, dropped: [{ id: "x1", reason: "budget" }], overBudget: false }
+        budget: { estimatedTokens: 850, dropped: [{ id: "x1" }], overBudget: false }
       }
     },
     read: over.read === undefined ? read([span("s2", "u|c|1"), span("s1", "u|c|2")]) : over.read,
@@ -83,11 +83,10 @@ const answered = (over: Partial<{ read: ReturnType<typeof read> | null; verdict:
     reason: over.reason ?? null,
     sufficiency: { premise: "" },
     secondPass: false,
-    passes: 1,
     hash: "spanhash"
-  }) as unknown as V2Answer
+  })
 
-const outcome = (a: V2Answer): V2Outcome => ({ kind: "v2", answered: a, ablations: [] })
+const outcome = (a: V2EvaluationAnswer): V2Outcome => ({ kind: "v2", answered: a, ablations: [] })
 
 describe("rowFromV2", () => {
   it("is a total function producing a decodable row", () => {

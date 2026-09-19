@@ -2,6 +2,7 @@ import type { V2Answer } from "@palimpsest/palimpsest"
 import { Schema } from "effect"
 import { readFileSync, renameSync, writeFileSync } from "node:fs"
 import type { JudgeTemplate } from "./Judge.js"
+import type { JsonObject } from "./JsonValue.js"
 
 export const SYSTEM_NAMES = [
   "palimpsest",
@@ -46,22 +47,22 @@ export const JUDGE_TEMPLATES = [
 ] as const satisfies ReadonlyArray<JudgeTemplate>
 export const JUDGE_TEMPLATES_COMPLETE: Complete<JudgeTemplate, (typeof JUDGE_TEMPLATES)[number]> = true
 
-const opt = <S extends Schema.Schema.All>(schema: S) => Schema.optionalWith(schema, { exact: true })
+const opt = <S extends Schema.Top>(schema: S) => Schema.optionalKey(schema)
 const Strings = Schema.Array(Schema.String)
 
 export const EvalRow = Schema.Struct({
-  system: Schema.Literal(...SYSTEM_NAMES),
+  system: Schema.Literals([...SYSTEM_NAMES]),
   questionId: Schema.String,
   questionType: Schema.String,
   isAbstention: Schema.Boolean,
-  verdict: Schema.Literal("ANSWER", "ABSENT"),
-  reason: Schema.NullOr(Schema.Literal(...ABSTENTION_REASONS)),
+  verdict: Schema.Literals(["ANSWER", "ABSENT"]),
+  reason: Schema.NullOr(Schema.Literals([...ABSTENTION_REASONS])),
   answer: Schema.String,
   notInMemory: Schema.Boolean,
   premiseSupported: Schema.NullOr(Schema.Boolean),
   premiseNote: Schema.String,
   judged: Schema.Boolean,
-  judgeTemplate: Schema.Literal(...JUDGE_TEMPLATES),
+  judgeTemplate: Schema.Literals([...JUDGE_TEMPLATES]),
   judgeReply: Schema.String,
   judgeModel: Schema.String,
   evidenceSessions: Strings,
@@ -79,8 +80,8 @@ export const EvalRow = Schema.Struct({
   flags: opt(Strings),
   graphMs: opt(Schema.Number),
   askMs: opt(Schema.Number),
-  stageTimingsMs: opt(Schema.Record({ key: Schema.String, value: Schema.Number })),
-  sufficiencyTier: opt(Schema.NullOr(Schema.Literal(...SUFFICIENCY_TIERS))),
+  stageTimingsMs: opt(Schema.Record(Schema.String, Schema.Number)),
+  sufficiencyTier: opt(Schema.NullOr(Schema.Literals([...SUFFICIENCY_TIERS]))),
   sufficiencyMissing: opt(Schema.String),
   sufficiencyPremise: opt(Schema.String),
   secondPass: opt(Schema.Boolean),
@@ -91,7 +92,7 @@ export const EvalRow = Schema.Struct({
   budgetDroppedSessions: opt(Strings),
   budgetDropIds: opt(Strings),
   overBudget: opt(Schema.Boolean),
-  granularity: opt(Schema.Literal("span", "turn")),
+  granularity: opt(Schema.Literals(["span", "turn"])),
   estimatedTokens: opt(Schema.Number),
   ablations: opt(Strings),
   recited: opt(Schema.Boolean),
@@ -106,14 +107,14 @@ export const BatchRecord = Schema.Struct({
 })
 
 export const EvalEnvelope = Schema.Struct({
-  system: Schema.Literal(...SYSTEM_NAMES),
+  system: Schema.Literals([...SYSTEM_NAMES]),
   dataset: Schema.String,
   prefix: Schema.String,
-  split: opt(Schema.NullOr(Schema.Literal("dev", "test"))),
-  profile: opt(Schema.Literal("full", "fast")),
+  split: opt(Schema.NullOr(Schema.Literals(["dev", "test"]))),
+  profile: opt(Schema.Literals(["full", "fast"])),
   variant: opt(Strings),
   /** `cold` is a priming pass under a raised read timeout; the gate refuses it. */
-  pass: opt(Schema.Literal("cold", "warm")),
+  pass: opt(Schema.Literals(["cold", "warm"])),
   slice: Schema.Number,
   requestedSlice: opt(Schema.Number),
   partial: opt(Schema.Boolean),
@@ -124,9 +125,9 @@ export const EvalEnvelope = Schema.Struct({
   sufficiencyModel: opt(Schema.String),
   judgeModel: Schema.String,
   extractionGeneration: opt(Schema.String),
-  runtimeConfig: opt(Schema.Unknown),
+  runtimeConfig: opt(Schema.ObjectKeyword),
   ablations: opt(Strings),
-  granularity: opt(Schema.NullOr(Schema.Literal("span", "turn"))),
+  granularity: opt(Schema.NullOr(Schema.Literals(["span", "turn"]))),
   fullCtxChars: opt(Schema.NullOr(Schema.Number)),
   rows: Schema.Array(EvalRow)
 })
@@ -184,11 +185,10 @@ export const resultsStem = (input: {
 
 export const isBatchFile = (name: string): boolean => /\.batch-\d+-of-\d+\.json$/.test(name)
 
-const assertEnvelope: (input: unknown) => asserts input is EvalEnvelope = Schema.asserts(EvalEnvelope, {
-  errors: "first"
-})
+const assertEnvelope: (input: unknown) => asserts input is EvalEnvelope = (input) =>
+  Schema.asserts(EvalEnvelope, input)
 
-export const decodeEnvelope = (input: unknown): EvalEnvelope => {
+export const decodeEnvelope = (input: JsonObject): EvalEnvelope => {
   assertEnvelope(input)
   return input
 }

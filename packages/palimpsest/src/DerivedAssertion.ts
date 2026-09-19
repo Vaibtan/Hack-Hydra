@@ -1,4 +1,4 @@
-import { Data, Either } from "effect"
+import { Data, Result } from "effect"
 import type { HydratedSpan } from "./Reader.js"
 import type { AsOfLabelled } from "./Scoring.js"
 import type { ChainClaim } from "./Supersede.js"
@@ -70,16 +70,16 @@ export const sourceLinkedChainEvidence = (
 export const prepareDerivedIndexAssertions = (
   claims: ReadonlyArray<ChainClaim>,
   sourceSpans: ReadonlyArray<HydratedSpan>
-): Either.Either<ReadonlyArray<DerivedIndexAssertion>, DerivedAssertionSourceUnavailable> => {
+): Result.Result<ReadonlyArray<DerivedIndexAssertion>, DerivedAssertionSourceUnavailable> => {
   const sourceByAssertion = new Map(sourceSpans.map((source) => [source.ckey, source]))
   const assertions: Array<DerivedIndexAssertion> = []
   for (const claim of claims) {
     if (!hasSourceRevisionWitness(claim)) {
-      return Either.left(new DerivedAssertionSourceUnavailable({ reason: "sourceRevisionUnavailable" }))
+      return Result.fail(new DerivedAssertionSourceUnavailable({ reason: "sourceRevisionUnavailable" }))
     }
     const sourceSpan = sourceByAssertion.get(claim.ckey)
     if (sourceSpan === undefined) {
-      return Either.left(new DerivedAssertionSourceUnavailable({ reason: "sourceSpanUnavailable" }))
+      return Result.fail(new DerivedAssertionSourceUnavailable({ reason: "sourceSpanUnavailable" }))
     }
     assertions.push({
       assertionKey: claim.ckey,
@@ -102,5 +102,5 @@ export const prepareDerivedIndexAssertions = (
       }
     })
   }
-  return Either.right(assertions)
+  return Result.succeed(assertions)
 }

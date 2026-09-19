@@ -61,8 +61,8 @@ export const App = () => {
         await api.ask(uid, {
           question,
           questionDate,
-          ...(bookmark === undefined ? {} : { bookmark }),
-          ...(asOf === undefined ? {} : { asOf })
+          ...(bookmark !== undefined && { bookmark }),
+          ...(asOf !== undefined && { asOf })
         })
       )
     } catch (cause: unknown) {

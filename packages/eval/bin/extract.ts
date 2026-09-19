@@ -1,4 +1,4 @@
-import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
+import { loadDataset, parseDatasetName, type DatasetQuestion } from "@palimpsest/dataset"
 import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { extractSession, mergeEntities, type ExtractedEntity, type SessionExtraction } from "@palimpsest/palimpsest"
 import { Effect } from "effect"
@@ -13,7 +13,7 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const sliceSize = Number(arg("slice", "20"))
-const dataset = arg("dataset", "oracle") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "oracle"))
 const concurrency = Number(arg("concurrency", "6"))
 const showMisses = process.argv.includes("--misses")
 
@@ -99,7 +99,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, LlmLive()) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, LlmLive())).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

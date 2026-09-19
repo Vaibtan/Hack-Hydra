@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import type { HydraError } from "@palimpsest/hydra"
 import type { Llm } from "@palimpsest/llm"
 import { Effect } from "effect"
@@ -49,6 +48,9 @@ export interface AnswerOptions extends AskOptions {
   readonly noReaderRoute?: boolean
 }
 
+export type AnswerRetrieve = Pick<Retrieve, "ask">
+export type AnswerReader = Pick<Reader, "read">
+
 const readOptionsFor = (
   route: Route,
   plan: RetrievalPlan,
@@ -56,8 +58,8 @@ const readOptionsFor = (
 ): ReadOptions => ({
   route,
   packRoute: plan.route,
-  ...(options.noReaderRoute === true ? { noReaderRoute: true } : {}),
-  ...(options.granularity === undefined ? {} : { granularity: options.granularity }),
+  ...(options.noReaderRoute === true && { noReaderRoute: true }),
+  ...(options.granularity !== undefined && { granularity: options.granularity }),
   slotOf: new Map(Object.entries(plan.slots)),
   protectedKeys: new Set(plan.protectedKeys)
 })
@@ -134,13 +136,13 @@ export const unreadAnswer = (ask: AskResult): V2Answer =>
   })
 
 export const answerV2 = (
-  retrieve: Retrieve,
-  reader: Reader,
+  retrieve: AnswerRetrieve,
+  reader: AnswerReader,
   uid: string,
   question: string,
   questionDate: string,
   options: AnswerOptions = {}
-): Effect.Effect<V2Answer, HydraError, LanguageModel.LanguageModel | Llm> =>
+): Effect.Effect<V2Answer, HydraError, Llm> =>
   Effect.gen(function* () {
     const profile = options.profile ?? "full"
     const askOptions = { ...options, questionDate }

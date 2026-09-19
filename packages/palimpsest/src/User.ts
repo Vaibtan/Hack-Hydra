@@ -1,4 +1,4 @@
-import { HydraClient, type HydraError } from "@palimpsest/hydra"
+import { HydraClient, type HydraError, type HydraProperties } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { userKey } from "./Keys.js"
 
@@ -146,7 +146,7 @@ export const readUserVertices = (
   hydra: HydraClient,
   uid: string,
   relType: UserEdge
-): Effect.Effect<ReadonlyArray<Readonly<Record<string, unknown>>>, HydraError> =>
+): Effect.Effect<ReadonlyArray<HydraProperties>, HydraError> =>
   hydra
     .msPaths({
       sourceLabel: "User",
@@ -158,7 +158,7 @@ export const readUserVertices = (
     })
     .pipe(
       Effect.map((paths) => {
-        const out: Array<Readonly<Record<string, unknown>>> = []
+        const out: Array<HydraProperties> = []
         for (const path of paths) {
           if (path.relationships.length !== 1) continue
           const node = path.nodes[path.nodes.length - 1]
@@ -215,7 +215,7 @@ const warmHop = (
         break
       }
       const batch = source.values.slice(at, at + WARM_SOURCES_PER_WALK)
-      const outcome = yield* Effect.either(
+      const outcome = yield* Effect.result(
         hydra.msPaths({
           sourceLabel: source.label,
           sourceProperty: source.property,
@@ -225,17 +225,17 @@ const warmHop = (
           maxLen: 1
         })
       )
-      if (outcome._tag === "Left") {
+      if (outcome._tag === "Failure") {
         failed++
         continue
       }
-      for (const path of outcome.right) {
+      for (const path of outcome.success) {
         const node = path.nodes[path.nodes.length - 1]
         const key = String(node?.properties[targetProperty] ?? "")
         if (key !== "") keys.add(key)
       }
     }
-    return { keys: [...keys] as ReadonlyArray<string>, failed, truncated }
+    return { keys: [...keys], failed, truncated }
   })
 
 export const warmUser = (
@@ -258,7 +258,7 @@ export const warmUser = (
       { concurrency: 3 }
     )
     const keysOf = (
-      rows: ReadonlyArray<Readonly<Record<string, unknown>>>,
+      rows: ReadonlyArray<HydraProperties>,
       property: string
     ): ReadonlyArray<string> =>
       rows.map((row) => String(row[property] ?? "")).filter((key) => key !== "")
@@ -303,7 +303,7 @@ export const warmUser = (
             "ckey",
             deadline
           )
-        : { keys: [] as ReadonlyArray<string>, failed: 0, truncated: false }
+        : { keys: [], failed: 0, truncated: false }
 
     return Option.some({
       entities: entities.length,

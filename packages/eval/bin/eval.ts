@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetQuestion } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
@@ -111,11 +110,11 @@ const splitFile = (() => {
 const prefix = arg("prefix", splitFile?.prefix ?? "g3")
 const variant = variantTokens({ profile, ablations: ablationNames(ablations), granularity })
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Reader.Default),
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Reader.layer),
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -209,7 +208,7 @@ const program = Effect.gen(function* () {
   const runOne = (
     system: SystemName,
     question: DatasetQuestion
-  ): Effect.Effect<EvalRow, never, LanguageModel.LanguageModel | Llm> =>
+  ): Effect.Effect<EvalRow, never, Llm> =>
     Effect.gen(function* () {
       const deps: SystemDeps = {
         retrieve,
@@ -263,7 +262,7 @@ const program = Effect.gen(function* () {
         slice: slice.length,
         requestedSlice: requestedCount,
         partial: batch === null && slice.length !== requestedCount,
-        ...(batch === null ? {} : { batch: { ...batch, population: populationIds } }),
+        ...(batch !== null && { batch: { ...batch, population: populationIds } }),
         readerModel: models.reader,
         selectModel: models.select,
         sufficiencyModel: models.sufficiency,
@@ -328,7 +327,7 @@ const program = Effect.gen(function* () {
   console.log(`wrote        ${tablePath}`)
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

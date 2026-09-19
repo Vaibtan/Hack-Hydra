@@ -100,8 +100,8 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
           // Durable id claims precede the upsert (S01): a retry re-claims
           // idempotently, a collision fails before ambiguous data is written.
           const transcriptPlan = planSourceTranscriptWrite(revision, input.session)
-          if (transcriptPlan._tag === "Left") return yield* Effect.fail(transcriptPlan.left)
-          yield* claimSourceTranscriptPlan(manifest, hydra, transcriptPlan.right)
+          if (transcriptPlan._tag === "Failure") return yield* Effect.fail(transcriptPlan.failure)
+          yield* claimSourceTranscriptPlan(manifest, hydra, transcriptPlan.success)
           return yield* sourceTranscript.write(revision, input.session)
         }),
       INDEXED: (revision) =>
@@ -133,8 +133,8 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
             session: input.session,
             claims: artifact.extraction.claims
           })
-          if (indexPlan._tag === "Left") return yield* Effect.fail(indexPlan.left)
-          yield* claimIndexGraphWritePlan(manifest, hydra, indexPlan.right)
+          if (indexPlan._tag === "Failure") return yield* Effect.fail(indexPlan.failure)
+          yield* claimIndexGraphWritePlan(manifest, hydra, indexPlan.success)
           return yield* indexGraph.write({
             generation: input.indexGeneration,
             revision,

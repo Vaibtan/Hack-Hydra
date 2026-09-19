@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadDataset, type DatasetName, type DatasetQuestion } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { loadDataset, parseDatasetName, type DatasetQuestion } from "@palimpsest/dataset"
+import { HydraClient, type HydraProperties } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import {
   claimKind,
@@ -11,10 +11,10 @@ import {
   readUserVertices,
   type UserStats
 } from "@palimpsest/palimpsest"
-import { Effect, Layer, Option } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { benchmarkSlice, readRuntimeConfig, SPLIT_FILE, type SplitFile } from "../src/index.js"
+import { benchmarkSlice, readRuntimeConfig, SPLIT_FILE, SplitFile } from "../src/index.js"
 
 /** `step-load --slice 60 [--prefix g3] [--asks 5] [--edges N]` — one row of the step-load curve, with no store-wide scan. */
 loadDotEnv()
@@ -25,7 +25,7 @@ const arg = (name: string, fallback: string): string => {
 }
 
 const sliceSize = Number(arg("slice", "20"))
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const prefix = arg("prefix", "g3")
 const askCount = Number(arg("asks", "5"))
 // Edge sample size; see docs/design-rationale.md ("Edge sampling"). Never while an ingest runs.
@@ -45,10 +45,10 @@ const workspaceRoot = (): string => {
 const uidFor = (questionId: string): string =>
   prefix === "" ? questionId : `${prefix}-${questionId}`
 
-const AppLive = Retrieve.Default.pipe(
-  Layer.provideMerge(Supersede.Default),
-  Layer.provideMerge(ClaimGraph.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(ClaimGraph.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -88,7 +88,7 @@ const countEdges = (
         })
         .pipe(
           Effect.map((paths) => paths.length),
-          Effect.catchAll(() => Effect.succeed(-1))
+          Effect.catch(() => Effect.succeed(-1))
         )
 
     const evidence = yield* fromClaims("EVIDENCE")
@@ -97,7 +97,7 @@ const countEdges = (
     const hits = yield* fromClaims("HITS")
 
     const entities = yield* readUserVertices(hydra, uid, "HAS_ENTITY").pipe(
-      Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<Readonly<Record<string, unknown>>>))
+      Effect.catch(() => Effect.succeed(new Array<HydraProperties>()))
     )
     const entityKeys = entities
       .map((row) => String(row["ekey"] ?? ""))
@@ -116,7 +116,7 @@ const countEdges = (
             })
             .pipe(
               Effect.map((paths) => paths.length),
-              Effect.catchAll(() => Effect.succeed(-1))
+              Effect.catch(() => Effect.succeed(-1))
             )
 
     return { EVIDENCE: evidence, MENTIONS: mentions, FILLS: fills, HITS: hits, NAMES: names }
@@ -158,7 +158,7 @@ const program = Effect.gen(function* () {
 
   const splitPath = resolve(workspaceRoot(), SPLIT_FILE)
   const dev: ReadonlyArray<string> = existsSync(splitPath)
-    ? (JSON.parse(readFileSync(splitPath, "utf8")) as SplitFile).dev
+    ? Schema.decodeUnknownSync(SplitFile)(JSON.parse(readFileSync(splitPath, "utf8"))).dev
     : []
   const devSet = new Set(dev)
   const subjects = complete
@@ -267,7 +267,7 @@ const program = Effect.gen(function* () {
   )
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

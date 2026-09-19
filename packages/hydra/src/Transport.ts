@@ -1,10 +1,11 @@
-import { HttpClient, HttpClientRequest } from "@effect/platform"
-import { Duration, Effect, FiberRef, Option, Schedule } from "effect"
+import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { Context, Duration, Effect, Option, Result, Schedule, Schema } from "effect"
 import { randomUUID } from "node:crypto"
-import { classifyHydraHttpError, isRetryable } from "./Classify.js"
+import { classifyHydraHttpError, HydraErrorBodySchema, isRetryable } from "./Classify.js"
 import { MAX_BODY_BYTES } from "./Cypher.js"
-import { decodePage, type QueryPage, type QueryResult } from "./Decode.js"
+import { decodePage, RawResponseSchema, type QueryPage, type QueryResult } from "./Decode.js"
 import { HydraLimitError, HydraUnavailable, type HydraError } from "./Errors.js"
+import type { JsonObject, JsonValue } from "./JsonValue.js"
 import { followCursor, type Page } from "./Paging.js"
 
 export interface QueryOptions {
@@ -20,20 +21,41 @@ export interface TransportConfig {
   readonly graph: string
   readonly cellId: string
   readonly http: HttpClient.HttpClient
-  readonly bookmarkRef: FiberRef.FiberRef<Option.Option<string>>
 }
+
+interface HydraRequestBody {
+  [key: string]: JsonValue
+}
+
+/**
+ * Fiber-local causal bookmark state. The cached default is immutable; updates
+ * replace the current fiber's reference value instead of mutating shared state.
+ */
+export const CurrentHydraBookmark = Context.Reference<Option.Option<string>>(
+  "palimpsest/CurrentHydraBookmark",
+  { defaultValue: Option.none }
+)
+
+const setCurrentHydraBookmark = (bookmark: string): Effect.Effect<void> =>
+  Effect.scoped(
+    Effect.updateServiceScoped(
+      CurrentHydraBookmark,
+      () => Option.some(bookmark),
+      { reset: (_original, updated) => updated }
+    )
+  )
 
 export type Send = (
   query: string,
-  parameters: Record<string, unknown>,
+  parameters: JsonObject,
   options?: QueryOptions
 ) => Effect.Effect<QueryResult, HydraError>
 
 /** Seven attempts over ~6 s of jittered backoff, inside the engine's 30 s runtime cap. */
-const RETRYABLE_SCHEDULE = Schedule.exponential(Duration.millis(100), 2).pipe(
-  Schedule.jittered,
-  Schedule.intersect(Schedule.recurs(6))
-)
+const RETRYABLE_SCHEDULE = Schedule.max([
+  Schedule.exponential(Duration.millis(100), 2).pipe(Schedule.jittered),
+  Schedule.recurs(6)
+])
 
 const asPage = (result: QueryPage): Page => ({
   rows: result.rows,
@@ -41,11 +63,11 @@ const asPage = (result: QueryPage): Page => ({
   queryId: result.queryId
 })
 
-export const makeTransport = (config: TransportConfig): Send => {
-  const { baseUrl, token, graph, cellId, http, bookmarkRef } = config
+export const createTransport = (config: TransportConfig): Send => {
+  const { baseUrl, token, graph, cellId, http } = config
   const endpoint = `${baseUrl.replace(/\/$/, "")}/v1/graphs/${graph}/query`
 
-  const post = (body: Record<string, unknown>, query: string): Effect.Effect<QueryPage, HydraError> =>
+  const post = (body: JsonObject, query: string): Effect.Effect<QueryPage, HydraError> =>
     Effect.gen(function* () {
       const payload = JSON.stringify(body)
       if (Buffer.byteLength(payload, "utf8") > MAX_BODY_BYTES) {
@@ -62,7 +84,7 @@ export const makeTransport = (config: TransportConfig): Send => {
           "X-Graph-Namespace": graph,
           "Content-Type": "application/json"
         }),
-        HttpClientRequest.bodyUnsafeJson(body)
+        HttpClientRequest.bodyJsonUnsafe(body)
       )
 
       const response = yield* http.execute(request).pipe(
@@ -73,23 +95,28 @@ export const makeTransport = (config: TransportConfig): Send => {
       )
 
       if (response.status >= 400) {
-        return yield* classifyHydraHttpError(response.status, json, query)
+        const parsed = Schema.decodeUnknownResult(HydraErrorBodySchema)(json)
+        const errorBody = Result.isSuccess(parsed) ? parsed.success : {}
+        return yield* classifyHydraHttpError(response.status, errorBody, query)
       }
-      return decodePage(json)
+      const parsed = yield* Schema.decodeUnknownEffect(RawResponseSchema)(json).pipe(
+        Effect.mapError(
+          (cause) => new HydraUnavailable({ reason: "response body violates the HydraDB protocol", cause })
+        )
+      )
+      return decodePage(parsed)
     })
 
   const sendOnce: Send = (query, parameters, options) =>
     Effect.gen(function* () {
-      const stored = yield* FiberRef.get(bookmarkRef)
+      const stored = yield* CurrentHydraBookmark
       const bookmark = options?.fresh === true ? undefined : (options?.bookmark ?? Option.getOrUndefined(stored))
       const requestId = `palimpsest-${randomUUID()}`
-      const body: Record<string, unknown> = { cell_id: cellId, query, query_id: requestId }
+      const body: HydraRequestBody = { cell_id: cellId, query, query_id: requestId }
       if (Object.keys(parameters).length > 0) body["parameters"] = parameters
       if (bookmark !== undefined) body["bookmark"] = bookmark
 
       const first = yield* post(body, query)
-      if (first.bookmark !== null) yield* FiberRef.set(bookmarkRef, Option.some(first.bookmark))
-
       const rows = yield* followCursor(
         asPage(first),
         (cursor, queryId) =>
@@ -104,5 +131,11 @@ export const makeTransport = (config: TransportConfig): Send => {
     Effect.retry(sendOnce(query, parameters, options), {
       schedule: RETRYABLE_SCHEDULE,
       while: isRetryable
-    })
+    }).pipe(
+      Effect.tap((result) =>
+        result.bookmark === null
+          ? Effect.void
+          : setCurrentHydraBookmark(result.bookmark)
+      )
+    )
 }

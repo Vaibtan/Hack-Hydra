@@ -1,13 +1,15 @@
-export interface BatchPart<Row extends { readonly questionId: string }> {
-  readonly name: string
-  readonly envelope: Readonly<Record<string, unknown>> & {
-    readonly batch?: {
-      readonly index: number
-      readonly count: number
-      readonly population?: ReadonlyArray<string>
-    }
-    readonly rows: ReadonlyArray<Row>
+export interface BatchEnvelope {
+  readonly batch?: {
+    readonly index: number
+    readonly count: number
+    readonly population?: ReadonlyArray<string>
   }
+  readonly rows: ReadonlyArray<{ readonly questionId: string }>
+}
+
+export interface BatchPart<Envelope extends BatchEnvelope = BatchEnvelope> {
+  readonly name: string
+  readonly envelope: Envelope
 }
 
 export interface MergedBatches<Row> {
@@ -16,13 +18,20 @@ export interface MergedBatches<Row> {
   readonly rows: ReadonlyArray<Row>
 }
 
-const stringify = (value: unknown): string => JSON.stringify(value ?? null)
+export interface MergeBatchesReport<Row> {
+  readonly refusals: ReadonlyArray<string>
+  readonly merged: MergedBatches<Row> | null
+}
+
+const stringify = <Value>(value: Value): string => JSON.stringify(value ?? null)
 
 /** Refuses, rather than repairs, a batch set that is not one whole measurement. */
-export const mergeBatches = <Row extends { readonly questionId: string }>(
-  parts: ReadonlyArray<BatchPart<Row>>,
-  fields: ReadonlyArray<string>
-): { readonly refusals: ReadonlyArray<string>; readonly merged: MergedBatches<Row> | null } => {
+export const mergeBatches = <
+  Envelope extends BatchEnvelope
+>(
+  parts: ReadonlyArray<BatchPart<Envelope>>,
+  fields: ReadonlyArray<Extract<keyof Envelope, string>>
+): MergeBatchesReport<Envelope["rows"][number]> => {
   const refusals: Array<string> = []
   const batches = parts.map((part) => {
     if (part.envelope.batch === undefined) refusals.push(`${part.name} carries no batch record`)
@@ -54,7 +63,7 @@ export const mergeBatches = <Row extends { readonly questionId: string }>(
     refusals.push("the batches were cut from different populations")
   }
 
-  const byId = new Map<string, Row>()
+  const byId = new Map<string, Envelope["rows"][number]>()
   for (const row of parts.flatMap((part) => part.envelope.rows)) {
     if (byId.has(row.questionId)) {
       refusals.push(`${row.questionId} was answered by more than one batch`)

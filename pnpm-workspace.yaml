@@ -1,6 +1,8 @@
 packages:
   - "packages/*"
   - "apps/*"
+overrides:
+  '@effect/platform-node-shared': 4.0.0-beta.107
 allowBuilds:
   '@parcel/watcher': false
   esbuild: true

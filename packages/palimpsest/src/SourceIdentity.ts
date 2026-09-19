@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import type { DatasetSession } from "@palimpsest/dataset"
-import { Data, Either } from "effect"
+import { Data, Result, Schema } from "effect"
 import type { BeginSourceRevision } from "./IngestManifest.js"
 import type { MemoryScope } from "./MemoryScope.js"
 
@@ -12,13 +12,20 @@ export type CanonicalJson =
   | ReadonlyArray<CanonicalJson>
   | { readonly [key: string]: CanonicalJson }
 
-export class InvalidCanonicalJson extends Data.TaggedError("InvalidCanonicalJson")<{
-  readonly reason: "nonFiniteNumber" | "unsupportedValue" | "cyclicValue"
-}> {
-  override get message(): string {
-    return `Invalid canonical JSON: ${this.reason}`
-  }
-}
+const CanonicalJsonValueSchema = Schema.suspend(
+  (): Schema.Codec<CanonicalJson> =>
+    Schema.Union([
+      Schema.Null,
+      Schema.Boolean,
+      Schema.Finite,
+      Schema.String,
+      Schema.Array(CanonicalJsonValueSchema),
+      Schema.Record(Schema.String, CanonicalJsonValueSchema)
+    ])
+)
+
+/** Recursive finite JSON value accepted by the content-addressing encoder. */
+export const CanonicalJsonSchema: Schema.Codec<CanonicalJson> = CanonicalJsonValueSchema
 
 export interface VersionedDependency {
   readonly id: string
@@ -60,62 +67,22 @@ export interface CanonicalSessionSource {
 const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex")
 
-const parseCanonicalJsonValue = (
-  value: unknown,
-  ancestors: ReadonlySet<object>
-): Either.Either<CanonicalJson, InvalidCanonicalJson> => {
-  if (value === null || typeof value === "boolean" || typeof value === "string") {
-    return Either.right(value)
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value)
-      ? Either.right(value)
-      : Either.left(new InvalidCanonicalJson({ reason: "nonFiniteNumber" }))
-  }
-  if (Array.isArray(value)) {
-    if (ancestors.has(value)) return Either.left(new InvalidCanonicalJson({ reason: "cyclicValue" }))
-    const nextAncestors = new Set(ancestors).add(value)
-    const entries: Array<CanonicalJson> = []
-    for (const entry of value) {
-      const parsed = parseCanonicalJsonValue(entry, nextAncestors)
-      if (parsed._tag === "Left") return parsed
-      entries.push(parsed.right)
-    }
-    return Either.right(entries)
-  }
-  if (typeof value === "object") {
-    if (ancestors.has(value)) return Either.left(new InvalidCanonicalJson({ reason: "cyclicValue" }))
-    const nextAncestors = new Set(ancestors).add(value)
-    const entries: Record<string, CanonicalJson> = {}
-    for (const [key, entry] of Object.entries(value)) {
-      const parsed = parseCanonicalJsonValue(entry, nextAncestors)
-      if (parsed._tag === "Left") return parsed
-      entries[key] = parsed.right
-    }
-    return Either.right(entries)
-  }
-  return Either.left(new InvalidCanonicalJson({ reason: "unsupportedValue" }))
-}
-
-export const parseCanonicalJson = (
-  value: unknown
-): Either.Either<CanonicalJson, InvalidCanonicalJson> => parseCanonicalJsonValue(value, new Set())
+const isCanonicalArray = (value: CanonicalJson): value is ReadonlyArray<CanonicalJson> =>
+  Array.isArray(value)
 
 /** Key-sorted JSON; the byte form every content address in the ingest plane hashes. */
 export const canonicalJson = (value: CanonicalJson): string => {
-  if (value === null || typeof value === "boolean" || typeof value === "string") {
+  if (value === null || Schema.is(Schema.Boolean)(value) || Schema.is(Schema.String)(value)) {
     return JSON.stringify(value)
   }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("canonical JSON does not permit non-finite numbers")
+  if (Schema.is(Schema.Number)(value)) {
     return JSON.stringify(value)
   }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+  if (isCanonicalArray(value)) return `[${value.map(canonicalJson).join(",")}]`
 
-  const object = value as Readonly<Record<string, CanonicalJson>>
-  return `{${Object.keys(object)
+  return `{${Object.keys(value)
     .sort((left, right) => left.localeCompare(right))
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key]!)}`)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`)
     .join(",")}}`
 }
 
@@ -173,58 +140,48 @@ const extractionGenerationFromDescriptor = (descriptor: {
   }
 }
 
-const dependencyFrom = (value: unknown): VersionedDependency | undefined => {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined
-  const record = value as Readonly<Record<string, unknown>>
-  if (typeof record["id"] !== "string" || typeof record["revision"] !== "string") return undefined
-  if (record["id"].trim().length === 0 || record["revision"].trim().length === 0) return undefined
-  return { id: record["id"], revision: record["revision"] }
-}
+const VersionedDependencySchema = Schema.Struct({ id: Schema.String, revision: Schema.String })
+const ExtractionGenerationDescriptorSchema = Schema.Struct({
+  extractor: VersionedDependencySchema,
+  format: Schema.Literal("palimpsest.extraction-generation.v1"),
+  model: VersionedDependencySchema,
+  output_schema_sha256: Schema.String,
+  prompt_template_sha256: Schema.String,
+  tokenizer: VersionedDependencySchema
+})
 
 export const parseExtractionGeneration = (
   id: string,
   serialized: string
-): Either.Either<ExtractionGeneration, InvalidExtractionGeneration> => {
+): Result.Result<ExtractionGeneration, InvalidExtractionGeneration> => {
   try {
-    const parsed = JSON.parse(serialized) as unknown
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return Either.left(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
+    const decoded = Schema.decodeUnknownResult(ExtractionGenerationDescriptorSchema)(JSON.parse(serialized))
+    if (Result.isFailure(decoded)) {
+      return Result.fail(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
     }
-    const record = parsed as Readonly<Record<string, unknown>>
-    const extractor = dependencyFrom(record["extractor"])
-    const model = dependencyFrom(record["model"])
-    const tokenizer = dependencyFrom(record["tokenizer"])
-    const promptTemplateSha256 = record["prompt_template_sha256"]
-    const outputSchemaSha256 = record["output_schema_sha256"]
+    const descriptor = decoded.success
     if (
-      record["format"] !== "palimpsest.extraction-generation.v1" ||
-      extractor === undefined ||
-      model === undefined ||
-      tokenizer === undefined ||
-      typeof promptTemplateSha256 !== "string" ||
-      typeof outputSchemaSha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(promptTemplateSha256) ||
-      !/^[a-f0-9]{64}$/.test(outputSchemaSha256)
+      descriptor.extractor.id.trim().length === 0 ||
+      descriptor.extractor.revision.trim().length === 0 ||
+      descriptor.model.id.trim().length === 0 ||
+      descriptor.model.revision.trim().length === 0 ||
+      descriptor.tokenizer.id.trim().length === 0 ||
+      descriptor.tokenizer.revision.trim().length === 0 ||
+      !/^[a-f0-9]{64}$/.test(descriptor.prompt_template_sha256) ||
+      !/^[a-f0-9]{64}$/.test(descriptor.output_schema_sha256)
     ) {
-      return Either.left(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
+      return Result.fail(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
     }
-    const generation = extractionGenerationFromDescriptor({
-      extractor,
-      format: "palimpsest.extraction-generation.v1",
-      model,
-      output_schema_sha256: outputSchemaSha256,
-      prompt_template_sha256: promptTemplateSha256,
-      tokenizer
-    })
+    const generation = extractionGenerationFromDescriptor(descriptor)
     if (generation.canonicalJson !== serialized) {
-      return Either.left(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
+      return Result.fail(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
     }
     if (generation.id !== id) {
-      return Either.left(new InvalidExtractionGeneration({ reason: "identifierMismatch" }))
+      return Result.fail(new InvalidExtractionGeneration({ reason: "identifierMismatch" }))
     }
-    return Either.right(generation)
+    return Result.succeed(generation)
   } catch {
-    return Either.left(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
+    return Result.fail(new InvalidExtractionGeneration({ reason: "invalidEncoding" }))
   }
 }
 

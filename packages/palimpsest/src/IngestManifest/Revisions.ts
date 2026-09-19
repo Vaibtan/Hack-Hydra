@@ -60,13 +60,13 @@ const invalid = (
 
 const scopeFor = (input: { readonly tenant: string; readonly uid: string }): MemoryScope => {
   const parsed = parseMemoryScope(input.tenant, input.uid)
-  if (parsed._tag === "Left") {
+  if (parsed._tag === "Failure") {
     throw new InvalidSourceRevision({
-      field: parsed.left.field === "tenantId" ? "tenant" : "uid",
-      reason: parsed.left.reason
+      field: parsed.failure.field === "tenantId" ? "tenant" : "uid",
+      reason: parsed.failure.reason
     })
   }
-  return parsed.right
+  return parsed.success
 }
 
 const revisionKeyFor = (input: SourceRevisionIdentity): string => revisionKey(scopeFor(input), input)
@@ -90,10 +90,10 @@ const parseBegin = (
       input.extractionGeneration.id,
       input.extractionGeneration.canonicalJson
     )
-    if (generation._tag === "Left") {
+    if (generation._tag === "Failure") {
       return yield* invalid(
         "extractionGeneration",
-        generation.left.reason === "identifierMismatch"
+        generation.failure.reason === "identifierMismatch"
           ? "id must match its canonical definition"
           : "definition must be a valid canonical extraction generation"
       )
@@ -288,7 +288,7 @@ const recordRevisionFailure = (database: DatabaseSync, input: RecordIngestFailur
   return failed
 }
 
-export const makeRevisionOperations = (database: DatabaseSync): RevisionOperations => ({
+export const createRevisionOperations = (database: DatabaseSync): RevisionOperations => ({
   begin: (input) =>
     parseBegin(input).pipe(
       Effect.flatMap((parsed) =>

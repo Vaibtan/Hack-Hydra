@@ -1,4 +1,4 @@
-import { datasetPath, loadDataset, type DatasetName } from "@palimpsest/dataset"
+import { datasetPath, loadDataset, parseDatasetName } from "@palimpsest/dataset"
 import { sessionKey } from "@palimpsest/palimpsest"
 import { Effect } from "effect"
 import { execFileSync } from "node:child_process"
@@ -44,7 +44,7 @@ const arg = (name: string, fallback: string): string => {
 
 const root = workspaceRoot()
 const split = arg("split", "dev") === "test" ? "test" : "dev"
-const dataset = arg("dataset", "s") as DatasetName
+const dataset = parseDatasetName(arg("dataset", "s"))
 const resultsFile = arg("results", `results/palimpsest-v2-${split}.json`)
 const outPath = resolve(root, arg("out", `data/splits/population-${split}.json`))
 const splitPath = splitFilePath(root)
@@ -193,7 +193,7 @@ const program = Effect.gen(function* () {
   return failures.length
 })
 
-Effect.runPromise(program as Effect.Effect<number, unknown, never>)
+Effect.runPromise(program)
   .then((failureCount) => {
     if (failureCount > 0) process.exitCode = 1
   })

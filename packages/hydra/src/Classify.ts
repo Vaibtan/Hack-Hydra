@@ -1,3 +1,4 @@
+import { Schema } from "effect"
 import { MAX_STRING_PROPERTY_BYTES } from "./Cypher.js"
 import {
   HYDRA_ENGINE_ERROR_CODES,
@@ -8,6 +9,19 @@ import {
   type HydraEngineErrorCode,
   type HydraError
 } from "./Errors.js"
+import type { JsonObject } from "./JsonValue.js"
+
+/** Safe subset of an error response used for public failure classification. */
+export const HydraErrorBodySchema = Schema.Struct({
+  error: Schema.optionalKey(
+    Schema.Struct({
+      code: Schema.optionalKey(Schema.String),
+      message: Schema.optionalKey(Schema.String)
+    })
+  )
+})
+
+export type HydraErrorBody = typeof HydraErrorBodySchema.Type
 
 const engineErrorContract: Readonly<
   Record<HydraEngineErrorCode, { readonly status: number; readonly retryable: boolean; readonly reason: string }>
@@ -45,12 +59,12 @@ const isHydraEngineErrorCode = (value: string): value is HydraEngineErrorCode =>
 /** Reviewed engine codes with their declared status; every other 5xx is a generic unavailability; limits are recognised by message so they survive a status change. */
 export const classifyHydraHttpError = (
   status: number,
-  body: unknown,
+  body: HydraErrorBody,
   query: string
 ): HydraError => {
-  const error = (body as { error?: { code?: string; message?: string } } | null)?.error
+  const error = body.error
   const responseCode = error?.code
-  if (typeof responseCode === "string" && isHydraEngineErrorCode(responseCode)) {
+  if (responseCode !== undefined && isHydraEngineErrorCode(responseCode)) {
     const contract = engineErrorContract[responseCode]
     if (contract.status === status) {
       return new HydraEngineError({ code: responseCode, query, ...contract })
@@ -77,10 +91,10 @@ export const isLimit = (error: unknown): error is HydraLimitError => error insta
 
 /** The engine answers an oversize string with a bare 500, so the cap is checked before sending. */
 export const oversizeProperty = (
-  row: Readonly<Record<string, unknown>>
+  row: JsonObject
 ): { readonly property: string; readonly bytes: number } | undefined => {
   for (const [property, value] of Object.entries(row)) {
-    if (typeof value !== "string") continue
+    if (!Schema.is(Schema.String)(value)) continue
     const bytes = Buffer.byteLength(value, "utf8")
     if (bytes > MAX_STRING_PROPERTY_BYTES) return { property, bytes }
   }

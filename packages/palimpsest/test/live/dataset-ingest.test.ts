@@ -8,13 +8,13 @@ import { Transcript } from "../../src/Transcript.js"
 
 const hasOracle = existsSync(datasetPath("oracle"))
 
-const layer = Transcript.Default.pipe(
-  Layer.provideMerge(HydraClient.Default),
+const layer = Transcript.layer.pipe(
+  Layer.provideMerge(HydraClient.layer),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraClient>): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, layer) as Effect.Effect<A, E, never>)
+  Effect.runPromise(Effect.provide(effect, layer))
 
 const UID = "gpt4_2655b836"
 

@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { loadQuestion, type DatasetName } from "@palimpsest/dataset"
+import { loadQuestion, parseDatasetName } from "@palimpsest/dataset"
 import { HydraClient } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, extractSession, slotKey } from "@palimpsest/palimpsest"
@@ -15,15 +15,15 @@ const arg = (name: string, fallback: string): string => {
 
 const uid = arg("uid", "")
 
-const AppLive = ClaimGraph.Default.pipe(
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = ClaimGraph.layer.pipe(
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const program = Effect.gen(function* () {
   const claimGraph = yield* ClaimGraph
-  const question = yield* loadQuestion(arg("dataset", "s") as DatasetName, uid).pipe(Effect.orDie)
+  const question = yield* loadQuestion(parseDatasetName(arg("dataset", "s")), uid).pipe(Effect.orDie)
 
   const extractions = yield* Effect.forEach(
     question.sessions,
@@ -66,7 +66,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

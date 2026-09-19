@@ -20,9 +20,9 @@ const asOfRaw = arg("as-of", "")
 const asOf = asOfRaw === "" ? undefined : Number(asOfRaw)
 const showAll = process.argv.includes("--all")
 
-const AppLive = Supersede.Default.pipe(
-  Layer.provideMerge(Reader.Default),
-  Layer.provideMerge(HydraClient.Default),
+const AppLive = Supersede.layer.pipe(
+  Layer.provideMerge(Reader.layer),
+  Layer.provideMerge(HydraClient.layer),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -47,13 +47,13 @@ const program = Effect.gen(function* () {
     const chain = allChains.get(slot.skey) ?? []
     const sourceSpans = yield* reader.hydrate(sourceLinkedChainEvidence(chain))
     const assertions = prepareDerivedIndexAssertions(chain, sourceSpans)
-    if (assertions._tag === "Left") return yield* Effect.fail(assertions.left)
-    const superseded = assertions.right.filter((assertion) => assertion.supersededBy !== null).length
+    if (assertions._tag === "Failure") return yield* Effect.fail(assertions.failure)
+    const superseded = assertions.success.filter((assertion) => assertion.supersededBy !== null).length
     if (superseded === 0 && !showAll && only === "") continue
     if (superseded > 0) chains++
 
     console.log(`${slot.entityName} | ${slot.attr}`)
-    for (const assertion of assertions.right) {
+    for (const assertion of assertions.success) {
       const label =
         assertion.supersededBy === null
           ? "CURRENT   "
@@ -76,7 +76,7 @@ const program = Effect.gen(function* () {
   }
 })
 
-Effect.runPromise(Effect.provide(program, AppLive) as Effect.Effect<void, unknown, never>).catch(
+Effect.runPromise(Effect.provide(program, AppLive)).catch(
   (error) => {
     console.error(String(error))
     process.exit(1)

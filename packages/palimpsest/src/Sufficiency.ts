@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import { Llm, configuredModel } from "@palimpsest/llm"
 import { Effect, Schema } from "effect"
 import type { HydratedSpan } from "./Reader.js"
@@ -19,7 +18,7 @@ const sufficiencyModel = (): string | undefined => configuredModel("PALIMPSEST_S
 export const MAX_MISSING_TERMS = 8
 
 const Judgement = Schema.Struct({
-  tier: Schema.Literal("EXACT", "INFERRABLE", "PARTIAL"),
+  tier: Schema.Literals(["EXACT", "INFERRABLE", "PARTIAL"]),
   missing: Schema.String,
   missing_terms: Schema.Array(Schema.String),
   premise: Schema.String,
@@ -104,7 +103,7 @@ export const judgeSufficiency = (
   questionDate: string,
   route: Route,
   spans: ReadonlyArray<HydratedSpan>
-): Effect.Effect<SufficiencyReport, never, LanguageModel.LanguageModel | Llm> =>
+): Effect.Effect<SufficiencyReport, never, Llm> =>
   Effect.gen(function* () {
     const prompt = [
       `QUESTION DATE: ${questionDate}`,
@@ -115,19 +114,20 @@ export const judgeSufficiency = (
       renderPack(spans)
     ].join("\n")
 
-    const generated = yield* Effect.either(
+    const model = sufficiencyModel()
+    const generated = yield* Effect.result(
       (yield* Llm).generateObject({
         kind: "sufficiency",
         system: SYSTEM,
         prompt,
         schema: Judgement,
         objectName: "sufficiency",
-        ...(sufficiencyModel() === undefined ? {} : { model: sufficiencyModel()! })
+        ...(model !== undefined && { model })
       })
     )
-    if (generated._tag === "Left") return skipped()
+    if (generated._tag === "Failure") return skipped()
 
-    const value = generated.right.value
+    const value = generated.success.value
     const terms = new Set<string>()
     for (const term of value.missing_terms) {
       for (const stem of stems(term)) terms.add(stem)
@@ -139,6 +139,6 @@ export const judgeSufficiency = (
       premise: value.premise,
       premiseCitedIds: value.premise_contradicted_by,
       skipped: false,
-      cached: generated.right.cached
+      cached: generated.success.cached
     }
   })

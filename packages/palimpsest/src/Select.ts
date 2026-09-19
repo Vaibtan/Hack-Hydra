@@ -1,4 +1,3 @@
-import type { LanguageModel } from "@effect/ai"
 import { Llm, configuredModel } from "@palimpsest/llm"
 import { Effect, Schema } from "effect"
 import type { Candidate } from "./Arms.js"
@@ -19,6 +18,11 @@ export interface SelectionReport {
   readonly dropped: ReadonlyArray<{ readonly candidate: Candidate; readonly reason: DropReason }>
   /** The selector call failed and the deterministic v1 ordering was used. */
   readonly fallback: boolean
+}
+
+export interface SpeakerShares {
+  readonly candidateShare: number
+  readonly keptShare: number
 }
 
 export const orderCandidates = (
@@ -101,7 +105,7 @@ export const enforceSelection = (
 export const speakerShare = (
   candidates: ReadonlyArray<Candidate>,
   kept: ReadonlyArray<Candidate>
-): { readonly candidateShare: number; readonly keptShare: number } => {
+): SpeakerShares => {
   const share = (rows: ReadonlyArray<Candidate>): number =>
     rows.length === 0 ? 0 : rows.filter((row) => row.speaker === "assistant").length / rows.length
   return { candidateShare: share(candidates), keptShare: share(kept) }
@@ -159,7 +163,7 @@ export const select = (
   route: Route,
   candidates: ReadonlyArray<Candidate>,
   options: { readonly maxTurns?: number } = {}
-): Effect.Effect<SelectorCall, never, LanguageModel.LanguageModel | Llm> =>
+): Effect.Effect<SelectorCall, never, Llm> =>
   Effect.gen(function* () {
     if (candidates.length === 0) {
       return {
@@ -178,18 +182,19 @@ export const select = (
       renderCandidateTable(candidates)
     ].join("\n")
 
-    const generated = yield* Effect.either(
+    const model = selectModel()
+    const generated = yield* Effect.result(
       (yield* Llm).generateObject({
         kind: "select",
         system: SYSTEM,
         prompt,
         schema: Selection,
         objectName: "selection",
-        ...(selectModel() === undefined ? {} : { model: selectModel()! })
+        ...(model !== undefined && { model })
       })
     )
 
-    if (generated._tag === "Left") {
+    if (generated._tag === "Failure") {
       return {
         ...enforceSelection(candidates, new Set(), { ...options, fallback: true }),
         reasons: {},
@@ -198,11 +203,11 @@ export const select = (
     }
 
     const reasons: Record<string, string> = {}
-    for (const row of generated.right.value.keep) reasons[row.id] = row.reason
+    for (const row of generated.success.value.keep) reasons[row.id] = row.reason
     return {
       ...enforceSelection(candidates, new Set(Object.keys(reasons)), options),
       reasons,
-      cached: generated.right.cached
+      cached: generated.success.cached
     }
   })
 

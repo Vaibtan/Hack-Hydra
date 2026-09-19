@@ -1,4 +1,5 @@
-import { Effect, Schema } from "effect"
+import { NodeHttpClient } from "@effect/platform-node"
+import { Effect, Layer, Schema } from "effect"
 import { rm } from "node:fs/promises"
 import { resolve } from "node:path"
 import { afterAll, describe, expect, it } from "vitest"
@@ -15,8 +16,9 @@ const Capital = Schema.Struct({
   founded_before_1500: Schema.Boolean
 })
 
-const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.runPromise(Effect.provide(effect, LlmLive()) as unknown as Effect.Effect<A, E, never>)
+const LlmTestLive = LlmLive().pipe(Layer.provide(NodeHttpClient.layerUndici))
+const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof LlmTestLive>>) =>
+  Effect.runPromise(Effect.provide(effect, LlmTestLive))
 
 afterAll(() => rm(CACHE_DIR, { recursive: true, force: true }))
 

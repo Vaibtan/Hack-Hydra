@@ -13,7 +13,11 @@ const STOPWORDS = new Set([
   "user", "assistant"
 ])
 
-const IRREGULAR: Record<string, string> = {
+interface IrregularStems {
+  readonly [term: string]: string
+}
+
+const IRREGULAR: IrregularStems = {
   children: "child",
   people: "person",
   men: "man",

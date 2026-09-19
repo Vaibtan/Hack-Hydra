@@ -37,9 +37,11 @@ export type ClaimWriteIdentitiesError =
   | InvalidGraphIdClaim
   | IngestManifestUnavailable
 
+export type GraphIdentityReader = Pick<HydraClient, "readGraphIdentities">
+
 const claimObservedThenRequested = (
   claims: GraphClaimOperations,
-  hydra: HydraClient,
+  hydra: GraphIdentityReader,
   input: {
     readonly reducedId: number
     readonly kind: "relationship" | "vertex"
@@ -64,7 +66,7 @@ const claimObservedThenRequested = (
  */
 export const claimWriteIdentities = (
   claims: GraphClaimOperations,
-  hydra: HydraClient,
+  hydra: GraphIdentityReader,
   input: {
     readonly vertices: ReadonlyArray<string>
     readonly relationships: ReadonlyArray<GraphWriteRelation>
@@ -91,7 +93,7 @@ export const claimWriteIdentities = (
 /** All vertex and relationship identities of a source-transcript write plan. */
 export const claimSourceTranscriptPlan = (
   claims: GraphClaimOperations,
-  hydra: HydraClient,
+  hydra: GraphIdentityReader,
   plan: SourceTranscriptWritePlan
 ): Effect.Effect<void, ClaimWriteIdentitiesError> =>
   claimWriteIdentities(claims, hydra, {
@@ -106,7 +108,7 @@ export const claimSourceTranscriptPlan = (
 /** All vertex and relationship identities of an index-graph write plan. */
 export const claimIndexGraphWritePlan = (
   claims: GraphClaimOperations,
-  hydra: HydraClient,
+  hydra: GraphIdentityReader,
   plan: IndexGraphWritePlan
 ): Effect.Effect<void, ClaimWriteIdentitiesError> =>
   claimWriteIdentities(claims, hydra, {
@@ -129,7 +131,7 @@ export const claimIndexGraphWritePlan = (
  */
 export const recoverGraphIdCollision = <Error, Requirements>(
   claims: GraphClaimOperations,
-  hydra: HydraClient,
+  hydra: GraphIdentityReader,
   input: {
     readonly reducedId: number
     readonly kind: "relationship" | "vertex"

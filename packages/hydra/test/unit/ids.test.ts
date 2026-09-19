@@ -33,23 +33,23 @@ describe("GraphIdentityRegistry", () => {
   it("fails closed when an injected numeric-id collision names a different full vertex key", () => {
     const identities = createGraphIdentityRegistry(() => 7)
 
-    expect(identities.claimVertex("tenant-a|user")).toMatchObject({ _tag: "Right" })
+    expect(identities.claimVertex("tenant-a|user")).toMatchObject({ _tag: "Success" })
     const collision = identities.claimVertex("tenant-b|user")
 
     expect(collision).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         _tag: "HydraIdentityIntegrityError",
         kind: "vertex",
         reason: "numericCollision",
         numericId: 7
       }
     })
-    if (collision._tag === "Left") {
-      expect(collision.left.existingKeyFingerprint).toMatch(/^[a-f0-9]{64}$/)
-      expect(collision.left.requestedKeyFingerprint).toMatch(/^[a-f0-9]{64}$/)
-      expect(collision.left.message).not.toContain("tenant-a")
-      expect(collision.left.message).not.toContain("tenant-b")
+    if (collision._tag === "Failure") {
+      expect(collision.failure.existingKeyFingerprint).toMatch(/^[a-f0-9]{64}$/)
+      expect(collision.failure.requestedKeyFingerprint).toMatch(/^[a-f0-9]{64}$/)
+      expect(collision.failure.message).not.toContain("tenant-a")
+      expect(collision.failure.message).not.toContain("tenant-b")
     }
   })
 
@@ -63,8 +63,8 @@ describe("GraphIdentityRegistry", () => {
     })
 
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         _tag: "HydraIdentityIntegrityError",
         kind: "vertex",
         reason: "numericCollision",
@@ -83,8 +83,8 @@ describe("GraphIdentityRegistry", () => {
     })
 
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         _tag: "HydraIdentityIntegrityError",
         kind: "relationship",
         reason: "missingFullKey",

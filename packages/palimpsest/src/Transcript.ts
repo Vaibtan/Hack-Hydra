@@ -1,6 +1,6 @@
 import type { DatasetSession } from "@palimpsest/dataset"
 import { HydraClient, type HydraError } from "@palimpsest/hydra"
-import { Effect, Option } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import { sessionKey, turnChunkKey, turnKey } from "./Keys.js"
 import { linkToUser, readUserVertices } from "./User.js"
 import { canonicalSessionSource } from "./SourceIdentity.js"
@@ -215,6 +215,6 @@ const make = Effect.gen(function* () {
   return { ingest, readTurn, readSessions, remove } as const
 })
 
-export class Transcript extends Effect.Service<Transcript>()("palimpsest/Transcript", {
-  effect: make
-}) {}
+export type Transcript = Effect.Success<typeof make>
+const TranscriptTag = Context.Service<Transcript>("palimpsest/Transcript")
+export const Transcript = Object.assign(TranscriptTag, { layer: Layer.effect(TranscriptTag, make) })

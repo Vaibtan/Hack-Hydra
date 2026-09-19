@@ -119,36 +119,13 @@ const withEnvAsync = async <A>(
 }
 
 describe("the startup check", () => {
-  const withStubbedExit = async (body: () => Promise<void>): Promise<Array<number>> => {
-    const codes: Array<number> = []
-    const realExit = process.exit
-    process.exit = ((code?: number) => {
-      codes.push(code ?? 0)
-      return undefined as never
-    }) as typeof process.exit
-    try {
-      await body()
-    } finally {
-      process.exit = realExit
-    }
-    return codes
-  }
-
-  const withStubbedFetch = async <A>(
-    response: { readonly ok: boolean; readonly ids?: ReadonlyArray<string> },
-    body: () => Promise<A>
-  ): Promise<A> => {
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async () => ({
-      ok: response.ok,
-      json: async () => ({ data: (response.ids ?? []).map((id) => ({ id })) })
-    })) as unknown as typeof fetch
-    try {
-      return await body()
-    } finally {
-      globalThis.fetch = realFetch
-    }
-  }
+  const fetchResponse = (
+    response: { readonly ok: boolean; readonly ids?: ReadonlyArray<string> }
+  ): typeof fetch => async () =>
+    new Response(JSON.stringify({ data: (response.ids ?? []).map((id) => ({ id })) }), {
+      status: response.ok ? 200 : 503,
+      headers: { "content-type": "application/json" }
+    })
 
   const PROVIDER = {
     OPENAI_API_KEY: "test-key",
@@ -159,56 +136,54 @@ describe("the startup check", () => {
 
   it("fails with UnknownModelError on an id the provider does not list", async () => {
     const outcome = await withEnvAsync({ ...PROVIDER, PALIMPSEST_SELECT_MODEL: "gpt-5.6-lunar" }, () =>
-      withStubbedFetch({ ok: true, ids: ["gpt-5.6-luna", "gpt-4o"] }, () =>
-        Effect.runPromise(Effect.either(verifyModelsAtStartup({ quiet: true })))
-      )
+      Effect.runPromise(Effect.result(verifyModelsAtStartup({
+        quiet: true,
+        fetch: fetchResponse({ ok: true, ids: ["gpt-5.6-luna", "gpt-4o"] })
+      })))
     )
-    expect(outcome._tag).toBe("Left")
-    if (outcome._tag === "Left") {
-      expect(outcome.left).toBeInstanceOf(UnknownModelError)
-      expect(outcome.left.unknown).toEqual(["gpt-5.6-lunar"])
+    expect(outcome._tag).toBe("Failure")
+    if (outcome._tag === "Failure") {
+      expect(outcome.failure).toBeInstanceOf(UnknownModelError)
+      expect(outcome.failure.unknown).toEqual(["gpt-5.6-lunar"])
     }
   })
 
   it("exits 2 through the wrapper on an id the provider does not list", async () => {
-    const codes = await withEnvAsync({ ...PROVIDER, PALIMPSEST_SELECT_MODEL: "gpt-5.6-lunar" }, () =>
-      withStubbedExit(() =>
-        withStubbedFetch({ ok: true, ids: ["gpt-5.6-luna", "gpt-4o"] }, () =>
-          Effect.runPromise(verifyModelsOrExit({ quiet: true }))
-        )
-      )
+    const codes: Array<number> = []
+    await withEnvAsync({ ...PROVIDER, PALIMPSEST_SELECT_MODEL: "gpt-5.6-lunar" }, () =>
+      Effect.runPromise(verifyModelsOrExit({
+        quiet: true,
+        fetch: fetchResponse({ ok: true, ids: ["gpt-5.6-luna", "gpt-4o"] }),
+        exit: (code) => { codes.push(code) }
+      }))
     )
     expect(codes).toEqual([2])
   })
 
   it("proceeds when the provider cannot be reached", async () => {
     await withEnvAsync({ ...PROVIDER, PALIMPSEST_SELECT_MODEL: undefined }, () =>
-      withStubbedFetch({ ok: false }, () => Effect.runPromise(verifyModelsAtStartup({ quiet: true })))
+      Effect.runPromise(verifyModelsAtStartup({ quiet: true, fetch: fetchResponse({ ok: false }) }))
     )
   })
 
   it("proceeds when every configured id is listed", async () => {
     await withEnvAsync({ ...PROVIDER, PALIMPSEST_SELECT_MODEL: "gpt-4o-mini" }, () =>
-      withStubbedFetch({ ok: true, ids: ["gpt-5.6-luna", "gpt-4o-mini"] }, () =>
-        Effect.runPromise(verifyModelsAtStartup({ quiet: true }))
-      )
+      Effect.runPromise(verifyModelsAtStartup({
+        quiet: true,
+        fetch: fetchResponse({ ok: true, ids: ["gpt-5.6-luna", "gpt-4o-mini"] })
+      }))
     )
   })
 
   it("does not call the provider at all without an api key", async () => {
     let called = false
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async () => {
+    const fetchWithoutKey: typeof fetch = async () => {
       called = true
-      return { ok: false, json: async () => ({}) } as unknown as Response
-    }) as unknown as typeof fetch
-    try {
-      await withEnvAsync({ OPENAI_API_KEY: "" }, () =>
-        Effect.runPromise(verifyModelsAtStartup({ quiet: true }))
-      )
-    } finally {
-      globalThis.fetch = realFetch
+      return new Response(null, { status: 503 })
     }
+    await withEnvAsync({ OPENAI_API_KEY: "" }, () =>
+      Effect.runPromise(verifyModelsAtStartup({ quiet: true, fetch: fetchWithoutKey }))
+    )
 
     expect(called).toBe(false)
   })

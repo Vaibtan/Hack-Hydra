@@ -1,11 +1,11 @@
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { answerV2, type AnswerOptions, type V2Answer } from "../../src/Answer.js"
+import { answerV2, type AnswerOptions, type AnswerReader, type AnswerRetrieve } from "../../src/Answer.js"
 import type { AskOptions, AskResult, RetrievalPlan } from "../../src/Plan.js"
-import type { HydratedSpan, ReadAnswer, Reader } from "../../src/Reader.js"
-import type { Retrieve } from "../../src/Retrieve.js"
+import type { HydratedSpan, ReadAnswer } from "../../src/Reader.js"
 import { ABSTAIN_TIERS } from "../../src/Sufficiency.js"
+import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 
 const span = (over: Partial<HydratedSpan> & { id: string }): HydratedSpan => ({
@@ -50,12 +50,32 @@ const ask = (over: Partial<AskResult> = {}): AskResult =>
     verdict: "ANSWER",
     reason: null,
     evidence: [],
-    receipt: {} as AskResult["receipt"],
+    receipt: {
+      question: "Where do I live?",
+      uid: "u",
+      profile: "full",
+      asOf: null,
+      anchorTerms: [],
+      anchorsReachingClaims: [],
+      anchorsReachingNothing: [],
+      historical: false,
+      wantsCount: false,
+      timeRef: null,
+      convergenceThreshold: 2,
+      totalClaims: 0,
+      query1: "",
+      query1Params: {},
+      query1Paths: 0,
+      query2: null,
+      query2Paths: 0,
+      models: { reader: "stub", select: "stub", sufficiency: "stub" },
+      convergence: []
+    },
     hash: "hash",
     timings: { askMs: 1, graphMs: 1, stages: {} },
     plan: plan(),
     ...over
-  }) as AskResult
+  })
 
 const readAnswer = (over: Partial<ReadAnswer> = {}): ReadAnswer =>
   ({
@@ -74,7 +94,7 @@ const readAnswer = (over: Partial<ReadAnswer> = {}): ReadAnswer =>
     pack: null,
     recited: false,
     ...over
-  }) as ReadAnswer
+  })
 
 interface Judgement {
   readonly tier: "EXACT" | "INFERRABLE" | "PARTIAL"
@@ -86,11 +106,11 @@ interface Judgement {
 
 const stubLlm = (judgements: ReadonlyArray<Judgement | "fail">, calls: Array<string>) => {
   let next = 0
-  return Layer.succeed(Llm, {
+  return Layer.succeed(Llm, behaviorFake<Llm>({
     model: "stub",
     cacheDir: "",
     concurrency: 1,
-    generateObject: (options: { kind: string; schema: Schema.Schema<unknown, never> }) =>
+    generateObject: (options: { kind: string; schema: Schema.Top }) =>
       Effect.suspend(() => {
         calls.push(options.kind)
         const judgement = judgements[next++] ?? judgements[judgements.length - 1]!
@@ -111,7 +131,7 @@ const stubLlm = (judgements: ReadonlyArray<Judgement | "fail">, calls: Array<str
       }),
     usage: Effect.succeed({ inputTokens: 0, outputTokens: 0, calls: 0, cacheHits: 0 }),
     resetUsage: Effect.void
-  } as unknown as Llm)
+  }))
 }
 
 interface Harness {
@@ -128,29 +148,29 @@ const run = async (harness: Harness) => {
   let askIndex = 0
   let readIndex = 0
 
-  const retrieve = {
-    ask: (_uid: string, _question: string, options: AskOptions) =>
+  const retrieve: AnswerRetrieve = {
+    ask: (_uid: string, _question: string, options: AskOptions = {}) =>
       Effect.sync(() => {
         askedWith.push(options)
         return harness.asks[askIndex++] ?? harness.asks[harness.asks.length - 1]!
       })
-  } as unknown as Retrieve
+  }
 
-  const reader = {
+  const reader: AnswerReader = {
     read: (
       _question: string,
       _date: string,
-      _evidence: unknown,
-      _options: unknown
+      _evidence: Parameters<AnswerReader["read"]>[2],
+      _options: Parameters<AnswerReader["read"]>[3]
     ) =>
       Effect.sync(() => {
         const answer = harness.reads[readIndex++] ?? harness.reads[harness.reads.length - 1]!
         readSpans.push(answer.spans)
         return answer
       })
-  } as unknown as Reader
+  }
 
-  const result = await Effect.runPromise(
+  const result = await runWithBehaviorFakes(
     Effect.provide(
       answerV2(
         retrieve,
@@ -159,11 +179,11 @@ const run = async (harness: Harness) => {
         "Where do I live?",
         "2023/05/01 (Mon) 10:00",
         harness.options ?? {}
-      ) as Effect.Effect<Awaited<ReturnType<typeof Effect.runPromise>>, never, Llm>,
+      ),
       stubLlm(harness.judgements, llmCalls)
-    ) as Effect.Effect<never, never, never>
+    )
   )
-  return { result: result as unknown as V2Answer, askedWith, readSpans, llmCalls }
+  return { result, askedWith, readSpans, llmCalls }
 }
 
 describe("the sufficiency loop", () => {

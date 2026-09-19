@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { Data, Either } from "effect"
+import { Data, Result, Schema } from "effect"
 import { canonicalJson } from "./SourceIdentity.js"
 import type { ExtractedEntity } from "./Extract.js"
 
@@ -109,22 +109,22 @@ const viewFromResolutions = (resolutions: ReadonlyMap<string, string>): EntityCa
 
 export const createEntityCanonicalView = (
   input: CreateEntityCanonicalView
-): Either.Either<EntityCanonicalView, InvalidEntityCanonicalView> => {
+): Result.Result<EntityCanonicalView, InvalidEntityCanonicalView> => {
   const identitiesById = new Map<string, EntityIdentity>()
   const groups = new IdentityGroups()
   for (const identity of input.identities) {
     if (identity.id.trim().length === 0 || identity.canon.trim().length === 0) {
-      return Either.left(new InvalidEntityCanonicalView({ reason: "emptyIdentity", identityId: identity.id }))
+      return Result.fail(new InvalidEntityCanonicalView({ reason: "emptyIdentity", identityId: identity.id }))
     }
     if (identitiesById.has(identity.id)) {
-      return Either.left(new InvalidEntityCanonicalView({ reason: "duplicateIdentity", identityId: identity.id }))
+      return Result.fail(new InvalidEntityCanonicalView({ reason: "duplicateIdentity", identityId: identity.id }))
     }
     identitiesById.set(identity.id, identity)
     groups.add(identity.id)
   }
   for (const equivalence of input.equivalences) {
     if (!identitiesById.has(equivalence.leftIdentityId)) {
-      return Either.left(
+      return Result.fail(
         new InvalidEntityCanonicalView({
           reason: "unknownIdentity",
           identityId: equivalence.leftIdentityId
@@ -132,7 +132,7 @@ export const createEntityCanonicalView = (
       )
     }
     if (!identitiesById.has(equivalence.rightIdentityId)) {
-      return Either.left(
+      return Result.fail(
         new InvalidEntityCanonicalView({
           reason: "unknownIdentity",
           identityId: equivalence.rightIdentityId
@@ -156,50 +156,51 @@ export const createEntityCanonicalView = (
     if (canonical === undefined) throw new Error("canonical view component was empty")
     for (const identity of component) resolutions.set(identity.id, canonical.id)
   }
-  return Either.right(viewFromResolutions(resolutions))
+  return Result.succeed(viewFromResolutions(resolutions))
 }
 
 export const serializeEntityCanonicalView = (view: EntityCanonicalView): string => descriptorFor(view.resolutions)
 
+const EntityCanonicalViewDescriptorSchema = Schema.Struct({
+  format: Schema.Literal("palimpsest.entity-canonical-view.v1"),
+  resolutions: Schema.Array(Schema.Tuple([Schema.String, Schema.String]))
+})
+
 export const parseEntityCanonicalView = (
   id: string,
   serialized: string
-): Either.Either<EntityCanonicalView, InvalidEntityCanonicalView> => {
+): Result.Result<EntityCanonicalView, InvalidEntityCanonicalView> => {
   try {
-    const parsed = JSON.parse(serialized) as { readonly format?: unknown; readonly resolutions?: unknown }
-    if (parsed.format !== "palimpsest.entity-canonical-view.v1" || !Array.isArray(parsed.resolutions)) {
-      return Either.left(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
+    const decoded = Schema.decodeUnknownResult(EntityCanonicalViewDescriptorSchema)(JSON.parse(serialized))
+    if (Result.isFailure(decoded)) {
+      return Result.fail(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
     }
     const resolutions = new Map<string, string>()
-    for (const pair of parsed.resolutions) {
+    for (const pair of decoded.success.resolutions) {
       if (
-        !Array.isArray(pair) ||
-        pair.length !== 2 ||
-        typeof pair[0] !== "string" ||
-        typeof pair[1] !== "string" ||
         pair[0].trim().length === 0 ||
         pair[1].trim().length === 0 ||
         resolutions.has(pair[0])
       ) {
-        return Either.left(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
+        return Result.fail(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
       }
       resolutions.set(pair[0], pair[1])
     }
     const view = viewFromResolutions(resolutions)
     return view.id === id
-      ? Either.right(view)
-      : Either.left(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
+      ? Result.succeed(view)
+      : Result.fail(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
   } catch {
-    return Either.left(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
+    return Result.fail(new InvalidEntityCanonicalView({ reason: "invalidEncoding", identityId: id }))
   }
 }
 
 export const resolveEntityInCanonicalView = (
   view: EntityCanonicalView,
   identityId: string
-): Either.Either<string, EntityNotInCanonicalView> => {
+): Result.Result<string, EntityNotInCanonicalView> => {
   const canonicalIdentityId = view.resolutions.get(identityId)
   return canonicalIdentityId === undefined
-    ? Either.left(new EntityNotInCanonicalView({ identityId }))
-    : Either.right(canonicalIdentityId)
+    ? Result.fail(new EntityNotInCanonicalView({ identityId }))
+    : Result.succeed(canonicalIdentityId)
 }

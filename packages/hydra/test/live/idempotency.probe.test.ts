@@ -1,25 +1,27 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Result, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { HydraClient, vertexId } from "../../src/index.js"
+import { HydraClient, vertexId, type JsonObject } from "../../src/index.js"
 
 const UID = "probe-idem"
 const baseUrl = process.env.HYDRA_URL ?? "http://127.0.0.1:8443"
 const token = process.env.HYDRA_TOKEN ?? "local-development-token-32-bytes"
 
-const layer = HydraClient.Default.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const layer = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const run = <A, E>(effect: Effect.Effect<A, E, HydraClient>): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, layer) as Effect.Effect<A, E, never>)
+  Effect.runPromise(Effect.provide(effect, layer))
 
 const vertex = (n: number) => ({
   key: `${UID}|v|${n}`,
   properties: { vkey: `${UID}|v|${n}`, uid: UID, n }
 })
 
+const ProbeResponse = Schema.Struct({ query_id: Schema.optionalKey(Schema.String) })
+
 describe("write request ids", () => {
   it("honours a client-supplied request id, and conflicts when one is reused", async () => {
-    const post = async (body: unknown): Promise<{ status: number; json: any }> => {
+    const post = async (body: JsonObject): Promise<{ status: number; queryId: string | null }> => {
       const response = await fetch(`${baseUrl}/v1/graphs/default/query`, {
         method: "POST",
         headers: {
@@ -29,7 +31,11 @@ describe("write request ids", () => {
         },
         body: JSON.stringify(body)
       })
-      return { status: response.status, json: await response.json() }
+      const decoded = Schema.decodeUnknownResult(ProbeResponse)(await response.json())
+      return {
+        status: response.status,
+        queryId: Result.isSuccess(decoded) ? (decoded.success.query_id ?? null) : null
+      }
     }
 
     await run(
@@ -59,7 +65,7 @@ describe("write request ids", () => {
     const fixed = `probe-idem-fixed-${process.pid}`
     const first = await post(rel(1, 2, fixed))
     expect(first.status).toBeLessThan(400)
-    expect(first.json.query_id).toBe(fixed)
+    expect(first.queryId).toBe(fixed)
 
     const conflict = await post(rel(2, 1, fixed))
     expect(conflict.status).toBeGreaterThanOrEqual(400)

@@ -5,6 +5,7 @@ import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { Reader, type HydratedSpan } from "../../src/Reader.js"
 import { NOT_IN_MEMORY } from "../../src/Routes.js"
+import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 const span = (id: string): HydratedSpan => ({
   ckey: `u|c|${id}`,
@@ -34,11 +35,11 @@ interface Reply {
 
 const stubLlm = (replies: ReadonlyArray<Reply>, prompts: Array<string>) => {
   let next = 0
-  return Layer.succeed(Llm, {
+  return Layer.succeed(Llm, behaviorFake<Llm>({
     model: "stub",
     cacheDir: "",
     concurrency: 1,
-    generateObject: (options: { prompt: string; schema: Schema.Schema<unknown, never> }) =>
+    generateObject: (options: { prompt: string; schema: Schema.Top }) =>
       Effect.sync(() => {
         prompts.push(options.prompt)
         const reply = replies[next++] ?? replies[replies.length - 1]!
@@ -58,7 +59,7 @@ const stubLlm = (replies: ReadonlyArray<Reply>, prompts: Array<string>) => {
       }),
     usage: Effect.succeed({ inputTokens: 0, outputTokens: 0, calls: 0, cacheHits: 0 }),
     resetUsage: Effect.void
-  } as unknown as Llm)
+  }))
 }
 
 const read = async (
@@ -72,28 +73,19 @@ const read = async (
   readonly prompts: ReadonlyArray<string>
 }> => {
   const prompts: Array<string> = []
-  const layer = Reader.Default.pipe(
+  const layer = Reader.layer.pipe(
     Layer.provide(stubLlm(replies, prompts)),
-    Layer.provideMerge(HydraClient.Default),
+    Layer.provideMerge(HydraClient.layer),
     Layer.provide(NodeHttpClient.layerUndici)
   )
-  const answer = await Effect.runPromise(
+  const answer = await runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
         const reader = yield* Reader
         return yield* reader.readSpans("Where do I live?", "2023/05/01 (Mon) 10:00", spans)
       }),
       layer
-    ) as unknown as Effect.Effect<
-      {
-        readonly answer: string
-        readonly notInMemory: boolean
-        readonly citedIds: ReadonlyArray<string>
-        readonly recited: boolean
-      },
-      never,
-      never
-    >
+    )
   )
   return { ...answer, prompts }
 }

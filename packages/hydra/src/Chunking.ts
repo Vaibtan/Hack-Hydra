@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { isLimit } from "./Classify.js"
 import { MAX_BODY_BYTES } from "./Cypher.js"
+import type { JsonObject } from "./JsonValue.js"
 
 const BODY_BUDGET = Math.floor(MAX_BODY_BYTES * 0.8)
 
@@ -34,9 +35,9 @@ export interface WriteChunkedOptions<E> {
   readonly halveOn?: (error: E) => boolean
 }
 
-export const writeChunked = <E>(
-  send: (rows: ReadonlyArray<Readonly<Record<string, unknown>>>) => Effect.Effect<unknown, E>,
-  payload: ReadonlyArray<Readonly<Record<string, unknown>>>,
+export const writeChunked = <E, T extends JsonObject>(
+  send: (rows: ReadonlyArray<T>) => Effect.Effect<unknown, E>,
+  payload: ReadonlyArray<T>,
   options: WriteChunkedOptions<E>
 ): Effect.Effect<number, E> =>
   Effect.gen(function* () {
@@ -47,14 +48,14 @@ export const writeChunked = <E>(
     let written = 0
     while (index < chunks.length) {
       const chunk = chunks[index]!
-      const outcome = yield* send(chunk).pipe(Effect.either)
-      if (outcome._tag === "Right") {
+      const outcome = yield* send(chunk).pipe(Effect.result)
+      if (outcome._tag === "Success") {
         written += chunk.length
         index++
         continue
       }
-      if (!halveOn(outcome.left) || size === 1) {
-        return yield* Effect.fail(outcome.left)
+      if (!halveOn(outcome.failure) || size === 1) {
+        return yield* Effect.fail(outcome.failure)
       }
       size = Math.max(1, Math.floor(size / 2))
       chunks = chunkRows(chunks.slice(index).flat(), size)

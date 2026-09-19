@@ -5,6 +5,16 @@ import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { SPLIT_FILE, SplitFile, type SplitName } from "./Splits.js"
 
+export interface SplitQuestionsResult {
+  readonly slice: ReadonlyArray<DatasetQuestion>
+  readonly wanted: number
+}
+
+export interface BatchSlice<A> {
+  readonly items: ReadonlyArray<A>
+  readonly from: number
+}
+
 export const workspaceRoot = (): string => {
   let dir = process.cwd()
   for (let depth = 0; depth < 8; depth++) {
@@ -18,9 +28,8 @@ export const workspaceRoot = (): string => {
 
 export const splitFilePath = (root: string = workspaceRoot()): string => resolve(root, SPLIT_FILE)
 
-const assertSplitFile: (input: unknown) => asserts input is SplitFile = Schema.asserts(SplitFile, {
-  errors: "first"
-})
+const assertSplitFile: (input: unknown) => asserts input is SplitFile = (input) =>
+  Schema.asserts(SplitFile, input)
 
 export const readSplitFile = (path: string = splitFilePath()): SplitFile => {
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
@@ -42,7 +51,7 @@ export const splitQuestions = (
   questions: ReadonlyArray<DatasetQuestion>,
   file: SplitFile,
   split: SplitName
-): { readonly slice: ReadonlyArray<DatasetQuestion>; readonly wanted: number } => {
+): SplitQuestionsResult => {
   const wanted = new Set(split === "dev" ? file.dev : file.test)
   return {
     slice: questions
@@ -55,7 +64,7 @@ export const splitQuestions = (
 export const batchOf = <A>(
   items: ReadonlyArray<A>,
   batch: { readonly index: number; readonly count: number }
-): { readonly items: ReadonlyArray<A>; readonly from: number } => {
+): BatchSlice<A> => {
   const size = Math.ceil(items.length / batch.count)
   const from = (batch.index - 1) * size
   return { items: items.slice(from, from + size), from }
