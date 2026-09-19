@@ -1,12 +1,12 @@
 # Palimpsest implementation plan
 
-Status: S00-S02 verified; D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S03-S19 remain
+Status: S00-S03 verified; D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S04-S19 remain
 
-Implementation baseline: committed code at `9705c32`, inspected and reverified 2026-09-19
+Implementation baseline: committed code at `1445e77`, inspected and reverified 2026-09-19
 
-Committed checkpoints: repository guidance `4ae686b`; S00 population evidence `44930d5`; S01 scoped graph identities `3449e39`; unit-test consolidation `a0025a8`; Effect v4, S02, and corrective hardening `9705c32`. The vendor guidance change referenced by `4ae686b` is commit `3e6803a` inside `vendor/hydradb`.
+Committed checkpoints: repository guidance `4ae686b`; S00 population evidence `44930d5`; S01 scoped graph identities `3449e39`; unit-test consolidation `a0025a8`; Effect v4, S02, and corrective hardening `9705c32`; S03 immutable aggregate snapshot graph `1445e77`. The vendor guidance change referenced by `4ae686b` is commit `3e6803a` inside `vendor/hydradb`.
 
-Current local verification at `9705c32` (2026-09-19): `pnpm install --frozen-lockfile` passes, `pnpm lint` passes with zero findings, `pnpm test:unit` passes 65 files / 641 tests, `pnpm typecheck` passes, `pnpm demo:build` passes, and the staged implementation passed `git diff --check`. The recursive dependency graph contains only `effect@4.0.0-beta.107`; there is no Effect v3 compatibility package or fallback path. The corrective review replaced the mutable default causal-bookmark cell with immutable fiber-local reference values, made `Llm` close over its default provider and memoize override-model Layers in its service scope, and tightened Hydra successful-response decoding to the vendored discriminated protocol. This is local contract evidence, not live HydraDB or production-readiness evidence.
+Current local verification at `1445e77` (2026-09-19): `pnpm install --frozen-lockfile` passes, `pnpm lint` passes with zero findings, `pnpm test:unit` passes 66 files / 663 tests, `pnpm typecheck` passes, `pnpm demo:build` passes, and the staged implementation passed `git diff --check`. The recursive dependency graph contains only `effect@4.0.0-beta.107`; there is no Effect v3 compatibility package or fallback path. This is local contract evidence, not live HydraDB or production-readiness evidence.
 
 Audience: a fresh implementation agent working one reviewable slice at a time
 
@@ -525,15 +525,15 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Checklist**
 
-- [ ] Specify the aggregate snapshot node/edge schema consumed by retrieval: tokens, slots, claims, source/revision provenance, and causal links.
-- [ ] Make every graph identity tenant-and-snapshot scoped.
-- [ ] Build only from committed source revisions listed in the snapshot manifest.
-- [ ] Define deterministic ordering, deduplication, supersession, and canonical-entity behavior across multiple sources.
-- [ ] Write in bounded chunks with retry-safe upserts and explicit cardinality expectations.
-- [ ] Read back roots, counts, revision coverage, and a deterministic projection digest.
-- [ ] Mark the snapshot `VERIFIED` only when read-back checks pass.
-- [ ] Leave active-snapshot state untouched on any graph or verification failure.
-- [ ] Add fixtures proving source-order independence and no cross-snapshot traversal.
+- [x] Specify the aggregate snapshot node/edge schema consumed by retrieval: tokens, slots, claims, source/revision provenance, and causal links.
+- [x] Make every graph identity tenant-and-snapshot scoped.
+- [x] Build only from committed source revisions listed in the snapshot manifest.
+- [x] Define deterministic ordering, deduplication, supersession, and canonical-entity behavior across multiple sources.
+- [x] Write in bounded chunks with retry-safe upserts and explicit cardinality expectations.
+- [x] Read back roots, counts, revision coverage, and a deterministic projection digest.
+- [x] Mark the snapshot `VERIFIED` only when read-back checks pass.
+- [x] Leave active-snapshot state untouched on any graph or verification failure.
+- [x] Add fixtures proving source-order independence and no cross-snapshot traversal.
 
 **Acceptance**
 
@@ -545,6 +545,12 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 **Verification:** index-graph, source-indexing, canonical-view, and Hydra statement/unit tests plus `pnpm typecheck`.
 
 **Live evidence deferred:** a real HydraDB write/read/restart probe belongs to S07 and requires an isolated authorized runtime.
+
+**Verified implementation and evidence (2026-09-19, committed `1445e77`):** `SnapshotGraph.ts` owns the S03 aggregate graph. `planSnapshotGraph` is a pure, source-order-independent planner: it orders manifest-listed commit ids, rejects missing/unlisted/duplicate/uncommitted/out-of-scope revisions and extraction-generation, artifact-binding, source-session, evidence-span, canonical-view, and causal-link violations, collapses equal claims inside a revision while keeping revisions distinct, resolves entities through the pinned canonical view, aggregates slots and token document frequency across revisions under the shared tokenizer cap, emits canonical-name edges, and stamps caller-decided `SNAPSHOT_SUPERSEDED_BY` links with the newer claim's session ordinal. Every key is `scope|snap|<snapshotId>|...` framed, so namespaces cannot traverse across snapshots. `build` reads the snapshot record, rejects missing/FAILED snapshots, gathers each listed revision with its stored artifact and durable SourceSession row, claims every vertex and relationship identity in the manifest before writing, writes retry-safe MERGE batches in deterministic label/type order (Hydra chunks rows internally), then verifies under the write's causal bookmark: the root's full stored property set, the complete member namespace through HAS edges, and every `SNAPSHOT_*` relation touching any member in both directions are diffed against the plan, and the SHA-256 digest is re-derived from observed content before `verifyUserIndexSnapshot` records digest, graph roots, and counts. A repeated identical build re-derives the stored digest and returns without rewriting; divergent content under a non-BUILDING state conflicts. No activation, reader exposure, or live-service path is wired.
+
+**Verified commands (rerun 2026-09-19 at `1445e77`):** focused suite `packages/palimpsest/test/unit/snapshot-graph.test.ts` (22 tests: digest determinism and source-order independence, tenant/uid/snapshot scoping, duplicate-claim collapse and revision distinction, canonical-view resolution and slot aggregation, claim-to-revision/source-turn evidence, token bounds and canonical naming, supersession ordering and endpoint/self/backwards rejection, revision-state/listing/scope rejection, canonical-view and span rejection, successful write/read-back/VERIFIED transition with the active pointer untouched, idempotent rebuild without rewriting, missing member and missing/unexpected/foreign-incoming relationship detection, pre-write graph-id collision, and missing durable source session); `pnpm lint` zero findings; `pnpm test:unit` 66 files / 663 tests; `pnpm typecheck`; `pnpm demo:build`; `git diff --check` clean.
+
+**Future-slice ownership check (2026-09-19):** S04 still owns lifecycle orchestration, atomic activation, and fault injection across the commit boundary; S05/S05B/S07 still own active-only reads and the live HydraDB write/read/restart probe; causal/supersession links arrive as caller-supplied decided facts, so their derivation remains an S04 enrichment responsibility. A failed S03 build leaves the snapshot `BUILDING` for retry — `FAILED` marking on abandoned attempts stays with lifecycle orchestration.
 
 ### S04: Complete lifecycle orchestration and atomic activation
 
@@ -1173,4 +1179,4 @@ Before editing, confirm its decision blockers and inspect the current code and t
 Work only on this slice. Add behavior-focused tests, run pnpm lint and the affected unit tests, and run pnpm typecheck when types or contracts change. Preserve the Effect v4-only dependency graph and do not introduce an Effect v3 compatibility or fallback path. Distinguish unit evidence from live evidence. If a maintainer decision or runtime authorization is missing, stop at that boundary and return the exact decision/evidence needed. Do not close or rewrite GitHub issues unless explicitly asked. If asked to commit, use the commit-work skill and stage only the intended scope.
 ```
 
-S00-S02 and D1-D7 are complete. The next production-path slice is S03; preserve S02's immutable manifest and non-query-visible boundary until S04 activation orchestration and S05 active-only reads land. Under D5/S14, preserve the original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. S14-S15 may close the frozen legacy experiment while the production lane proceeds independently. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.
+S00-S03 and D1-D7 are complete. The next production-path slice is S04; preserve the immutable manifest and non-query-visible snapshot boundary until S04 activation orchestration and S05 active-only reads land. Under D5/S14, preserve the original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. S14-S15 may close the frozen legacy experiment while the production lane proceeds independently. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.
