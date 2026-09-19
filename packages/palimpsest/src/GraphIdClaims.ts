@@ -8,6 +8,7 @@ import {
   type InvalidGraphIdClaim
 } from "./IngestManifest.js"
 import type { IndexGraphWritePlan } from "./IndexGraph.js"
+import type { SnapshotGraphPlan } from "./SnapshotGraph.js"
 import type { SourceTranscriptWritePlan } from "./SourceTranscript.js"
 
 export interface GraphWriteRelation {
@@ -118,6 +119,21 @@ export const claimIndexGraphWritePlan = (
       ...plan.slots.map((slot) => slot.key),
       ...plan.tokens.map((token) => token.key)
     ],
+    relationships: plan.relations.map((relation) => ({
+      type: relation.type,
+      srcKey: relation.srcKey,
+      dstKey: relation.dstKey
+    }))
+  })
+
+/** All vertex and relationship identities of a snapshot-graph build plan. */
+export const claimSnapshotGraphPlan = (
+  claims: GraphClaimOperations,
+  hydra: GraphIdentityReader,
+  plan: SnapshotGraphPlan
+): Effect.Effect<void, ClaimWriteIdentitiesError> =>
+  claimWriteIdentities(claims, hydra, {
+    vertices: [plan.root.key, ...plan.members.map((member) => member.key)],
     relationships: plan.relations.map((relation) => ({
       type: relation.type,
       srcKey: relation.srcKey,

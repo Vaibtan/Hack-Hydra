@@ -25,6 +25,11 @@ export interface CanonicalViewOperations {
   readonly readActiveEntityCanonicalView: (
     scope: EntityCanonicalViewScope
   ) => Effect.Effect<EntityCanonicalView | null, IngestManifestUnavailable>
+  /** Read one stored view by id within its scope, regardless of which view is active. */
+  readonly readEntityCanonicalView: (
+    scope: EntityCanonicalViewScope,
+    viewId: string
+  ) => Effect.Effect<EntityCanonicalView | null, IngestManifestUnavailable>
 }
 
 const sameStringMap = (left: ReadonlyMap<string, string>, right: ReadonlyMap<string, string>): boolean =>
@@ -140,5 +145,11 @@ export const createCanonicalViewOperations = (database: DatabaseSync): Canonical
     Effect.try({
       try: () => readActiveView(database, scope),
       catch: (cause) => new IngestManifestUnavailable({ operation: "readActiveEntityCanonicalView", cause })
+    }),
+
+  readEntityCanonicalView: (scope, viewId) =>
+    Effect.try({
+      try: () => selectEntityCanonicalView(database, scope, viewId) ?? null,
+      catch: (cause) => new IngestManifestUnavailable({ operation: "readEntityCanonicalView", cause })
     })
 })

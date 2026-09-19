@@ -29,6 +29,10 @@ export interface GenerationOperations {
   readonly readActiveIndexGeneration: (
     scope: IndexGenerationScope
   ) => Effect.Effect<IndexGeneration | null, IngestManifestUnavailable>
+  /** Read one stored generation by id, regardless of which generation is active. */
+  readonly readIndexGeneration: (
+    generationId: string
+  ) => Effect.Effect<IndexGeneration | null, IngestManifestUnavailable>
 }
 
 const selectIndexGeneration = (database: DatabaseSync, generationId: string): IndexGeneration | undefined => {
@@ -125,5 +129,11 @@ export const createGenerationOperations = (database: DatabaseSync): GenerationOp
     Effect.try({
       try: () => readActiveGeneration(database, scope),
       catch: (cause) => new IngestManifestUnavailable({ operation: "readActiveIndexGeneration", cause })
+    }),
+
+  readIndexGeneration: (generationId) =>
+    Effect.try({
+      try: () => selectIndexGeneration(database, generationId) ?? null,
+      catch: (cause) => new IngestManifestUnavailable({ operation: "readIndexGeneration", cause })
     })
 })

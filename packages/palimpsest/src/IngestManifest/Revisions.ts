@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { Effect } from "effect"
 import { parseMemoryScope, type MemoryScope } from "../MemoryScope.js"
 import { parseExtractionGeneration } from "../SourceIdentity.js"
-import { integer, revisionKey, selectRevision, text, transaction } from "./Rows.js"
+import { integer, revisionKey, selectRevision, selectRevisionByCommitId, text, transaction } from "./Rows.js"
 import {
   IngestManifestUnavailable,
   IngestRevisionBlocked,
@@ -36,6 +36,10 @@ export interface RevisionOperations {
   readonly read: (
     input: SourceRevisionIdentity
   ) => Effect.Effect<SourceRevision | null, InvalidSourceRevision | IngestManifestUnavailable>
+  /** Resolve one revision by its content-addressed commit id; the snapshot build follows manifest-listed ids. */
+  readonly readSourceRevisionByCommitId: (
+    commitId: string
+  ) => Effect.Effect<SourceRevision | null, IngestManifestUnavailable>
   readonly readExtractionGeneration: (
     id: string
   ) => Effect.Effect<ExtractionGenerationReference | null, InvalidSourceRevision | IngestManifestUnavailable>
@@ -343,6 +347,12 @@ export const createRevisionOperations = (database: DatabaseSync): RevisionOperat
         cause instanceof InvalidSourceRevision
           ? cause
           : new IngestManifestUnavailable({ operation: "read", cause })
+    }),
+
+  readSourceRevisionByCommitId: (commitId) =>
+    Effect.try({
+      try: () => selectRevisionByCommitId(database, commitId) ?? null,
+      catch: (cause) => new IngestManifestUnavailable({ operation: "readSourceRevisionByCommitId", cause })
     }),
 
   readExtractionGeneration: (id) =>
