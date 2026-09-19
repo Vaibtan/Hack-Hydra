@@ -33,7 +33,7 @@ Callers stay independent of the representation behind:
 
 ```text
 buildSnapshot(scope, orderedCommittedRevisions, generation, canonicalView) -> VerifiedSnapshot
-activateSnapshot(scope, expectedManifestVersion, verifiedSnapshotId) -> ActiveSnapshot
+activateSnapshot(scope, expectedManifestVersion, expectedActiveSnapshotId, verifiedSnapshotId) -> ActiveSnapshot
 resolveQueryContext(principal, requestedUser, temporalCut, minimumReadiness) -> QueryContext
 ```
 
@@ -60,6 +60,13 @@ cut, watermark, completeness, causal floor).
 
 ## Acceptance evidence
 
-S02–S04 contract tests: crash before activation leaves the old snapshot
-active; repeated terminal commit is idempotent; competing activations have a
-deterministic winner; snapshot content reconstructs from its manifest row.
+S02 manifest tests prove idempotent terminal commit, deterministic competing
+activation, active-pointer preservation, and reconstruction from the manifest
+row. S03-S04 must extend that evidence through graph construction and
+orchestration fault injection before query visibility is enabled.
+
+`expectedManifestVersion` guards the committed revision set, while
+`expectedActiveSnapshotId` (nullable when no snapshot is active) guards the
+pointer state observed by the caller. Both are checked inside the same SQLite
+write transaction; a distinct competing activation receives an explicit
+pointer conflict instead of succeeding as a second last-writer-wins update.

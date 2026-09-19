@@ -38,9 +38,11 @@ empty page with no cursor is the end.
 engine answers 32 744 bytes with a bare 500 `internal query execution error`; the cap is bytes, not
 code points (16 371 two-byte characters is the same boundary). Found by bisection.
 
-**Bookmark is a `FiberRef`, not a `Ref`** (`Client.ts`). A causal token belongs to the request that
-received it. A process-wide ref would make one user's write a floor for every unrelated read and
-would not survive server replicas.
+**Bookmark is a fiber-local v4 `Context.Reference<Option<string>>`** (`Transport.ts`, `Client.ts`).
+The default is immutable `Option.none()`; a successful request replaces only the current fiber's
+value after retries finish, and `withCausalBookmark` scopes an explicit floor. Independent runtimes
+therefore start empty. A process-wide mutable cell would make one user's write a floor for unrelated
+reads and would not survive server replicas.
 
 **Errors are classified by message, not status** (`Transport.ts`). The engine changed a timeout from
 500 to 408 once already; the message test survives that. "Statement too big" (a `HydraLimitError`,
@@ -74,8 +76,9 @@ Refusing to start on a listing outage would make it look like a configuration er
 verified ids since #31; the server, demo and CLIs verify at startup too.
 
 **Usage is per model** (`Llm.ts`). A run that reads with luna and judges with `gpt-4o` has two
-prices; one number would be wrong by 10× on half of it. The service is `scoped` so `Layer.memoize`
-can share one HTTP client across judged questions.
+prices; one number would be wrong by 10× on half of it. The v4 service is constructed with
+`Layer.effect`; it owns the shared usage ref and semaphore and retains one model layer value per
+model id.
 
 **`generateText` exists for the judge** (`Llm.ts`). The five LongMemEval templates end "Answer yes
 or no only" and upstream scores `'yes' in response.lower()`; wrapping that in a JSON schema would
@@ -194,10 +197,11 @@ scans every Turn in the store.
 **Source key excludes extraction state** (`SourceTranscript.ts`). Re-extracting the same bytes must
 not duplicate the verbatim transcript.
 
-**Manifest schema v7** (`IngestManifest/Schema.ts`). v1 omitted `logical_session_id` from the
-revision identity; a `source_revisions` table without `UNIQUE (tenant, uid, logical_session_id,
-source_digest, extraction_generation)` is renamed `_v1`, re-keyed, and dropped, in one SQLite
-transaction so an interrupted upgrade keeps the old table. `PRAGMA user_version = 7`.
+**Manifest schema v10** (`IngestManifest/Schema.ts`). The original table omitted
+`logical_session_id` from the revision identity; that legacy shape is renamed, re-keyed, and dropped
+inside the migration transaction. Schema v9 introduced the tenant-scoped, length-framed revision
+keys; v10 adds immutable user snapshots and the active pointer. Opening a version newer than v10
+fails before journal or migration pragmas run, so an unsupported future database is not rewritten.
 
 **Canonical view target is the lexically first `(canon, id)`** per component
 (`EntityCanonicalView.ts`), so a rebuild of the same input is stable.

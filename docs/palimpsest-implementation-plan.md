@@ -1,12 +1,12 @@
 # Palimpsest implementation plan
 
-Status: S00-S01 verified; D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S02-S19 remain
+Status: S00-S02 verified; D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S03-S19 remain
 
-Implementation baseline: `main` at `c71d6e6`, inspected 2026-09-11
+Implementation baseline: committed code at `9705c32`, inspected and reverified 2026-09-19
 
-Committed checkpoint (2026-09-12): repository guidance `4ae686b`; S00 population evidence `44930d5`; S01 scoped graph identities `3449e39`; unit-test consolidation `a0025a8`. The vendor guidance change referenced by `4ae686b` is commit `3e6803a` inside `vendor/hydradb`.
+Committed checkpoints: repository guidance `4ae686b`; S00 population evidence `44930d5`; S01 scoped graph identities `3449e39`; unit-test consolidation `a0025a8`; Effect v4, S02, and corrective hardening `9705c32`. The vendor guidance change referenced by `4ae686b` is commit `3e6803a` inside `vendor/hydradb`.
 
-Current local verification after the repository-wide unit-test audit: `pnpm test:unit` passes 64 files / 623 tests, `pnpm typecheck` passes, and `git diff --check HEAD` reports only line-ending warnings. This is local contract evidence, not live HydraDB or production-readiness evidence.
+Current local verification at `9705c32` (2026-09-19): `pnpm install --frozen-lockfile` passes, `pnpm lint` passes with zero findings, `pnpm test:unit` passes 65 files / 641 tests, `pnpm typecheck` passes, `pnpm demo:build` passes, and the staged implementation passed `git diff --check`. The recursive dependency graph contains only `effect@4.0.0-beta.107`; there is no Effect v3 compatibility package or fallback path. The corrective review replaced the mutable default causal-bookmark cell with immutable fiber-local reference values, made `Llm` close over its default provider and memoize override-model Layers in its service scope, and tightened Hydra successful-response decoding to the vendored discriminated protocol. This is local contract evidence, not live HydraDB or production-readiness evidence.
 
 Audience: a fresh implementation agent working one reviewable slice at a time
 
@@ -21,9 +21,11 @@ The destination is one coherent path from accepted source data to an immutable, 
 - `TransactionalSourceIndex` persists source revisions and projection state, but explicitly rejects later lifecycle states and returns `queryVisible: false`.
 - The manifest already models source revisions, canonical-view activation, projection reconciliation, generation metadata, and commit locks. Extend these foundations instead of building a second manifest.
 - `Ingest.ts` is a separate legacy path. Its session-only existence check, mutable ordinal calculation, and read-modify-write counters are not a safe concurrent commit protocol.
-- Source and index graph keys are user-scoped but not tenant-scoped. A tenant property on a node does not prevent a key collision.
+- S01 made every new-plane source and index graph key tenant-scoped through validated, length-framed `MemoryScope` identity. Legacy bare-`uid` keys remain only behind the explicit benchmark/migration compatibility boundary; S02 added snapshot scope.
 - An index generation identifies configuration/code. It is shared across sessions, so pointing a user directly at a generation cannot hide partial graph writes from a later session.
 - The source-specific index graph is not the same shape as the legacy per-user token/slot query graph. Query visibility requires an aggregate immutable projection or an equivalent reader redesign.
+- The repository now uses Effect `4.0.0-beta.107` throughout. Effect v4 `Schema` codecs validate Hydra success/error envelopes, datasets, persisted canonical artifacts, eval envelopes, runtime inspection, provider model discovery, demo API responses, and the S02 snapshot descriptor at their owning boundaries. Subsequent slices must extend these codecs directly; do not add casts, manual `unknown` walkers, `@effect/schema`, or any Effect v3 compatibility layer.
+- The Hydra protocol boundary now owns recursive JSON request values and typed response decoding, but production callers still import raw graph operations. This is useful groundwork for S05B, not evidence that its domain-operation/import-boundary acceptance criteria are complete.
 - The answer path reports only the final ask/read timing. The first retrieval pass and sufficiency decision are not represented end to end.
 - Existing receipts omit enough identity, completeness, and replay information that they are not yet audit artifacts.
 - S00 replaced the unsupported scalar population claim with a schema-validated, fail-closed audit. A read-only exact session-key reconciliation on 2026-09-11 found 164/200 users fully query-visible under legacy prefix `g3`, 36 missing, and zero partial. All 60 dev users are complete; 104/140 original test users are complete. The split is therefore recorded as `capacity-capped` with 36 reason-coded exclusions.
@@ -51,7 +53,7 @@ For each slice:
 2. Inspect the current branch and diff before editing. Preserve `data/`, `.cache/llm/`, `.palimpsest/`, the HydraDB volume, and unrelated worktree changes.
 3. State the intended contract and failing tests first.
 4. Change only the files needed for that contract.
-5. Run the affected unit tests. Run `pnpm typecheck` whenever types or contracts change.
+5. Run the affected unit tests and `pnpm lint`. Run `pnpm typecheck` whenever types or contracts change.
 6. Keep unit evidence separate from live evidence. Do not infer query visibility, restart safety, concurrency safety, or provider behavior from mocks.
 7. Stop when a decision gate is unresolved or runtime/spend authorization is missing. Record what is known; do not choose a product policy silently.
 8. If asked to commit, use the repository's `commit-work` skill and stage only this slice.
@@ -108,7 +110,7 @@ Keep callers independent of the selected D1 representation. The boundary should 
 
 ```text
 buildSnapshot(scope, orderedCommittedRevisions, generation, canonicalView) -> VerifiedSnapshot
-activateSnapshot(scope, expectedManifestVersion, verifiedSnapshotId) -> ActiveSnapshot
+activateSnapshot(scope, expectedManifestVersion, expectedActiveSnapshotId, verifiedSnapshotId) -> ActiveSnapshot
 resolveQueryContext(principal, requestedUser, temporalCut, minimumReadiness) -> QueryContext
 ```
 
@@ -224,10 +226,10 @@ This inventory prevents a slice from adding a parallel abstraction or overlookin
 | --- | --- | --- |
 | Domain vocabulary and invariants | `CONTEXT.md`, `docs/design-rationale.md`, ADRs 0001-0002 | Record D1-D7 and add an ADR when a decision changes a durable boundary. |
 | Scope, source, and generation identity | `SourceIdentity.ts`, `SourceTranscript.ts`, `IndexGeneration.ts`, `GenerationConfig.ts` | Add one validated `MemoryScope`; keep source revision, extraction generation, index generation, and snapshot identity distinct. |
-| Manifest/control plane | `IngestManifest/{Types,Schema,Rows,Revisions,Projection,Generations,CanonicalView,Artifacts,Codec}.ts`, `IngestCommitLock.ts` | Extend this SQLite authority with snapshot, historical-statistics, readiness, collision-claim, deletion, and migration records. Do not create a second manifest. |
+| Manifest/control plane | `IngestManifest/{Types,Schema,Rows,Revisions,Projection,Generations,CanonicalView,Artifacts,GraphClaims,Codec}.ts`, `IngestCommitLock.ts` | Extend this SQLite authority with a cohesive `Snapshots` operation module plus historical-statistics, readiness, deletion, and migration records. Keep durable graph-ID claims in the same authority; do not create a second manifest. |
 | Transactional write plane | `TransactionalIngest.ts`, `TransactionalSourceIndex.ts`, `SourceIndexPlane.ts`, `SourceIndexing.ts`, `IndexGraph.ts` | Complete lifecycle work, aggregate snapshot build/verification, activation, resumability, and entry-point unification. |
 | Query/answer plane | `Gather.ts`, `Rows.ts`, `Routes.ts`, `Arms.ts`, `TimeScope.ts`, `Select.ts`, `Pack.ts`, `Sufficiency.ts`, `Reader.ts`, `Answer.ts`, `Plan.ts`, `Retrieve.ts` | Bind one immutable query context, apply tenant/snapshot/time scope before every cap, preserve source-only evidence, and emit one trace contract. |
-| Hydra adapter | `packages/hydra/src/{Client,Transport,Paging,Chunking,Classify,Identity,Cypher,Decode}.ts` | Expose typed domain operations to production callers; keep raw Cypher/MSPaths/rows and engine limits inside the adapter or an explicit admin/test escape hatch. |
+| Hydra adapter | `packages/hydra/src/{Client,Transport,Paging,Chunking,Classify,Identity,Cypher,Decode,JsonValue}.ts` | Build on the now schema-validated JSON/protocol boundary to expose typed domain operations to production callers; keep raw Cypher/MSPaths/rows and engine limits inside the adapter or an explicit admin/test escape hatch. |
 | HTTP/security/demo | `packages/server/src/{Api,Handlers,ReceiptProjection,Server}.ts`, `apps/demo/src/` | Add principal verification, authorization, safe errors, limits, receipt projection, and tenant-safe UI/client contracts. |
 | Evaluation/evidence | `packages/eval/src/{Population,PopulationAudit,Splits,Envelope,Row,Systems,Gate,Tables,ReaderAb,Results,Stats,RuntimeConfig}.ts`, eval bins, `data/splits/`, `results/` | Preserve the S00 audited population and already-read gate/test arms, produce missing artifacts, implement Receipt v2 replay/cost/protocol checks, and distinguish legacy from production-path evidence. |
 | Runtime/operations/release | `ops/hydradb/`, `scripts/{phase,ingest-cycling,eval-batched,dev-programme,p0-*}.ps1`, root package scripts | Prove the selected topology, migrations, readiness, backups, capacity, two-dimensional scale, CI, and rollback. |
@@ -283,7 +285,7 @@ This matrix is the completeness check against the severity review. A slice is no
 | P2-A2 | Document and test collision detection, quarantine, and rebuild/rekey recovery. | S01, S07 |
 | P2-B1 | Reconcile the README, writeup, run log, cleanup replay, and historical/current status boundary. | S19 |
 | P2-B2 | Reconcile issues #13-#32 criterion by criterion, including landed-but-unproven #25-#30 work. | S19 |
-| P2-B3 | Add repository lint/format commands and CI gates alongside tests, typecheck, and build. | S17 |
+| P2-B3 | Add repository lint/format commands and CI gates alongside tests, typecheck, and build. | `pnpm lint` and deterministic anti-slop configuration complete; format and CI gates remain in S17. |
 | P2-B4 | Add a production server image/deployment definition, migrations, health/readiness, backup, and rollback. | S17 |
 | P2-B5 | Add load, chaos, security, capacity, recovery, and SLO evidence. | S18 |
 
@@ -392,9 +394,11 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 ### S01: Introduce tenant-scoped memory identity and durable graph-ID claims
 
+**Status:** complete and verified on 2026-09-11.
+
 **Goal:** make cross-tenant key collision impossible by construction in the new transactional plane.
 
-**Blocked by:** D1.
+**Prerequisite (satisfied):** D1.
 
 **Primary areas:** `SourceTranscript.ts`, `IndexGraph.ts`, `IngestManifest/*`, Hydra ID helpers and their unit tests.
 
@@ -424,25 +428,28 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Verified commands:** focused S01/Hydra/manifest unit suite (9 files, 48 tests); `pnpm test:unit`; `pnpm typecheck`; `git diff --check HEAD`. No HydraDB container, ingestion, provider, evaluation, cache, or persistent-volume mutation is required for S01.
 
-**Stop if:** D1 changes the snapshot/key namespace or the existing manifest cannot provide the required transaction/uniqueness guarantee.
+**Design constraint retained:** revisit this slice if D1 changes the snapshot/key namespace or the manifest can no longer provide the required transaction/uniqueness guarantee.
 
 ### S02: Add the immutable user-snapshot manifest contract
 
+**Status:** complete, reverified, and committed at `9705c32` on 2026-09-19.
+
 **Goal:** represent a verified per-user projection separately from configuration generation.
 
-**Blocked by:** S01 and D1 option A. Rewrite this slice explicitly if the maintainer selects B or C.
+**Prerequisites (satisfied):** S01 and D1 option A. Rewrite this slice explicitly if the maintainer replaces D1 with option B or C.
 
-**Primary areas:** `IngestManifest/Types.ts`, `Schema.ts`, `Codec.ts`, `Rows.ts`, `Revisions.ts`, `Generations.ts`, and manifest unit tests.
+**Primary areas:** `IngestManifest/Types.ts`, `Schema.ts`, `Codec.ts`, `Rows.ts`, a cohesive new `Snapshots.ts` operation module, `IngestManifest.ts`, and manifest unit tests.
 
 **Checklist**
 
-- [ ] Add snapshot identity, lifecycle state, `MemoryScope`, generation ID, canonical-view ID, ordered revision set/hash, schema version, graph root IDs, counts, build attempt, and verification digest.
-- [ ] Define states such as `BUILDING`, `VERIFIED`, `ACTIVE`, `SUPERSEDED`, and `FAILED` with legal transitions.
-- [ ] Add immutable insert/read/list operations and an active-snapshot lookup by `MemoryScope`.
-- [ ] Add one SQLite transaction that validates a verified snapshot and compare-and-swaps the active pointer.
-- [ ] Preserve the previous active snapshot until the terminal transaction commits.
-- [ ] Specify idempotency for a repeated identical build and conflict behavior for a different payload under the same ID.
-- [ ] Add forward-only schema migration and codec tests for malformed/old rows.
+- [x] Add snapshot identity, lifecycle state, `MemoryScope`, generation ID, canonical-view ID, ordered revision set/hash, schema version, graph root IDs, counts, build attempt, and verification digest.
+- [x] Define one Effect v4 `Schema` codec for the canonical snapshot descriptor and derive its TypeScript type from that schema. Parse persisted JSON at the manifest boundary; do not duplicate the contract as a hand-written interface plus assertion.
+- [x] Define states such as `BUILDING`, `VERIFIED`, `ACTIVE`, `SUPERSEDED`, and `FAILED` with legal transitions.
+- [x] Add immutable insert/read/list operations and an active-snapshot lookup by `MemoryScope`.
+- [x] Add one SQLite transaction that validates a verified snapshot and compare-and-swaps the active pointer.
+- [x] Preserve the previous active snapshot until the terminal transaction commits.
+- [x] Specify idempotency for a repeated identical build and conflict behavior for a different payload under the same ID.
+- [x] Add a forward-only migration from the current SQLite `user_version = 9` to the S02 schema version, including restart coverage and codec tests for malformed/old rows.
 
 **Acceptance**
 
@@ -451,7 +458,13 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 - Competing activations have a deterministic winner or explicit conflict; no mixed active state is observable.
 - Snapshot content is reconstructible from its manifest row without reading mutable session counters.
 
-**Verification:** manifest/generation/transactional-ingest unit tests plus `pnpm typecheck`.
+**Verification:** focused manifest snapshot/codec/migration/restart/concurrency tests, then `pnpm lint`, `pnpm test:unit`, `pnpm typecheck`, and `git diff --check`. No HydraDB container, provider, ingestion, evaluation, cache clearing, or volume reset is required for S02.
+
+**Verified implementation and evidence (2026-09-13):** `UserIndexSnapshot.ts` owns the single Effect v4 `Schema` descriptor codec (`UserIndexSnapshotDescriptorSchema`), derives its type, and content-addresses `snapshot-v1-<sha256>` over canonical JSON covering tenant/uid scope, index-generation ID, canonical-view ID, ordered committed revision IDs, and manifest schema version. Its public constructor returns a parsed `Result`, so duplicate/empty revision IDs and other invalid descriptors cannot escape as `UserIndexSnapshot`. `IngestManifest/Schema.ts` moves the manifest to `user_version = 10` with additive `user_index_snapshots`, `user_index_snapshot_revisions` (ordered membership), and `active_index_snapshots` (per-scope pointer) tables; opening a schema newer than version 10 fails before migration pragmas run and preserves the future version. `IngestManifest/Snapshots.ts` implements idempotent register, verify, fail, read, list, read-active, and a single `BEGIN IMMEDIATE` activation transaction that validates scope, lifecycle state, listed-revision COMMITTED status, complete committed-revision coverage, `expectedManifestVersion`, and `expectedActiveSnapshotId`. The active-pointer precondition makes competing activations from the same observed state produce exactly one successful writer and an explicit conflict for the loser before the previous pointer can be superseded. Registration rejects identity/content mismatches and foreign-scope bindings; verification evidence is stored once and conflicts on divergence; `FAILED -> BUILDING` reopens with an incremented build attempt. Snapshot graph data is not query-visible; no reader or ingestion path is wired to activate or consume snapshots.
+
+**Verified commands (rerun 2026-09-19 and committed at `9705c32`):** focused snapshot suite `packages/palimpsest/test/unit/user-index-snapshot.test.ts` (14 tests: identity/content addressing, constructor/parser invariant agreement, canonical-JSON round-trip and malformed encodings, idempotent register/verify/fail, lifecycle transitions and illegal-transition rejection, active-pointer CAS with supersede/rollback/idempotent retry, stale-version conflict, uncommitted and uncovered-revision rejection, restart survival, v9->v10 migration, future-version refusal without downgrade, corrupted-row availability, and a two-process race with exactly one successful competing activation); focused Hydra decoding/causal suites (8 tests: strict successful envelopes and discriminated cells, row-width rejection, request-scope isolation, and independent-runtime isolation); `pnpm install --frozen-lockfile`; `pnpm test:unit` 65 files / 641 tests; `pnpm typecheck`; `pnpm lint` zero findings; `pnpm demo:build`; staged implementation `git diff --check` clean.
+
+**Future-slice ownership check (2026-09-13):** S04 still owns end-to-end commit/build/activation orchestration and fault injection; S05/S05B/S07 still own active-only reads, removal of raw Hydra imports, and cross-target/cross-replica causal qualification; S17 still owns deployment locking, backup, and rollback. Those later responsibilities do not defer S02 pointer CAS or forward-version safety, nor do they permit regressions in the current Hydra and Effect service foundations.
 
 ### S03: Build and verify the immutable aggregate snapshot graph
 
@@ -575,6 +588,8 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 **Blocked by:** S05A.
 
 **Primary areas:** `packages/hydra`, `SourceIndexPlane.ts`, query/manifest adapters, production import boundaries, admin/test tooling.
+
+**Current groundwork (2026-09-13):** Hydra request parameters now use recursive JSON protocol values; successful response envelopes require the vendored query fields, discriminate each supported cell tag from its value type, and reject row-width mismatches before projection; malformed successful responses become typed availability failures. Causal bookmarks are immutable `Context.Reference` values updated in the current fiber: sequential operations inherit the prior bookmark, independent runtimes start empty, and `withCausalBookmark` initializes an explicit request floor without sharing mutable state. Transport/classification/identity code no longer relies on manual `unknown` walkers. S05B remains open because raw `query`, `msPaths`, paths, rows, and storage-specific composition still reach production callers.
 
 **Checklist**
 
@@ -967,7 +982,8 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 - [ ] Expose the D7 lifecycle watermarks and enforce the declared minimum searchable readiness; process health alone must never imply a source is query-visible.
 - [ ] Define graceful shutdown for in-flight ingest/query and lifecycle resumption.
 - [ ] Test upgrade and rollback while preserving active snapshots and receipts.
-- [ ] Add repository-owned lint and format-check commands with deterministic configuration.
+- [x] Add a repository-owned lint command with deterministic anti-slop configuration.
+- [ ] Add a repository-owned format-check command with deterministic configuration.
 - [ ] Add CI gates for lint/format, unit tests, typecheck, build, migrations, and required contract probes.
 
 **Acceptance**
@@ -1090,7 +1106,7 @@ Green unit tests establish local contracts, not G2-G5. Cached replay establishes
 
 - [ ] Contract and non-goals are documented in the change.
 - [ ] Acceptance criteria are matched one by one to code and evidence.
-- [ ] Affected unit tests pass; typecheck passes for type/contract changes.
+- [ ] `pnpm lint` and affected unit tests pass; typecheck passes for type/contract changes.
 - [ ] New failure paths have typed errors, stable external behavior, and useful internal diagnostics.
 - [ ] Runtime claims identify population, environment, cache/provider state, and artifact paths.
 - [ ] No unrelated files, persistent data, caches, or volumes were changed.
@@ -1104,7 +1120,7 @@ Implement slice SXX from docs/palimpsest-implementation-plan.md.
 
 Before editing, confirm its decision blockers and inspect the current code and tests. Treat the slice's checklist and acceptance criteria as the contract, but report any contradiction with code truth before changing architecture. Preserve unrelated work, data/, .cache/llm/, .palimpsest/, and the HydraDB volume. Do not start/reset persistent services, ingest data, call paid providers, or run evaluation unless this task explicitly authorizes it.
 
-Work only on this slice. Add behavior-focused tests, run the affected unit tests, and run pnpm typecheck when types or contracts change. Distinguish unit evidence from live evidence. If a maintainer decision or runtime authorization is missing, stop at that boundary and return the exact decision/evidence needed. Do not close or rewrite GitHub issues unless explicitly asked. If asked to commit, use the commit-work skill and stage only the intended scope.
+Work only on this slice. Add behavior-focused tests, run pnpm lint and the affected unit tests, and run pnpm typecheck when types or contracts change. Preserve the Effect v4-only dependency graph and do not introduce an Effect v3 compatibility or fallback path. Distinguish unit evidence from live evidence. If a maintainer decision or runtime authorization is missing, stop at that boundary and return the exact decision/evidence needed. Do not close or rewrite GitHub issues unless explicitly asked. If asked to commit, use the commit-work skill and stage only the intended scope.
 ```
 
-S00 is complete; do not rerun it unless the dataset, split membership, graph prefix, or witness contract changes. Start with the seven decision records. Under D5/S14, preserve the original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. S14-S15 may close the frozen legacy experiment while the production lane proceeds independently. Do not begin snapshot implementation until D1 is accepted. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.
+S00-S02 and D1-D7 are complete. The next production-path slice is S03; preserve S02's immutable manifest and non-query-visible boundary until S04 activation orchestration and S05 active-only reads land. Under D5/S14, preserve the original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. S14-S15 may close the frozen legacy experiment while the production lane proceeds independently. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.

@@ -47,7 +47,7 @@ baseline exists for comparison only) · beating the LongMemEval leaderboard.
 ## 3. Architecture
 
 ```
-apps/demo (Vite + React)  ──HTTP──▶  packages/server (@effect/platform HttpApi)
+apps/demo (Vite + React)  ──HTTP──▶  packages/server (effect/unstable/httpapi)
                                             │
         packages/eval ─────────────▶  packages/palimpsest  (library: ingest · retrieve · read)
                                             │                    │
@@ -57,10 +57,11 @@ apps/demo (Vite + React)  ──HTTP──▶  packages/server (@effect/platform
                                      HydraDB 0.1.0 (Docker, :8443)
 ```
 
-pnpm workspace, TypeScript strict, Effect ≥ 3.x, Vitest. One `Layer` per external dependency
-(`HydraClient`, `Llm`, `Clock`, `Config`) so tests swap them. Verify current package names/APIs with
-`ctx7` before scaffolding (`effect`, `@effect/platform`, `@effect/ai`, `@effect/ai-openai`,
-`@effect/schema` if still separate, `@effect/vitest`).
+pnpm workspace, TypeScript strict, Effect 4.0.0-beta.107, Vitest. One `Layer` per external dependency
+(`HydraClient`, `Llm`, `Clock`, `Config`) so tests swap them. Verify current package names/APIs from
+primary documentation through the repository's `find-docs` workflow before scaffolding (`effect`,
+`effect/unstable/http`, `effect/unstable/httpapi`, `effect/unstable/ai`, `@effect/ai-openai`,
+`@effect/platform-node`, `@effect/vitest`).
 
 ### 3.1 `packages/hydra` — deep module over the Cypher subset
 Public surface (small on purpose):
