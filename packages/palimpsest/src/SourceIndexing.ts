@@ -6,9 +6,12 @@ import { IndexGraph } from "./IndexGraph.js"
 import { IngestCommitLock, IngestCommitLockLive } from "./IngestCommitLock.js"
 import { IngestManifest, IngestManifestLive } from "./IngestManifest.js"
 import { InvalidMemoryScope, parseMemoryScope } from "./MemoryScope.js"
+import { SnapshotGraph } from "./SnapshotGraph.js"
 import { sourceRevisionInputForSession } from "./SourceIdentity.js"
 import { SourceTranscript } from "./SourceTranscript.js"
+import { decideSlotSupersession } from "./SupersessionDecision.js"
 import {
+  runTransactionalSourceCommit,
   runTransactionalSourceIndex,
   type SourceIndexStageError
 } from "./TransactionalSourceIndex.js"
@@ -50,6 +53,8 @@ const classifyFailure = (input: {
       return { code: `HYDRA_${input.error.code}`, retryable: input.error.retryable }
     case "HydraUnavailable":
     case "IngestManifestUnavailable":
+    case "SnapshotActivationConflict":
+    case "SnapshotActivePointerConflict":
       return { code: input.error._tag, retryable: true }
     case "GraphIdCollision":
       return { code: "GRAPH_ID_COLLISION", retryable: false }
@@ -59,6 +64,7 @@ const classifyFailure = (input: {
     case "HydraLimitError":
     case "IndexGraphWriteRejected":
     case "SourceIndexTargetExceeded":
+    case "SourceLifecycleRejected":
     case "SourceTranscriptRevisionMismatch":
       return { code: input.error._tag, retryable: false }
     default:
@@ -79,9 +85,25 @@ export const indexSourceSession = (input: PlanSourceIndexSession) =>
     })
   })
 
+/** S04 entry: drives one session through the full lifecycle to COMMITTED with atomic activation. */
+export const commitSourceSession = (input: PlanSourceIndexSession) =>
+  Effect.gen(function* () {
+    const plan = planSourceIndexSession(input)
+    if (plan._tag === "Failure") return yield* Effect.fail(plan.failure)
+    return yield* runTransactionalSourceCommit({
+      sourceRevision: plan.success.sourceRevision,
+      indexGeneration: plan.success.indexGeneration,
+      session: input.session,
+      extract: extractSession,
+      decideSupersession: decideSlotSupersession,
+      classifyFailure: ({ error }) => classifyFailure({ error })
+    })
+  })
+
 const make = Effect.gen(function* () {
   const sourceTranscript = yield* SourceTranscript
   const indexGraph = yield* IndexGraph
+  const snapshotGraph = yield* SnapshotGraph
   const manifest = yield* IngestManifest
   const commitLock = yield* IngestCommitLock
 
@@ -93,7 +115,16 @@ const make = Effect.gen(function* () {
       Effect.provideService(IngestCommitLock, commitLock)
     )
 
-  return { indexSession } as const
+  const commitSession = (input: PlanSourceIndexSession) =>
+    commitSourceSession(input).pipe(
+      Effect.provideService(SourceTranscript, sourceTranscript),
+      Effect.provideService(IndexGraph, indexGraph),
+      Effect.provideService(SnapshotGraph, snapshotGraph),
+      Effect.provideService(IngestManifest, manifest),
+      Effect.provideService(IngestCommitLock, commitLock)
+    )
+
+  return { indexSession, commitSession } as const
 })
 
 export type SourceIndex = Effect.Success<typeof make>
@@ -105,7 +136,7 @@ export const SourceIndexLive = SourceIndex.layer.pipe(
     Layer.mergeAll(
       SourceTranscript.layer,
       IndexGraph.layer,
-      IngestManifestLive,
+      SnapshotGraph.layer.pipe(Layer.provideMerge(IngestManifestLive)),
       IngestCommitLockLive
     )
   )

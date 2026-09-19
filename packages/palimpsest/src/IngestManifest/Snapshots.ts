@@ -29,6 +29,7 @@ import {
   UserIndexSnapshotNotFound,
   type ActivateIndexSnapshot,
   type ActiveIndexSnapshot,
+  type CommitAndActivateIndexSnapshot,
   type FailUserIndexSnapshot,
   type RegisterUserIndexSnapshot,
   type SnapshotProjectionCounts,
@@ -104,6 +105,30 @@ export interface SnapshotOperations {
    */
   readonly activateIndexSnapshot: (
     input: ActivateIndexSnapshot
+  ) => Effect.Effect<
+    ActiveIndexSnapshot,
+    | InvalidMemoryScope
+    | InvalidSnapshotUpdate
+    | UserIndexSnapshotNotFound
+    | SnapshotScopeMismatch
+    | InvalidSnapshotTransition
+    | SnapshotRevisionNotCommitted
+    | SnapshotRevisionCoverageMismatch
+    | SnapshotActivePointerConflict
+    | SnapshotActivationConflict
+    | IngestManifestUnavailable
+  >
+  /**
+   * One SQLite transaction that runs the S04 terminal commit: every listed
+   * revision still parked at CONSOLIDATED (without a non-retryable failure)
+   * advances to COMMITTED — bumping the scope manifest version per commit —
+   * then the same validations and pointer compare-and-swap as `activate` run.
+   * `expectedManifestVersion` is checked against the pre-commit version, so the
+   * caller proves the snapshot was verified against this exact revision set.
+   * Repeating an already-activated snapshot is idempotent.
+   */
+  readonly commitAndActivateIndexSnapshot: (
+    input: CommitAndActivateIndexSnapshot
   ) => Effect.Effect<
     ActiveIndexSnapshot,
     | InvalidMemoryScope
@@ -599,6 +624,167 @@ const activate = (database: DatabaseSync, input: ActivateIndexSnapshot): ActiveI
   return { record: activated, manifestVersion: actualManifestVersion, activatedAtMs: now }
 }
 
+const commitListedRevision = (
+  database: DatabaseSync,
+  revision: { readonly commitId: string; readonly tenant: string; readonly uid: string }
+): void => {
+  database
+    .prepare(`UPDATE user_manifests SET manifest_version = manifest_version + 1 WHERE tenant = ? AND uid = ?`)
+    .run(revision.tenant, revision.uid)
+  const manifest = database
+    .prepare(`SELECT manifest_version FROM user_manifests WHERE tenant = ? AND uid = ?`)
+    .get(revision.tenant, revision.uid)
+  if (manifest === undefined) throw new Error("manifest disappeared while committing")
+  database
+    .prepare(
+      `UPDATE source_revisions
+          SET state = 'COMMITTED', manifest_version = ?, failure_code = NULL, failure_retryable = NULL,
+              updated_at_ms = ?
+        WHERE commit_id = ?`
+    )
+    .run(integer(manifest, "manifest_version"), Date.now(), revision.commitId)
+}
+
+const commitAndActivate = (
+  database: DatabaseSync,
+  input: CommitAndActivateIndexSnapshot
+): ActiveIndexSnapshot => {
+  const scope = scopeFor(input)
+  if (!Number.isSafeInteger(input.expectedManifestVersion) || input.expectedManifestVersion < 0) {
+    throw new InvalidSnapshotUpdate({
+      snapshotId: input.snapshotId,
+      field: "expectedManifestVersion",
+      reason: "must be a non-negative safe integer"
+    })
+  }
+  if (
+    input.expectedActiveSnapshotId !== null &&
+    input.expectedActiveSnapshotId.trim().length === 0
+  ) {
+    throw new InvalidSnapshotUpdate({
+      snapshotId: input.snapshotId,
+      field: "expectedActiveSnapshotId",
+      reason: "must be null or a non-empty snapshot id"
+    })
+  }
+  const record = selectSnapshotRecord(database, input.snapshotId)
+  if (record === undefined) throw new UserIndexSnapshotNotFound({ snapshotId: input.snapshotId })
+  if (
+    record.snapshot.scope.tenantId !== scope.tenantId ||
+    record.snapshot.scope.uid !== scope.uid
+  ) {
+    throw new SnapshotScopeMismatch({
+      snapshotId: input.snapshotId,
+      tenant: input.tenant,
+      uid: input.uid
+    })
+  }
+  const pointer = selectPointer(database, input)
+  if (pointer !== undefined && text(pointer, "snapshot_id") === input.snapshotId) {
+    if (record.state !== "ACTIVE") {
+      throw new Error("active snapshot pointer named a snapshot that was not ACTIVE")
+    }
+    return {
+      record,
+      manifestVersion: integer(pointer, "manifest_version"),
+      activatedAtMs: integer(pointer, "activated_at_ms")
+    }
+  }
+  if (record.state !== "VERIFIED") {
+    throw new InvalidSnapshotTransition({
+      snapshotId: input.snapshotId,
+      current: record.state,
+      requested: "ACTIVE"
+    })
+  }
+  const manifest = database
+    .prepare(`SELECT manifest_version FROM user_manifests WHERE tenant = ? AND uid = ?`)
+    .get(input.tenant, input.uid)
+  const preCommitVersion = manifest === undefined ? 0 : integer(manifest, "manifest_version")
+  if (preCommitVersion !== input.expectedManifestVersion) {
+    throw new SnapshotActivationConflict({
+      tenant: input.tenant,
+      uid: input.uid,
+      snapshotId: input.snapshotId,
+      expectedManifestVersion: input.expectedManifestVersion,
+      actualManifestVersion: preCommitVersion
+    })
+  }
+  const listed = new Set(record.snapshot.sourceCommitIds)
+  for (const commitId of listed) {
+    const revision = selectRevisionByCommitId(database, commitId)
+    if (revision === undefined) {
+      throw new Error(`snapshot ${input.snapshotId} listed a missing revision ${commitId}`)
+    }
+    if (revision.state === "COMMITTED") continue
+    if (revision.state === "CONSOLIDATED" && revision.failureRetryable !== false) {
+      commitListedRevision(database, revision)
+      continue
+    }
+    throw new SnapshotRevisionNotCommitted({
+      snapshotId: input.snapshotId,
+      commitId,
+      state: revision.state
+    })
+  }
+  const committedRows = database
+    .prepare(`SELECT commit_id FROM source_revisions WHERE tenant = ? AND uid = ? AND state = 'COMMITTED'`)
+    .all(input.tenant, input.uid)
+  const uncovered = committedRows
+    .map((row) => text(row, "commit_id"))
+    .filter((commitId) => !listed.has(commitId))
+    .sort((left, right) => left.localeCompare(right))
+  if (uncovered.length > 0) {
+    throw new SnapshotRevisionCoverageMismatch({
+      snapshotId: input.snapshotId,
+      missingCommitIds: uncovered
+    })
+  }
+  const postCommitManifest = database
+    .prepare(`SELECT manifest_version FROM user_manifests WHERE tenant = ? AND uid = ?`)
+    .get(input.tenant, input.uid)
+  const postCommitVersion =
+    postCommitManifest === undefined ? 0 : integer(postCommitManifest, "manifest_version")
+  const actualActiveSnapshotId =
+    pointer === undefined ? null : text(pointer, "snapshot_id")
+  if (actualActiveSnapshotId !== input.expectedActiveSnapshotId) {
+    throw new SnapshotActivePointerConflict({
+      tenant: input.tenant,
+      uid: input.uid,
+      snapshotId: input.snapshotId,
+      expectedActiveSnapshotId: input.expectedActiveSnapshotId,
+      actualActiveSnapshotId
+    })
+  }
+  const now = Date.now()
+  if (pointer !== undefined) {
+    const previousId = text(pointer, "snapshot_id")
+    const previous = selectSnapshotRecord(database, previousId)
+    if (previous === undefined || previous.state !== "ACTIVE") {
+      throw new Error("active snapshot pointer named a snapshot that was not ACTIVE")
+    }
+    database
+      .prepare(`UPDATE user_index_snapshots SET state = 'SUPERSEDED', updated_at_ms = ? WHERE snapshot_id = ?`)
+      .run(now, previousId)
+  }
+  database
+    .prepare(`UPDATE user_index_snapshots SET state = 'ACTIVE', updated_at_ms = ? WHERE snapshot_id = ?`)
+    .run(now, input.snapshotId)
+  database
+    .prepare(
+      `INSERT INTO active_index_snapshots (tenant, uid, snapshot_id, manifest_version, activated_at_ms)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(tenant, uid) DO UPDATE SET
+         snapshot_id = excluded.snapshot_id,
+         manifest_version = excluded.manifest_version,
+         activated_at_ms = excluded.activated_at_ms`
+    )
+    .run(input.tenant, input.uid, input.snapshotId, postCommitVersion, now)
+  const activated = selectSnapshotRecord(database, input.snapshotId)
+  if (activated === undefined) throw new Error("activated user index snapshot was not readable")
+  return { record: activated, manifestVersion: postCommitVersion, activatedAtMs: now }
+}
+
 const readActive = (
   database: DatabaseSync,
   input: UserIndexSnapshotScope
@@ -704,5 +890,22 @@ export const createSnapshotOperations = (database: DatabaseSync): SnapshotOperat
         cause instanceof SnapshotActivationConflict
           ? cause
           : new IngestManifestUnavailable({ operation: "activateIndexSnapshot", cause })
+    }),
+
+  commitAndActivateIndexSnapshot: (input) =>
+    Effect.try({
+      try: () => transaction(database, () => commitAndActivate(database, input)),
+      catch: (cause) =>
+        cause instanceof InvalidMemoryScope ||
+        cause instanceof InvalidSnapshotUpdate ||
+        cause instanceof UserIndexSnapshotNotFound ||
+        cause instanceof SnapshotScopeMismatch ||
+        cause instanceof InvalidSnapshotTransition ||
+        cause instanceof SnapshotRevisionNotCommitted ||
+        cause instanceof SnapshotRevisionCoverageMismatch ||
+        cause instanceof SnapshotActivePointerConflict ||
+        cause instanceof SnapshotActivationConflict
+          ? cause
+          : new IngestManifestUnavailable({ operation: "commitAndActivateIndexSnapshot", cause })
     })
 })

@@ -4,7 +4,7 @@ import { memoryScopeFromRevision } from "../MemoryScope.js"
 import { integer, nullableBoolean, nullableText, revisionKey, text } from "./Rows.js"
 
 /** Current SQLite manifest schema (`PRAGMA user_version`); recorded inside every snapshot descriptor. */
-export const MANIFEST_SCHEMA_VERSION = 10
+export const MANIFEST_SCHEMA_VERSION = 11
 
 class UnsupportedManifestSchemaVersion extends Error {
   readonly _tag = "UnsupportedManifestSchemaVersion" as const
@@ -155,6 +155,13 @@ const TABLES = `
     rejected_identity TEXT NOT NULL,
     detected_at_ms INTEGER NOT NULL,
     PRIMARY KEY (reduced_id, kind)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS supersession_decisions (
+    commit_id TEXT PRIMARY KEY,
+    canonical_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (commit_id) REFERENCES source_revisions (commit_id)
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS user_index_snapshots (

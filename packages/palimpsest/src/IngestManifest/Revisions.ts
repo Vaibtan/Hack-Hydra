@@ -3,7 +3,16 @@ import type { DatabaseSync } from "node:sqlite"
 import { Effect } from "effect"
 import { parseMemoryScope, type MemoryScope } from "../MemoryScope.js"
 import { parseExtractionGeneration } from "../SourceIdentity.js"
-import { integer, revisionKey, selectRevision, selectRevisionByCommitId, text, transaction } from "./Rows.js"
+import {
+  decodeRevision,
+  integer,
+  revisionKey,
+  REVISION_COLUMNS,
+  selectRevision,
+  selectRevisionByCommitId,
+  text,
+  transaction
+} from "./Rows.js"
 import {
   IngestManifestUnavailable,
   IngestRevisionBlocked,
@@ -17,7 +26,8 @@ import {
   type IngestState,
   type RecordIngestFailure,
   type SourceRevision,
-  type SourceRevisionIdentity
+  type SourceRevisionIdentity,
+  type SourceRevisionScope
 } from "./Types.js"
 
 export interface RevisionOperations {
@@ -43,6 +53,14 @@ export interface RevisionOperations {
   readonly readExtractionGeneration: (
     id: string
   ) => Effect.Effect<ExtractionGenerationReference | null, InvalidSourceRevision | IngestManifestUnavailable>
+  /** Every revision recorded for one scope, ordered by session ordinal (then commit id). */
+  readonly listScopeRevisions: (
+    scope: SourceRevisionScope
+  ) => Effect.Effect<ReadonlyArray<SourceRevision>, InvalidSourceRevision | IngestManifestUnavailable>
+  /** The scope's committed manifest version (the counter every COMMITTED transition bumps); 0 when untouched. */
+  readonly readManifestVersion: (
+    scope: SourceRevisionScope
+  ) => Effect.Effect<number, InvalidSourceRevision | IngestManifestUnavailable>
 }
 
 const NEXT_STATE: Readonly<Record<IngestState, IngestState | null>> = {
@@ -367,5 +385,39 @@ export const createRevisionOperations = (database: DatabaseSync): RevisionOperat
         cause instanceof InvalidSourceRevision
           ? cause
           : new IngestManifestUnavailable({ operation: "readGeneration", cause })
+    }),
+
+  listScopeRevisions: (scope) =>
+    Effect.try({
+      try: () => {
+        const parsed = scopeFor(scope)
+        return database
+          .prepare(
+            `SELECT ${REVISION_COLUMNS} FROM source_revisions
+              WHERE tenant = ? AND uid = ?
+              ORDER BY session_ordinal ASC, commit_id ASC`
+          )
+          .all(parsed.tenantId, parsed.uid)
+          .map(decodeRevision)
+      },
+      catch: (cause) =>
+        cause instanceof InvalidSourceRevision
+          ? cause
+          : new IngestManifestUnavailable({ operation: "listScopeRevisions", cause })
+    }),
+
+  readManifestVersion: (scope) =>
+    Effect.try({
+      try: () => {
+        const parsed = scopeFor(scope)
+        const row = database
+          .prepare(`SELECT manifest_version FROM user_manifests WHERE tenant = ? AND uid = ?`)
+          .get(parsed.tenantId, parsed.uid)
+        return row === undefined ? 0 : integer(row, "manifest_version")
+      },
+      catch: (cause) =>
+        cause instanceof InvalidSourceRevision
+          ? cause
+          : new IngestManifestUnavailable({ operation: "readManifestVersion", cause })
     })
 })

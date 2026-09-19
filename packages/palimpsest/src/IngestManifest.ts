@@ -2,6 +2,7 @@ import { Config, Context, Effect, Layer } from "effect"
 import type { NumericIdForKey } from "@palimpsest/hydra"
 import { createArtifactOperations, type ArtifactOperations } from "./IngestManifest/Artifacts.js"
 import { createCanonicalViewOperations, type CanonicalViewOperations } from "./IngestManifest/CanonicalView.js"
+import { createEnrichmentOperations, type EnrichmentOperations } from "./IngestManifest/Enrichments.js"
 import { createGenerationOperations, type GenerationOperations } from "./IngestManifest/Generations.js"
 import { createGraphClaimOperations, type GraphClaimOperations } from "./IngestManifest/GraphClaims.js"
 import { createProjectionOperations, type ProjectionOperations } from "./IngestManifest/Projection.js"
@@ -30,6 +31,7 @@ export {
   InvalidSnapshotTransition,
   InvalidSnapshotUpdate,
   InvalidSourceRevision,
+  InvalidSupersessionDecisions,
   ProjectionDeltaConflict,
   ProjectionVersionConflict,
   SNAPSHOT_STATES,
@@ -39,6 +41,7 @@ export {
   SnapshotRevisionNotCommitted,
   SnapshotScopeMismatch,
   SnapshotVerificationConflict,
+  SupersessionDecisionConflict,
   UserIndexSnapshotBindingMismatch,
   UserIndexSnapshotConflict,
   UserIndexSnapshotNotFound
@@ -53,6 +56,7 @@ export type {
   BeginSourceRevision,
   BeginSourceRevisionResult,
   ClaimGraphId,
+  CommitAndActivateIndexSnapshot,
   CompleteGraphIdRekey,
   EntityCanonicalViewScope,
   ExtractionGenerationReference,
@@ -73,13 +77,19 @@ export type {
   SnapshotState,
   SourceRevision,
   SourceRevisionIdentity,
+  SourceRevisionScope,
   StoreEntityCanonicalView,
   StoreExtractionArtifact,
   StoreIndexGeneration,
+  StoreSupersessionDecisions,
+  SupersessionDecisionLink,
+  SupersessionDecisions,
+  SupersessionLinkEndpoint,
   UserIndexSnapshotRecord,
   UserIndexSnapshotScope,
   VerifyUserIndexSnapshot
 } from "./IngestManifest/Types.js"
+export type { EnrichmentOperations } from "./IngestManifest/Enrichments.js"
 export type { GraphClaimOperations } from "./IngestManifest/GraphClaims.js"
 export type { SnapshotOperations } from "./IngestManifest/Snapshots.js"
 export { createUserIndexSnapshot, InvalidUserIndexSnapshot, parseUserIndexSnapshot } from "./UserIndexSnapshot.js"
@@ -92,6 +102,7 @@ export interface IngestManifestService
     ProjectionOperations,
     GenerationOperations,
     CanonicalViewOperations,
+    EnrichmentOperations,
     GraphClaimOperations,
     SnapshotOperations {}
 
@@ -109,6 +120,7 @@ const makeService = (path: string, numericIdForKey?: NumericIdForKey) =>
       ...createProjectionOperations(database),
       ...createGenerationOperations(database),
       ...createCanonicalViewOperations(database),
+      ...createEnrichmentOperations(database),
       ...createGraphClaimOperations(database, numericIdForKey),
       ...createSnapshotOperations(database)
     }))

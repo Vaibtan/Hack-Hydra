@@ -167,7 +167,7 @@ export class SnapshotGraphPlanRejected extends Data.TaggedError("SnapshotGraphPl
     | "unlistedSourceRevision"
     | "duplicateSourceRevision"
     | "revisionScopeMismatch"
-    | "revisionNotCommitted"
+    | "revisionNotReady"
     | "extractionGenerationMismatch"
     | "artifactBindingMismatch"
     | "sourceSessionMismatch"
@@ -376,8 +376,16 @@ export const planSnapshotGraph = (
     if (revision.tenant !== scope.tenantId || revision.uid !== scope.uid) {
       return fail("revisionScopeMismatch", revision.commitId)
     }
-    if (revision.state !== "COMMITTED") {
-      return fail("revisionNotCommitted", `${revision.commitId} at ${revision.state}`)
+    // ENRICHED is the first state where every per-revision durable input
+    // (transcript, index graph, artifact, supersession decisions) exists, so a
+    // build is reproducible from it onward. COMMITTED is enforced separately by
+    // the terminal activation transaction before the snapshot can go live.
+    if (
+      revision.state !== "ENRICHED" &&
+      revision.state !== "CONSOLIDATED" &&
+      revision.state !== "COMMITTED"
+    ) {
+      return fail("revisionNotReady", `${revision.commitId} at ${revision.state}`)
     }
     if (revision.extractionGeneration !== generation.extractionGenerationId) {
       return fail(

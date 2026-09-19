@@ -66,7 +66,7 @@ export const decodeRevision = (row: DatabaseRow): SourceRevision => {
   }
 }
 
-const REVISION_COLUMNS = `tenant, uid, logical_session_id, source_digest, source_bytes, extraction_generation,
+export const REVISION_COLUMNS = `tenant, uid, logical_session_id, source_digest, source_bytes, extraction_generation,
               session_ordinal, commit_id, state, manifest_version, failure_code, failure_retryable`
 
 export const selectRevision = (database: DatabaseSync, key: string): SourceRevision | undefined => {

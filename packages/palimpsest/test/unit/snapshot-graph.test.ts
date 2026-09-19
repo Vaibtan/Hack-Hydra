@@ -1,20 +1,8 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import {
-  CurrentHydraBookmark,
-  edgeId,
-  FULL_KEY_PROPERTY,
-  HydraClient,
-  vertexId,
-  type HydraPath,
-  type MsPathsConfig,
-  type RelRow,
-  type Row,
-  type Scalar,
-  type VertexRow
-} from "@palimpsest/hydra"
-import { Effect, Layer, Option, Result } from "effect"
+import { HydraClient, vertexId } from "@palimpsest/hydra"
+import { Effect, Layer, Result } from "effect"
 import { describe, expect, it } from "vitest"
-import { behaviorFake } from "../BehaviorFake.js"
+import { makeHydraMemory, relIdentity, writeSourcePlane, type HydraMemory } from "../HydraMemory.js"
 import { claimDigest } from "../../src/ClaimGraph.js"
 import {
   createEntityCanonicalView,
@@ -39,7 +27,7 @@ import {
   createExtractionGeneration,
   sourceRevisionInputForSession
 } from "../../src/SourceIdentity.js"
-import { planSourceTranscriptWrite, sourceTurnKey } from "../../src/SourceTranscript.js"
+import { sourceTurnKey } from "../../src/SourceTranscript.js"
 import { stems } from "../../src/Tokenize.js"
 import {
   planSnapshotGraph,
@@ -230,176 +218,9 @@ const snapshotFor = (
     })
   )
 
-// ---------------------------------------------------------------------------
-// In-memory Hydra double honoring the client's merge semantics.
-// ---------------------------------------------------------------------------
-
-interface StoredVertex {
-  readonly label: string
-  readonly properties: Record<string, Scalar>
-}
-
-interface StoredRelation {
-  readonly type: string
-  readonly srcKey: string
-  readonly dstKey: string
-  readonly properties: Record<string, Scalar>
-}
-
-const relIdentity = (srcKey: string, type: string, dstKey: string): string =>
-  `${srcKey}|${type}|${dstKey}`
-
-const makeHydraFake = () => {
-  const vertices = new Map<string, StoredVertex>()
-  const relations = new Map<string, StoredRelation>()
-  const calls = { batchMerge: 0, batchRel: 0 }
-  /** Tamper hook fired inside msPaths — verification's first read after writes. */
-  let onRead: (() => void) | undefined
-
-  const merge = (label: string, key: string, properties: Readonly<Record<string, Scalar>>): void => {
-    const existing = vertices.get(key)
-    vertices.set(key, { label, properties: { ...existing?.properties, ...properties } })
-  }
-
-  const node = (key: string) => {
-    const vertex = vertices.get(key)
-    if (vertex === undefined) return undefined
-    return {
-      id: vertexId(key),
-      labels: [vertex.label],
-      properties: { ...vertex.properties, [FULL_KEY_PROPERTY]: key }
-    }
-  }
-
-  const client = behaviorFake<HydraClient>({
-    batchMerge: (label: string, rows: ReadonlyArray<VertexRow>) =>
-      Effect.sync(() => {
-        calls.batchMerge++
-        for (const row of rows) merge(label, row.key, row.properties)
-        return rows.length
-      }),
-    batchRel: (type: string, rows: ReadonlyArray<RelRow>) =>
-      Effect.sync(() => {
-        calls.batchRel++
-        for (const row of rows) {
-          relations.set(relIdentity(row.srcKey, type, row.dstKey), {
-            type,
-            srcKey: row.srcKey,
-            dstKey: row.dstKey,
-            properties: { ...row.properties }
-          })
-        }
-        return rows.length
-      }),
-    getById: (label: string, key: string, properties: ReadonlyArray<string>) =>
-      Effect.sync(() => {
-        const vertex = vertices.get(key)
-        if (vertex === undefined || vertex.label !== label) return Option.none<Row>()
-        const row: Row = { [FULL_KEY_PROPERTY]: key }
-        for (const property of properties) row[property] = vertex.properties[property] ?? null
-        return Option.some(row)
-      }),
-    readGraphIdentities: (kind: "relationship" | "vertex", numericId: number) =>
-      Effect.sync(() => {
-        if (kind === "vertex") {
-          return [...vertices.keys()].filter((key) => vertexId(key) === numericId)
-        }
-        return [...relations.values()]
-          .filter((relation) => edgeId(relation.srcKey, relation.type, relation.dstKey) === numericId)
-          .map((relation) => relIdentity(relation.srcKey, relation.type, relation.dstKey))
-      }),
-    msPaths: (config: MsPathsConfig) =>
-      Effect.sync(() => {
-        onRead?.()
-        const paths: Array<HydraPath> = []
-        for (const sourceValue of config.sourceValues) {
-          const entry = [...vertices.entries()].find(
-            ([, vertex]) =>
-              vertex.label === config.sourceLabel &&
-              vertex.properties[config.sourceProperty] === sourceValue
-          )
-          if (entry === undefined) continue
-          const [sourceKey] = entry
-          const sourceNode = node(sourceKey)
-          if (sourceNode === undefined) continue
-          for (const relation of relations.values()) {
-            if (!config.relTypes.includes(relation.type)) continue
-            const outgoing = relation.srcKey === sourceKey
-            const incoming = relation.dstKey === sourceKey
-            if (config.relDirection === "outgoing" && !outgoing) continue
-            if (config.relDirection === "incoming" && !incoming) continue
-            if (!outgoing && !incoming) continue
-            const otherKey = outgoing ? relation.dstKey : relation.srcKey
-            const otherNode = node(otherKey)
-            if (otherNode === undefined) continue
-            paths.push({
-              // Path nodes follow true edge direction, as HydraDB returns them.
-              nodes: outgoing ? [sourceNode, otherNode] : [otherNode, sourceNode],
-              relationships: [
-                {
-                  id: edgeId(relation.srcKey, relation.type, relation.dstKey),
-                  type: relation.type,
-                  src: vertexId(relation.srcKey),
-                  dst: vertexId(relation.dstKey),
-                  properties: {
-                    ...relation.properties,
-                    [FULL_KEY_PROPERTY]: relIdentity(
-                      relation.srcKey,
-                      relation.type,
-                      relation.dstKey
-                    )
-                  }
-                }
-              ]
-            })
-          }
-        }
-        return paths
-      }),
-    lastBookmark: CurrentHydraBookmark,
-    withCausalBookmark: <A, E, R>(
-      _bookmark: string | undefined,
-      operation: Effect.Effect<A, E, R>
-    ) => operation
-  })
-
-  return {
-    client,
-    vertices,
-    relations,
-    calls,
-    merge,
-    set onRead(hook: (() => void) | undefined) {
-      onRead = hook
-    }
-  }
-}
-
-type HydraFake = ReturnType<typeof makeHydraFake>
-
-const writeSourcePlane = (
-  fake: HydraFake,
-  revision: SourceRevision,
-  session: DatasetSession
-): void => {
-  const plan = Result.getOrThrow(planSourceTranscriptWrite(revision, session))
-  fake.merge("MemoryScope", plan.scope.key, plan.scope.properties)
-  fake.merge("SourceSession", plan.session.key, plan.session.properties)
-  for (const turn of plan.turns) fake.merge("SourceTurn", turn.key, turn.properties)
-  for (const chunk of plan.chunks) fake.merge("SourceTurnChunk", chunk.key, chunk.properties)
-  for (const relation of plan.relations) {
-    fake.relations.set(relIdentity(relation.srcKey, relation.type, relation.dstKey), {
-      type: relation.type,
-      srcKey: relation.srcKey,
-      dstKey: relation.dstKey,
-      properties: {}
-    })
-  }
-}
-
 const commitRevision = (
   manifest: IngestManifestService,
-  fake: HydraFake,
+  fake: HydraMemory,
   session: DatasetSession,
   claims: ReadonlyArray<ExtractedClaim>
 ) =>
@@ -435,13 +256,13 @@ const registerSnapshot = (
     return yield* manifest.registerUserIndexSnapshot({ snapshot })
   })
 
-const makeLayer = (fake: HydraFake, manifestLayer = IngestManifestLayerMemory) => {
+const makeLayer = (fake: HydraMemory, manifestLayer = IngestManifestLayerMemory) => {
   const deps = Layer.mergeAll(manifestLayer, Layer.succeed(HydraClient, fake.client))
   return Layer.mergeAll(deps, Layer.provide(SnapshotGraph.layer, deps))
 }
 
 const run = <A, E>(
-  fake: HydraFake,
+  fake: HydraMemory,
   effect: Effect.Effect<A, E, IngestManifest | SnapshotGraph>,
   manifestLayer = IngestManifestLayerMemory
 ) =>
@@ -696,7 +517,7 @@ describe("planSnapshotGraph", () => {
         input.sources[1]!
       ]
     })
-    expect(uncommitted).toMatchObject({ _tag: "Failure", failure: { reason: "revisionNotCommitted" } })
+    expect(uncommitted).toMatchObject({ _tag: "Failure", failure: { reason: "revisionNotReady" } })
 
     const missing = planSnapshotGraph({
       ...input,
@@ -794,7 +615,7 @@ describe("planSnapshotGraph", () => {
 // ---------------------------------------------------------------------------
 
 describe("SnapshotGraph.build", () => {
-  const seeded = (fake: HydraFake) =>
+  const seeded = (fake: HydraMemory) =>
     Effect.gen(function* () {
       const manifest = yield* IngestManifest
       const revA = yield* commitRevision(manifest, fake, sessionA, [claimA1, claimA2])
@@ -805,7 +626,7 @@ describe("SnapshotGraph.build", () => {
     })
 
   it("writes the graph, verifies read-back, and marks the snapshot VERIFIED", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const result = await run(
       fake,
       Effect.gen(function* () {
@@ -854,7 +675,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("rebuilds an identical snapshot idempotently without rewriting", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const result = await run(
       fake,
       Effect.gen(function* () {
@@ -873,7 +694,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("detects a missing member on read-back and leaves the snapshot BUILDING", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const outcome = await run(
       fake,
       Effect.gen(function* () {
@@ -912,7 +733,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("detects a missing relationship on read-back", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const outcome = await run(
       fake,
       Effect.gen(function* () {
@@ -938,7 +759,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("detects an unexpected member reachable from the root", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const outcome = await run(
       fake,
       Effect.gen(function* () {
@@ -972,7 +793,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("detects an unexpected relationship incoming to a member", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const outcome = await run(
       fake,
       Effect.gen(function* () {
@@ -1014,8 +835,8 @@ describe("SnapshotGraph.build", () => {
     })
   })
 
-  it("rejects a snapshot whose listed revision is not committed", async () => {
-    const fake = makeHydraFake()
+  it("rejects a snapshot whose listed revision has not completed enrichment", async () => {
+    const fake = makeHydraMemory()
     const outcome = await run(
       fake,
       Effect.gen(function* () {
@@ -1041,12 +862,12 @@ describe("SnapshotGraph.build", () => {
 
     expect(outcome).toMatchObject({
       _tag: "Failure",
-      failure: { _tag: "SnapshotGraphPlanRejected", reason: "revisionNotCommitted" }
+      failure: { _tag: "SnapshotGraphPlanRejected", reason: "revisionNotReady" }
     })
   })
 
   it("rejects a FAILED snapshot until it is re-registered", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const result = await run(
       fake,
       Effect.gen(function* () {
@@ -1071,7 +892,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("never lets one snapshot's namespace reach another's", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const result = await run(
       fake,
       Effect.gen(function* () {
@@ -1112,7 +933,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("keeps a revision with no claims reachable through revision coverage", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const result = await run(
       fake,
       Effect.gen(function* () {
@@ -1137,7 +958,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("fails before any write when a stored claim collides with a foreign identity", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     // The seeded snapshot's root key is only known after `begin` assigns commit
     // ids; the reducer resolves it lazily once the effect has registered it.
     let rootKey = ""
@@ -1176,7 +997,7 @@ describe("SnapshotGraph.build", () => {
   })
 
   it("fails when the durable source session was never written", async () => {
-    const fake = makeHydraFake()
+    const fake = makeHydraMemory()
     const outcome = await run(
       fake,
       Effect.gen(function* () {

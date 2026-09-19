@@ -200,6 +200,42 @@ export interface ActivateIndexSnapshot extends UserIndexSnapshotScope {
 }
 
 /**
+ * Atomic terminal lifecycle transaction (S04): commit every listed revision
+ * still parked at CONSOLIDATED, then run the activation compare-and-swap. The
+ * manifest owns both records, so no compensating protocol is needed.
+ */
+export type CommitAndActivateIndexSnapshot = ActivateIndexSnapshot
+
+/** Scope filter for scope-wide revision reads. */
+export interface SourceRevisionScope {
+  readonly tenant: string
+  readonly uid: string
+}
+
+/** One claim reference inside a persisted supersession decision. */
+export interface SupersessionLinkEndpoint {
+  readonly commitId: string
+  readonly claimDigest: string
+}
+
+/** `newer` replaces `older` for the contested slot it was decided under. */
+export interface SupersessionDecisionLink {
+  readonly older: SupersessionLinkEndpoint
+  readonly newer: SupersessionLinkEndpoint
+}
+
+/** The durable per-revision record written once during ENRICHED. */
+export interface SupersessionDecisions {
+  readonly commitId: string
+  readonly links: ReadonlyArray<SupersessionDecisionLink>
+}
+
+export interface StoreSupersessionDecisions {
+  readonly revision: SourceRevision
+  readonly links: ReadonlyArray<SupersessionDecisionLink>
+}
+
+/**
  * The durable manifest record for one immutable per-user projection. It
  * reconstructs the snapshot's full content without reading mutable session
  * counters: identity, ordered committed revisions, build/verification outputs,
@@ -534,6 +570,27 @@ export class SnapshotActivePointerConflict extends Data.TaggedError(
   }
 }
 
+export class InvalidSupersessionDecisions extends Data.TaggedError(
+  "InvalidSupersessionDecisions"
+)<{
+  readonly commitId: string
+  readonly reason: string
+}> {
+  override get message(): string {
+    return `Invalid supersession decisions for ${this.commitId}: ${this.reason}`
+  }
+}
+
+export class SupersessionDecisionConflict extends Data.TaggedError(
+  "SupersessionDecisionConflict"
+)<{
+  readonly commitId: string
+}> {
+  override get message(): string {
+    return `Supersession decisions for ${this.commitId} conflict with the stored record`
+  }
+}
+
 export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestUnavailable")<{
   readonly operation:
     | "open"
@@ -541,8 +598,12 @@ export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestU
     | "advance"
     | "recordFailure"
     | "read"
+    | "listScopeRevisions"
+    | "readManifestVersion"
     | "readGeneration"
     | "readSourceRevisionByCommitId"
+    | "storeSupersessionDecisions"
+    | "readSupersessionDecisions"
     | "applyProjectionDelta"
     | "readProjection"
     | "readProjectionCounts"
@@ -569,6 +630,7 @@ export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestU
     | "listUserIndexSnapshots"
     | "readActiveIndexSnapshot"
     | "activateIndexSnapshot"
+    | "commitAndActivateIndexSnapshot"
   readonly cause: unknown
 }> {
   override get message(): string {
@@ -609,4 +671,6 @@ export type IngestManifestError =
   | SnapshotScopeMismatch
   | SnapshotActivationConflict
   | SnapshotActivePointerConflict
+  | InvalidSupersessionDecisions
+  | SupersessionDecisionConflict
   | IngestManifestUnavailable
