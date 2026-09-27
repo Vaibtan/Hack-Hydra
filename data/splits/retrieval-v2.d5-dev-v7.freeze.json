@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "lane": "retrieval-v2-legacy-g3",
+  "purpose": "fresh-dev-qualification",
+  "decision": {
+    "selected": "fresh-dev-qualification-without-tuning",
+    "supersedes": "data/splits/retrieval-v2.d5-dev-v6.freeze.json",
+    "reason": "V6 propagated its 300-second cold client deadline, but its separately pinned HydraDB server query cap remained 120 seconds. Question 45 therefore failed at the server cap after 44 complete pairs. This contract pins a 300-second server cap and a 295-second unscored cold client deadline while preserving the immediate warm counted pass and every semantic and acceptance setting.",
+    "noTuning": "No retrieval, packing, prompt, model, threshold, or answer-selection change is permitted after this manifest is committed and before the qualification result is read."
+  },
+  "sourceFreeze": {
+    "path": "data/splits/retrieval-v2.freeze.json",
+    "sha256": "17b02705182064f66d48ca9fdc198e6cbffa49b2f3864d3e8b5b35278bf5ba41",
+    "commit": "e2ae440"
+  },
+  "contract": {
+    "codeIdentity": {
+      "baseCommit": "44930d5e44955e0ce59b31ef1297b9fd02bcbb41",
+      "harnessCommit": "9d8f310cdc8fe9655b65c3fde1adf718bdffd112",
+      "lockfileSha256": "fd8a47e1464fd453857edb4453cabdf9fdb9b1a2c3ed1a4e73fb579dc29bb33a"
+    },
+    "models": {
+      "reader": "gpt-5.6-luna",
+      "select": "gpt-5.6-luna",
+      "sufficiency": "gpt-5.6-luna"
+    },
+    "extractionGeneration": "extract-v1-fffef7bb23a92938adeba1bd1b781a016b019a7bfac75708368dc719fd4de6e4",
+    "profile": "full",
+    "variant": [],
+    "granularity": null,
+    "arm": {
+      "split": "dev",
+      "eligible": 60,
+      "batches": 60,
+      "batchSize": 1,
+      "concurrency": 1,
+      "priming": {
+        "pass": "cold",
+        "cacheMode": "read-write",
+        "readTimeoutMs": 295000,
+        "outputRoot": "artifacts/retrieval-v2/d5-dev-qualification-v7/priming"
+      },
+      "counted": {
+        "pass": "warm",
+        "cacheMode": "cache-only",
+        "outputRoot": "artifacts/retrieval-v2/d5-dev-qualification-v7/counted"
+      }
+    },
+    "scoring": {
+      "model": "gpt-4o-2024-08-06",
+      "endpoint": "chat-completions",
+      "temperature": 0,
+      "maxTokens": 10,
+      "n": 1,
+      "parser": "case-insensitive-yes-substring"
+    },
+    "runtime": {
+      "configSha256": "7f636c017be30eafa3aabadc869579a587996f7cce906854bc0b9a82d9b9dcac",
+      "imageId": "sha256:514349a17890bf2a35e5e5eb81b41c09b771b07e497fa3f51eb22e7727d66081",
+      "composeSha256": "c8e61606061e37254a4c2ac848133665647255d37928679ff10a17c40e3a3099",
+      "queryRuntimeMs": 300000
+    },
+    "prices": {
+      "path": "data/splits/retrieval-v2.prices.json",
+      "sha256": "ee69f269e43d04aac031d1e7e912ce38a630cd7ac22c41de3a80b794bfad4b26",
+      "commit": "e2ae440"
+    }
+  },
+  "comparison": {
+    "baselineAnswer": {
+      "path": "results/palimpsest-dev.json",
+      "sha256": "ecf74de832ef524ade64b211812cb4051560d052d5c19b89f114af999277916e",
+      "commit": "72a2fe5"
+    },
+    "baselineRescore": "artifacts/retrieval-v2/d5-dev-qualification-v7/palimpsest-dev.upstream-score.json",
+    "candidateAnswer": "artifacts/retrieval-v2/d5-dev-qualification-v7/counted/palimpsest-v2-dev.json",
+    "candidateRescore": "artifacts/retrieval-v2/d5-dev-qualification-v7/palimpsest-v2-dev.upstream-score.json",
+    "gateResult": "artifacts/retrieval-v2/d5-dev-qualification-v7/gate.json"
+  },
+  "acceptanceThresholds": {
+    "minimumAnswerableCorrectGain": 3,
+    "maximumWorstTypeAccuracyRegressionPercentagePoints": 8,
+    "maximumFalseAbstentionPercent": 8,
+    "minimumAbstentionCorrect": 3,
+    "maximumWarmGraphP50Ms": 400,
+    "maximumReaderInputTokensP50": 1200
+  },
+  "invalidRunConditions": [
+    "any pinned artifact, code, model, runtime, population, batching, price, or deadline identity differs",
+    "any counted pass records a live provider call or is not warm",
+    "any output is overwritten or any batch is selectively omitted",
+    "the provider-resolved judge model differs from gpt-4o-2024-08-06",
+    "retrieval, packing, prompt, model, threshold, or answer-selection code changes after this manifest is committed",
+    "the 60-row exact upstream rescores or the predeclared gate cannot be produced"
+  ],
+  "authorization": {
+    "runtimeAndProviderSpend": true,
+    "scope": "60-question dev priming, counted qualification, and exact upstream rescoring of the frozen v1 and new v2 dev answer artifacts only; excludes the 104-question test arm"
+  },
+  "signOff": {
+    "by": "maintainer",
+    "at": "2026-09-27",
+    "note": "The maintainer approved the recommended D5 fresh-dev qualification, resolution of its remaining operational issues, and provider spend. V7 pins both sides of the cold timeout after v6 exposed the independent 120-second server cap."
+  }
+}
