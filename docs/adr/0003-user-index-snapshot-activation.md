@@ -27,7 +27,10 @@ manifestSchemaVersion
 All snapshot graph keys include tenant and snapshot scope. Activation happens
 only after graph write, read-back verification, and manifest commit succeed,
 in one SQLite compare-and-swap that preserves the previous active snapshot
-until the terminal transaction commits.
+until the terminal transaction commits. The legacy active-generation and
+active-canonical-view rows are companion indexes, not independent visibility
+authorities; activation updates them to the snapshot's pinned bindings inside
+that same transaction.
 
 Callers stay independent of the representation behind:
 

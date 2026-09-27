@@ -75,14 +75,16 @@ reached or whose `/models` is empty warns and proceeds; the run then fails on th
 Refusing to start on a listing outage would make it look like a configuration error. The eval has
 verified ids since #31; the server, demo and CLIs verify at startup too.
 
-**Usage is per model** (`Llm.ts`). A run that reads with luna and judges with `gpt-4o` has two
+**Usage is per model** (`Llm.ts`). A run that reads with luna and judges with the pinned `gpt-4o-2024-08-06` snapshot has two
 prices; one number would be wrong by 10× on half of it. The v4 service is constructed with
 `Layer.effect`; it owns the shared usage ref and semaphore and retains one model layer value per
 model id.
 
-**`generateText` exists for the judge** (`Llm.ts`). The five LongMemEval templates end "Answer yes
+**`generateText` exists for text scoring calls** (`Llm.ts`). The five LongMemEval templates end "Answer yes
 or no only" and upstream scores `'yes' in response.lower()`; wrapping that in a JSON schema would
-change the measurement. Its cache key uses `schema: { form: "text" }`. A cache entry that no longer
+change the measurement. The frozen upstream judge uses Chat Completions, temperature 0,
+`max_tokens: 10`, and `n: 1`; its cache key includes that protocol contract. Historical Responses
+entries retain `schema: { form: "text" }` for exact legacy replay. A cache entry that no longer
 decodes means the schema moved: re-ask, never serve a stale shape.
 
 **Cache key and stored prompt** (`Cache.ts`). Key = `sha256(model + system + prompt + schema)`, so a
@@ -197,10 +199,11 @@ scans every Turn in the store.
 **Source key excludes extraction state** (`SourceTranscript.ts`). Re-extracting the same bytes must
 not duplicate the verbatim transcript.
 
-**Manifest schema v10** (`IngestManifest/Schema.ts`). The original table omitted
+**Manifest schema v12** (`IngestManifest/Schema.ts`). The original table omitted
 `logical_session_id` from the revision identity; that legacy shape is renamed, re-keyed, and dropped
 inside the migration transaction. Schema v9 introduced the tenant-scoped, length-framed revision
-keys; v10 adds immutable user snapshots and the active pointer. Opening a version newer than v10
+keys; v10 adds immutable user snapshots and the active pointer, v11 adds aggregate supersession
+decisions, and v12 adds independently durable per-chain decisions. Opening a version newer than v12
 fails before journal or migration pragmas run, so an unsupported future database is not rewritten.
 
 **Canonical view target is the lexically first `(canon, id)`** per component
@@ -393,6 +396,38 @@ characters apart in one turn produce disjoint ±300 windows; merging them and wi
 the union would drop one claim's evidence while `spanHash` records the union as seen. Kept after the
 cleanup because the merge keeps the *winner's* window, not the union's.
 
+**Bitemporal perspectives** (`TimeScope.ts`, D7). Recorded time is when the manifest accepted the
+source (revision `acceptedAtMs`); `sessionDate` is source metadata and is not the transaction-time
+axis. Valid time is when the fact held (`tEvent`/`tPrec`, precision-aware via `claimSpan`, uncertainty
+stated by `validUncertainty`). Snapshot graph format v2 materializes `accepted_at_ms` on revisions and
+claims, and read-time root validation rejects older projections instead of silently applying the wrong
+axis.
+Recorded-time queries cut future sessions even without a phrase and match intervals on the recorded
+axis; valid-time queries match the event span and never cut on recording date; bitemporal requires
+both. The default is recorded time, so an earlier recorded-time answer/hash cannot change when
+future sessions land. The legacy lane keeps the mixed behavior (interval on `tEvent`, no future cut)
+as the explicit compatibility path; it never takes a perspective.
+
+**`asOf` is the exact compatibility cut** (`QueryContext.ts`, `Scoring.ts`). It remains the maximum
+visible session ordinal, identical under every perspective, and is applied before every per-arm and
+union cap. The question date and time interval use manifest acceptance for recorded-time filtering;
+`asOf` supplies the separately explicit ordinal boundary retained by the public API.
+
+**Generation is pinned by the snapshot namespace** (`SnapshotRows.ts`). One snapshot covers one
+index generation and one canonical view, so the namespace-prefix check is the generation filter;
+`requireSnapshotProvenance` additionally rejects candidates whose carried generation or view drifts
+from the bound record.
+
+**INCOMPLETE is a verdict, not an absence** (`Retrieve.ts`). An empty grounding from a degraded
+search (timed-out arm, union drops, capped slot expansion) returns `INCOMPLETE` with reason
+`INCOMPLETE_MEMORY` plus the completeness statement; a clean empty search returns `ABSENT` with
+`A1`/`A2` as before. The answer loop never reads on `INCOMPLETE`, and a degraded refinement hunt is
+abandoned to the grounded first answer rather than reported as an absence.
+
+**Below-watermark reads fail typed** (`QueryContext.ts`). Snapshot reads require `COMMITTED`; a scope
+with no usable snapshot answers `NoActiveSnapshot`, never an absence and never a wait. Coverage
+(covered vs recorded vs uncommitted revisions) rides on every temporal statement instead.
+
 ## Sufficiency
 
 **Why the stage exists** (`Sufficiency.ts`). On this benchmark misses are overwhelmingly
@@ -499,10 +534,12 @@ window would invent a span the baseline never produced), returned chronological 
 path, all `CURRENT` because a term index has no supersession — that absence is the comparison.
 
 **Judge** (`src/Judge.ts`). Templates copied verbatim from LongMemEval `src/evaluation/evaluate_qa.py`
-(fetched, not typed). Deviations: upstream pins `gpt-4o-2024-08-06`, this uses the `gpt-4o` alias and
-records the resolved model per row; upstream caps at `max_tokens: 10`, the reply is free text and
-scored by the same `'yes' in response.lower()`. An unknown question type throws (upstream raises
-`NotImplementedError`). Judgements are cached by model + prompt so a table re-run is $0 and stable.
+(fetched, not typed). The primary scoring layer now pins upstream revision `d6dc8b5`, Chat
+Completions, `gpt-4o-2024-08-06`, temperature 0, `max_tokens: 10`, `n: 1`, and the same
+`'yes' in response.lower()` parser. It records requested and provider-resolved model identities and
+refuses a resolved-model mismatch. The earlier Responses/`gpt-4o` scores remain historical
+secondary evidence and are used only for cache-only semantic replay. An unknown question type
+throws (upstream raises `NotImplementedError`).
 
 **Oracle ceiling** (`src/Oracle.ts`). `answer_session_ids` matches `session.sid`, not `key`, so the 13
 haystacks with a duplicated sid include both revisions — the generous reading, right for a ceiling.

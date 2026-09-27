@@ -4,8 +4,8 @@
 abstention shows the query that found nothing, and "what did I believe last March" is a filter
 rather than a snapshot.**
 
-Built on HydraDB 0.1.0. TypeScript + Effect. Evaluated on LongMemEval_S with the official judge
-against two baselines.
+Built on HydraDB 0.1.0. TypeScript + Effect. Evaluated on LongMemEval_S against two baselines.
+Historical tables use the local judge protocol and remain secondary until exact upstream rescoring.
 
 ---
 
@@ -184,9 +184,10 @@ number for $0.00.
 
 ### Answer accuracy — `results/table-60.md`
 
-Ask → reader → the official LongMemEval judge (`gpt-4o`, temperature 0, five templates copied
-verbatim from upstream's `evaluate_qa.py`, upstream's `'yes' in response.lower()` scoring inherited
-quirk and all). Four systems, the same reader prompt and the same judge, differing in exactly one
+Ask → reader → the historical local judge (`gpt-4o` through the Responses API, five templates copied
+verbatim from upstream's `evaluate_qa.py`, and upstream's `'yes' in response.lower()` parser). These
+scores predate the exact upstream scoring freeze and are secondary evidence until immutably
+rescored with the pinned Chat Completions protocol. Four systems, the same reader prompt and judge, differing in exactly one
 thing — how the text handed to the reader was chosen.
 
 **On 60 questions** — **54 answerable and 6 abstention**. The run was scoped to 100 and the ingest reached

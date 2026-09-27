@@ -1,16 +1,16 @@
 # Palimpsest implementation plan
 
-Status: S00-S04 verified; D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S05-S19 remain
+Status: S00-S05B verified and committed at `e2ae440`; S14 in progress (the evidence contract, exact upstream scoring layer, and pinned Effect 3 harness are verified; the cache-only dev replay is authorized and pending execution, and the test arm remains blocked on that replay plus sign-off); D1-D7 are recorded in ADR-0003 through ADR-0009; implementation slices S06-S19 remain
 
-Implementation baseline: committed code at `1445e77`, inspected and reverified 2026-09-19
+Implementation baseline: committed S05/S05A/S05B implementation, corrective hardening, and S14 harness/evidence artifacts at `e2ae440`, inspected and reverified 2026-09-27
 
 Committed checkpoints: repository guidance `4ae686b`; S00 population evidence `44930d5`; S01 scoped graph identities `3449e39`; unit-test consolidation `a0025a8`; Effect v4, S02, and corrective hardening `9705c32`; S03 immutable aggregate snapshot graph `1445e77`; S04 lifecycle orchestration and atomic activation `4d4bfbf`. The vendor guidance change referenced by `4ae686b` is commit `3e6803a` inside `vendor/hydradb`.
 
-Current local verification at `4d4bfbf` (2026-09-19): `pnpm install --frozen-lockfile` passes, `pnpm lint` passes with zero findings, `pnpm test:unit` passes 67 files / 688 tests, `pnpm typecheck` passes, `pnpm demo:build` passes, and the staged implementation passed `git diff --check`. The recursive dependency graph contains only `effect@4.0.0-beta.107`; there is no Effect v3 compatibility package or fallback path. This is local contract evidence, not live HydraDB or production-readiness evidence.
+Current local verification on the S05 corrective working tree (2026-09-26): `pnpm lint`, `pnpm test:unit`, `pnpm typecheck`, `pnpm demo:build`, and `git diff --check` pass; the exact unit/build counts are recorded in the latest completed-slice evidence below. The dependency graph remains pinned to `effect@4.0.0-beta.107`. This is local contract evidence, not live HydraDB, provider, restart, or production-readiness evidence.
 
 Audience: a fresh implementation agent working one reviewable slice at a time
 
-This plan turns the current retrieval-v2 findings and open GitHub work into a dependency-ordered execution checklist. It is deliberately stricter than the issue labels: several central components exist, but the current transactional index stops at `INDEXED` and is not query-visible. The retrieval-v2 **dev adoption gate did pass** on 2026-08-31; that result is separate from the still-open transactional/runtime production gate.
+This plan turns the current retrieval-v2 findings and open GitHub work into a dependency-ordered execution checklist. It is deliberately stricter than the issue labels: S04 now completes the transactional lifecycle and atomically activates verified snapshots, but the production reader does not consume them until S05. The retrieval-v2 **dev adoption gate did pass** on 2026-08-31; that result is separate from the still-open transactional/runtime production gate.
 
 The destination is one coherent path from accepted source data to an immutable, tenant-scoped query snapshot, with atomic activation, reproducible receipts, bounded serving behavior, and honest evaluation evidence.
 
@@ -39,14 +39,14 @@ drift and correct the other document without silently changing this plan's contr
 
 ### Verified from the repository
 
-- `TransactionalSourceIndex` persists source revisions and projection state, but explicitly rejects later lifecycle states and returns `queryVisible: false`.
+- `TransactionalSourceIndex` drives revisions through `COMMITTED`, builds and verifies immutable aggregate snapshots, and atomically activates them; the production ask/read path now binds each request to one active snapshot. The legacy query-visible graph remains only behind `LegacyG3Adapter` for the frozen benchmark/migration lane and not-yet-migrated auxiliary endpoints.
 - The manifest already models source revisions, canonical-view activation, projection reconciliation, generation metadata, and commit locks. Extend these foundations instead of building a second manifest.
 - `Ingest.ts` is a separate legacy path. Its session-only existence check, mutable ordinal calculation, and read-modify-write counters are not a safe concurrent commit protocol.
 - S01 made every new-plane source and index graph key tenant-scoped through validated, length-framed `MemoryScope` identity. Legacy bare-`uid` keys remain only behind the explicit benchmark/migration compatibility boundary; S02 added snapshot scope.
 - An index generation identifies configuration/code. It is shared across sessions, so pointing a user directly at a generation cannot hide partial graph writes from a later session.
 - The source-specific index graph is not the same shape as the legacy per-user token/slot query graph. Query visibility requires an aggregate immutable projection or an equivalent reader redesign.
 - The repository now uses Effect `4.0.0-beta.107` throughout. Effect v4 `Schema` codecs validate Hydra success/error envelopes, datasets, persisted canonical artifacts, eval envelopes, runtime inspection, provider model discovery, demo API responses, and the S02 snapshot descriptor at their owning boundaries. Subsequent slices must extend these codecs directly; do not add casts, manual `unknown` walkers, `@effect/schema`, or any Effect v3 compatibility layer.
-- The Hydra protocol boundary now owns recursive JSON request values and typed response decoding, but production callers still import raw graph operations. This is useful groundwork for S05B, not evidence that its domain-operation/import-boundary acceptance criteria are complete.
+- The Hydra protocol boundary owns recursive JSON request values and typed response decoding. Raw client, Cypher, decoder, JSON protocol, paging, and bookmark implementation exports are absent from the package root; snapshot retrieval orchestration consumes the domain-shaped `SnapshotSearch` capability, while concrete persistence adapters own the typed memory operations.
 - The answer path reports only the final ask/read timing. The first retrieval pass and sufficiency decision are not represented end to end.
 - Existing receipts omit enough identity, completeness, and replay information that they are not yet audit artifacts.
 - S00 replaced the unsupported scalar population claim with a schema-validated, fail-closed audit. A read-only exact session-key reconciliation on 2026-09-11 found 164/200 users fully query-visible under legacy prefix `g3`, 36 missing, and zero partial. All 60 dev users are complete; 104/140 original test users are complete. The split is therefore recorded as `capacity-capped` with 36 reason-coded exclusions.
@@ -55,7 +55,7 @@ drift and correct the other document without silently changing this plan's contr
 - V1 and the premise variant were retired from live code at `d8a6e42`; their comparison authority is the `pre-cleanup-v1` tag plus the committed dev artifacts.
 - The BM25, full-context, and oracle-session test baselines were already read once and committed at `422f021`. Do not rerun them as though the test split were untouched. The remaining one-time graph arm is Palimpsest v2.
 - `results/table-dev.md` and `results/table-test.md` are currently untracked generated views. Treat the committed JSON/gate record as evidence authority until those tables are reviewed and intentionally added; file presence is not publication.
-- The post-cleanup v2 dev semantic replay recorded in `docs/run-log.md` is still pending. It must prove byte-identical evidence/model outputs before the pre-cleanup gate can qualify the cleaned implementation for the remaining test arm.
+- The post-cleanup v2 dev semantic replay recorded in `docs/run-log.md` is still pending. It must prove byte-identical evidence/model outputs before the pre-cleanup gate can qualify the cleaned implementation for the remaining test arm. Since the Effect v4 migration at `9705c32`, current code cannot be replayed from the preserved LLM cache; see the S14 `code-identity` blocker.
 - The dev result demonstrates promising retrieval quality, not production readiness. Retrieval-v2 has not been evaluated on the held-out test split by Palimpsest v2, and the checked-in test baselines do not prove that the graph population is complete.
 
 ### Runtime observation
@@ -89,6 +89,46 @@ The remaining work has two independent lanes:
 2. **Production memory plane:** D1-D4, D6-D7, S01-S13, S16B, and S17-S19 build and qualify the tenant-scoped transactional path. Evidence from the legacy `g3` experiment is a product-quality baseline, not proof that the new snapshot path preserves it.
 
 The lanes join at S16B: the production path must reproduce the accepted retrieval contract on known data, or obtain a new evaluation approval under D5, before it can become a release candidate.
+
+### Accepted compatibility-removal and test strategy (2026-09-26)
+
+The maintainer selected the preservation-first transition. Finish the frozen legacy evidence lane
+before deleting `LegacyG3Adapter`; do not silently replace its `g3` population with snapshot data or
+present a production-path replay as a second held-out benchmark. The dependency-correct execution
+order is:
+
+1. Complete S14-S16 against the frozen, audited legacy population, subject to the existing runtime
+   and provider-spend authorization gates.
+2. Complete S06 so batch, CLI, API, demo, and evaluation ingestion use the transactional lifecycle.
+3. Add the smallest isolated Docker-backed production-path end-to-end fixture, then complete the
+   S07 failure, concurrency, restart, causal-token, and entry-point-equivalence matrix. The existing
+   benchmark Compose profile supplies HydraDB and the object store only; containerizing the Node
+   server/evaluation processes belongs to S17.
+4. Complete S08-S13 in dependency order; these timing, receipt, authentication, isolation, abuse,
+   and deletion contracts remain prerequisites for S16B.
+5. Complete S16B production-path parity and migrate the remaining sessions/stats/warm/slot-chain
+   callers off the compatibility adapter.
+6. Only then delete `LegacyG3Adapter`, the unsafe legacy write path, legacy-only live/unit tests, and
+   legacy evaluation wiring. Continue with S17-S19 and S18B as selected release scope requires.
+
+The maintainer rejected an E2E-only test suite. Keep fast tests for distinct pure/domain invariants,
+Effect typed failures and Layer contracts, manifest migrations/transactions/CAS, Hydra protocol and
+identity behavior, temporal/provenance boundaries, and evaluation/statistical integrity. Consolidate
+overlapping fixture-heavy tests only after mapping every meaningful assertion to retained coverage;
+remove legacy-specific tests with the legacy code. Docker-backed tests complement rather than replace
+these contracts. The minimum production-path black-box suite must cover:
+
+- transactional ingest -> committed active snapshot -> query -> immutable source hydration;
+- identical retry and conflicting-source behavior;
+- activation races with old-or-new visibility and no mixed snapshot;
+- process restarts for manifest, HydraDB, object store, and server;
+- same user ID under two tenants with negative cross-tenant access;
+- batch/API/CLI equivalence;
+- deterministic cache-only benchmark replay; and
+- one separately gated live-provider acceptance check rather than provider calls in ordinary CI.
+
+No compatibility deletion or test removal is complete merely because a broad E2E passes. The change
+must preserve or explicitly retire each distinct invariant and update this ledger with the evidence.
 
 ### Frozen retrieval-v2 evidence contract
 
@@ -527,7 +567,7 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 - [x] Specify the aggregate snapshot node/edge schema consumed by retrieval: tokens, slots, claims, source/revision provenance, and causal links.
 - [x] Make every graph identity tenant-and-snapshot scoped.
-- [x] Build only from committed source revisions listed in the snapshot manifest.
+- [x] Build only from listed revisions whose durable graph inputs are complete (`ENRICHED` or later); require every listed revision to be `COMMITTED` inside the terminal activation transaction.
 - [x] Define deterministic ordering, deduplication, supersession, and canonical-entity behavior across multiple sources.
 - [x] Write in bounded chunks with retry-safe upserts and explicit cardinality expectations.
 - [x] Read back roots, counts, revision coverage, and a deterministic projection digest.
@@ -546,9 +586,9 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Live evidence deferred:** a real HydraDB write/read/restart probe belongs to S07 and requires an isolated authorized runtime.
 
-**Verified implementation and evidence (2026-09-19, committed `1445e77`):** `SnapshotGraph.ts` owns the S03 aggregate graph. `planSnapshotGraph` is a pure, source-order-independent planner: it orders manifest-listed commit ids, rejects missing/unlisted/duplicate/uncommitted/out-of-scope revisions and extraction-generation, artifact-binding, source-session, evidence-span, canonical-view, and causal-link violations, collapses equal claims inside a revision while keeping revisions distinct, resolves entities through the pinned canonical view, aggregates slots and token document frequency across revisions under the shared tokenizer cap, emits canonical-name edges, and stamps caller-decided `SNAPSHOT_SUPERSEDED_BY` links with the newer claim's session ordinal. Every key is `scope|snap|<snapshotId>|...` framed, so namespaces cannot traverse across snapshots. `build` reads the snapshot record, rejects missing/FAILED snapshots, gathers each listed revision with its stored artifact and durable SourceSession row, claims every vertex and relationship identity in the manifest before writing, writes retry-safe MERGE batches in deterministic label/type order (Hydra chunks rows internally), then verifies under the write's causal bookmark: the root's full stored property set, the complete member namespace through HAS edges, and every `SNAPSHOT_*` relation touching any member in both directions are diffed against the plan, and the SHA-256 digest is re-derived from observed content before `verifyUserIndexSnapshot` records digest, graph roots, and counts. A repeated identical build re-derives the stored digest and returns without rewriting; divergent content under a non-BUILDING state conflicts. No activation, reader exposure, or live-service path is wired.
+**Verified implementation and evidence (2026-09-19, committed `1445e77`, with current corrective hardening):** `SnapshotGraph.ts` owns the S03 aggregate graph. `planSnapshotGraph` is a pure, source-order-independent planner: it orders manifest-listed commit ids, rejects missing/unlisted/duplicate/not-ready/out-of-scope revisions and extraction-generation, artifact-binding, source-session, evidence-span, canonical-view, and causal-link violations, collapses equal claims inside a revision while keeping revisions distinct, resolves entities through the pinned canonical view, aggregates slots and token document frequency across revisions under the shared tokenizer cap, emits canonical-name edges, and stamps caller-decided `SNAPSHOT_SUPERSEDED_BY` links with the newer claim's session ordinal. Every vertex and both endpoints of every relation are `scope|snap|<snapshotId>|...` framed. Evidence relations terminate at snapshot-scoped `SnapshotEvidence` locators that retain the durable `source_turn_key` as data for later direct hydration, preventing graph traversal from bridging otherwise isolated snapshots through shared source vertices. `build` reads the snapshot record, rejects missing/FAILED snapshots, gathers each listed revision with its stored artifact and durable SourceSession row, claims every vertex and relationship identity in the manifest before writing, writes retry-safe MERGE batches in deterministic label/type order (Hydra chunks rows internally), then verifies under the write's causal bookmark: the root's full stored property set, the complete member namespace through HAS edges, and every `SNAPSHOT_*` relation touching any member in both directions are diffed against the plan, and the SHA-256 digest is re-derived from observed content before `verifyUserIndexSnapshot` records digest, graph roots, and counts. A repeated identical build re-derives the stored digest and returns without rewriting; divergent content under a non-BUILDING state conflicts. No reader exposure or live-service path is wired.
 
-**Verified commands (rerun 2026-09-19 at `1445e77`):** focused suite `packages/palimpsest/test/unit/snapshot-graph.test.ts` (22 tests: digest determinism and source-order independence, tenant/uid/snapshot scoping, duplicate-claim collapse and revision distinction, canonical-view resolution and slot aggregation, claim-to-revision/source-turn evidence, token bounds and canonical naming, supersession ordering and endpoint/self/backwards rejection, revision-state/listing/scope rejection, canonical-view and span rejection, successful write/read-back/VERIFIED transition with the active pointer untouched, idempotent rebuild without rewriting, missing member and missing/unexpected/foreign-incoming relationship detection, pre-write graph-id collision, and missing durable source session); `pnpm lint` zero findings; `pnpm test:unit` 66 files / 663 tests; `pnpm typecheck`; `pnpm demo:build`; `git diff --check` clean.
+**Historical verified commands (rerun 2026-09-19 at `1445e77`):** focused suite `packages/palimpsest/test/unit/snapshot-graph.test.ts` (22 tests: digest determinism and source-order independence, tenant/uid/snapshot scoping, duplicate-claim collapse and revision distinction, canonical-view resolution and slot aggregation, claim-to-revision/source-turn evidence, token bounds and canonical naming, supersession ordering and endpoint/self/backwards rejection, revision-state/listing/scope rejection, canonical-view and span rejection, successful write/read-back/VERIFIED transition with the active pointer untouched, idempotent rebuild without rewriting, missing member and missing/unexpected/foreign-incoming relationship detection, pre-write graph-id collision, and missing durable source session); `pnpm lint` zero findings; `pnpm test:unit` 66 files / 663 tests; `pnpm typecheck`; `pnpm demo:build`; `git diff --check` clean. Current corrective evidence is recorded in the plan header.
 
 **Future-slice ownership check (2026-09-19):** S04 still owns lifecycle orchestration, atomic activation, and fault injection across the commit boundary; S05/S05B/S07 still own active-only reads and the live HydraDB write/read/restart probe; causal/supersession links arrive as caller-supplied decided facts, so their derivation remains an S04 enrichment responsibility. A failed S03 build leaves the snapshot `BUILDING` for retry — `FAILED` marking on abandoned attempts stays with lifecycle orchestration.
 
@@ -570,7 +610,7 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 - [x] Commit the revision and switch the active-snapshot pointer atomically, or define the exact compensating protocol if one database cannot own both records.
 - [x] Return `queryVisible: true` only after active-snapshot read-back confirms the new pointer.
 - [x] Preserve the prior active snapshot on provider, graph, manifest, cancellation, or process failures.
-- [x] Add fault injection at every boundary and state-transition contract tests.
+- [x] Add targeted fault injection for provider failure, graph verification, manifest CAS/coverage, and state-transition contract tests.
 
 **Acceptance**
 
@@ -580,7 +620,7 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Verification:** transactional source/index, transactional ingest, manifest, projection, and generation unit tests plus `pnpm typecheck`.
 
-**Verified implementation and evidence (2026-09-19, committed `4d4bfbf`):** `TransactionalSourceIndex.ts` now owns the full lifecycle. `runTransactionalSourceCommit` drives one revision through `SOURCE_DURABLE`/`INDEXED` (unchanged S01-S02 stages) plus three new stages under the per-user `IngestCommitLock`: `ENRICHED` builds contested slot chains via `SupersessionDecision.collectSupersessionChains` (match-key union over all same-or-earlier-ordinal artifacts), calls the `decideSupersession` port once per chain, and persists the resolved links in the new `supersession_decisions` table (schema v11) — a stored record makes the stage a pure no-op on resume; `CONSOLIDATED` folds every covered revision (committed, or consolidated-and-retryable, plus the in-flight one) into a fresh `EntityCanonicalView`, registers the content-addressed `UserIndexSnapshot`, replays durable decisions as caller-supplied causal links, and runs the S03 build+verify; `COMMITTED` runs `commitScopeInternal`, which calls the manifest's new `commitAndActivateIndexSnapshot` — one SQLite transaction that re-checks `expectedManifestVersion` pre-commit, advances each listed `CONSOLIDATED` revision to `COMMITTED` (bumping the manifest version per commit), enforces complete committed coverage, compare-and-swaps the active pointer, and supersedes the prior active snapshot, so any failure rolls commits and pointer back together. The post-loop `commitScope` re-acquires the lock and reports the pointer; `queryVisible` is true only when the read-back active snapshot covers the revision's commit id. `commitScope` is also the exported repair/report path for converging pending or committed-but-uncovered revisions. `SnapshotGraph`'s planner now accepts `ENRICHED`/`CONSOLIDATED`/`COMMITTED` revisions (`revisionNotReady`), since `ENRICHED` is the first state whose durable per-revision inputs are complete and the terminal transaction enforces `COMMITTED`. `commitSourceSession`/`commitSession` wire the real decider (`decideSlotSupersession` over `Llm.generateObject`, provider failures die as defects outside stage classification) while `indexSession` still stops at `INDEXED`. Twenty-five new unit tests in `source-commit.test.ts` cover the happy path, supersession projection into the active snapshot, resume from `INDEXED`/`ENRICHED`/`CONSOLIDATED` without re-extraction or re-deciding, idempotent re-commit, retryable and non-retryable stage failures, atomic rollback under stale manifest version / stale pointer / uncovered coverage, idempotent re-activation, and decision-persistence conflict and scope rules; `HydraMemory.ts` is the shared in-memory Hydra double extracted from the snapshot-graph suite. Unit evidence: `pnpm lint` 0 findings, `pnpm test:unit` 67 files / 688 tests, `pnpm typecheck` clean, `git diff --check` clean.
+**Verified implementation and evidence (2026-09-19, committed baseline `4d4bfbf`, with current corrective hardening):** `TransactionalSourceIndex.ts` owns the full lifecycle. `runTransactionalSourceCommit` drives one revision through `SOURCE_DURABLE`/`INDEXED` plus three stages under the per-user `IngestCommitLock`: `ENRICHED` builds content-addressed contested slot chains via `SupersessionDecision.collectSupersessionChains`, reuses or stores each chain's provider result independently in schema-v12 `supersession_chain_decisions`, then stores the aggregate revision result in `supersession_decisions`; a later provider failure therefore replays only unfinished chains. `decideSlotSupersession` maps `AiError` into typed `SupersessionDecisionUnavailable`, and the production classifier records provider, graph-build, and graph-verification failures as retryable rather than converting them to defects or terminal failures. `CONSOLIDATED` stores (but does not activate) the fresh `EntityCanonicalView` and `IndexGeneration`, registers the content-addressed `UserIndexSnapshot`, replays durable decisions as caller-supplied causal links, and runs S03 build+verify. `COMMITTED` calls `commitAndActivateIndexSnapshot`, whose one SQLite transaction re-checks `expectedManifestVersion`, advances listed eligible revisions to `COMMITTED`, enforces complete committed coverage, compare-and-swaps and supersedes the snapshot pointer, and aligns the generation and canonical-view companion pointers to the new snapshot. Any failure rolls back all manifest state; graph verification failure leaves all active pointers on the prior complete snapshot. The post-loop `commitScope` re-acquires the lock and reports the pointer; `queryVisible` is true only when read-back covers the revision. `SnapshotGraph` accepts `ENRICHED`/`CONSOLIDATED`/`COMMITTED` inputs because `ENRICHED` is the first state with complete durable per-revision graph inputs and the terminal transaction enforces `COMMITTED`. `indexSession` still stops at `INDEXED`.
 
 **Future-slice ownership check (2026-09-19):** S05 still owns every read through the active snapshot — no reader was wired here — and S07 still owns the live HydraDB probe and restart reconciliation; the decider port was exercised only through test stubs, so no provider or live-runtime claim is made. Concurrent same-scope commits are serialized by `IngestCommitLock` and defended by the activation CAS, but contention behavior is unit-evidence only.
 
@@ -594,14 +634,14 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Checklist**
 
-- [ ] Add one service that resolves `(principal -> MemoryScope -> active snapshot)` and supplies immutable query context.
-- [ ] Require every retrieval query and hydration traversal to carry snapshot scope.
-- [ ] Remove ambient/default tenant behavior from the new reader.
-- [ ] Preserve source revision, canonical-view, generation, and snapshot provenance through candidate selection and citations.
-- [ ] Keep generated Claim/index text explicitly derived and out of public evidence surfaces; every public evidence item must resolve to immutable source bytes and offsets.
-- [ ] Define behavior for no active snapshot, superseded snapshot, corrupt pointer, and graph/manifest mismatch.
-- [ ] Prove that activation between two requests changes the whole visible state, while activation during one request cannot mix snapshots.
-- [ ] Put the legacy query-visible `g3` graph schema behind an explicit benchmark/migration adapter with telemetry and a removal condition. This is distinct from retired v1 retrieval; current v2 still reads the legacy graph shape.
+- [x] Add one service that resolves `(principal -> MemoryScope -> active snapshot)` and supplies immutable query context.
+- [x] Require every retrieval query and hydration traversal to carry snapshot scope.
+- [x] Remove ambient/default tenant behavior from the new reader.
+- [x] Preserve source revision, canonical-view, generation, and snapshot provenance through candidate selection and citations.
+- [x] Keep generated Claim/index text explicitly derived and out of public evidence surfaces; every public evidence item must resolve to immutable source bytes and offsets.
+- [x] Define behavior for no active snapshot, superseded snapshot, corrupt pointer, and graph/manifest mismatch.
+- [x] Prove that activation between two requests changes the whole visible state, while activation during one request cannot mix snapshots.
+- [x] Put the legacy query-visible `g3` graph schema behind an explicit benchmark/migration adapter with telemetry and a removal condition. This is distinct from retired v1 retrieval; current v2 still reads the legacy graph shape.
 
 **Acceptance**
 
@@ -611,6 +651,11 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 - Citations resolve to committed revisions in the bound snapshot.
 
 **Verification:** retrieve, plan, select, reader-hydrate, citations, warm, and server contract unit tests plus `pnpm typecheck`.
+
+**Verified implementation and evidence (2026-09-26, committed at `e2ae440`):** `QueryContext.ts` resolves `(principal -> MemoryScope -> active snapshot)` exactly once per request into an immutable `QueryContext`. The active pointer, full snapshot record, manifest version, scope revision counts, uncommitted count, and snapshot count are read inside one SQLite read transaction and retained as immutable coverage; retrieval never re-reads manifest coverage after binding. `parseQueryPrincipal` rejects empty tenant/subject with no defaults; the server wires `layerQueryPrincipalFromConfig` (explicit `PALIMPSEST_QUERY_TENANT`/`PALIMPSEST_QUERY_SUBJECT`, no fallback) and the `ask` bin exits unless `--tenant` is given. Unknown scopes fail as `MemoryScopeNotFound`, distinctly from known scopes with no active snapshot (`NoActiveSnapshot`); `validateActiveSnapshot` rejects non-`ACTIVE`, foreign-scope, and unevidenced pointers as `ActiveSnapshotCorrupt`. `Retrieve.ask` binds, gathers through the domain-shaped `SnapshotSearch` service, plans, selects, and labels as-of, and returns the binding on `SnapshotAskResult.query`; `Reader.hydrate`/`read` take the same binding. Every arm, slot walk, evidence walk, and supersession fold parses through `SnapshotRows.ts`, which fails closed with `SnapshotScopeViolation` (`foreignSnapshot`/`foreignScope`/`missingProvenance`) or `SnapshotGraphMismatch` (graph format, uncovered revision, root, evidence, and source-turn checks). Hydration reads `source_turn_key` directly from the source plane and cross-checks commit, digest, session, turn, and recomputed key against the candidate's `ClaimProvenance`; spans carry `SpanProvenance` and cut excerpts from immutable source bytes only. Public evidence exposes that immutable locator (`snapshotId`, `commitId`, `sourceDigest`, logical session, source-turn key, turn index, and offsets) but never derived Claim text. Defined behaviors: no active snapshot is a typed error, never an absence; a superseded snapshot's stale binding keeps reading its immutable snapshot while foreign rows are rejected rather than mixed; activation between two asks switches the whole visible state. `LegacyG3Adapter` is the only legacy `g3` entry point, with per-operation telemetry counts and `LEGACY_G3_REMOVAL_CONDITION`; its claim-total cache is an Effect `Ref`, invalidation is observed when a prebuilt effect executes, and missing users fail as typed `LegacyG3UserNotFound` rather than defects. Server `snapshotFailure` maps unknown scopes to 404 and all other snapshot failures to 503s. Focused executable coverage includes query-context, snapshot rows/retrieval/temporal behavior, legacy adapter, server snapshot contract, and Hydra boundary tests; the full local gate record is stated under S05B.
+
+**Future-slice ownership check (2026-09-26):** S06 still owns unified ingestion entry points; S07 still owns live HydraDB, restart, cross-process causal behavior, and concurrency probes. All S05 evidence is unit-level (in-memory manifest, behavior fakes); no live runtime, provider, ingestion, or evaluation claim is made. Sessions/stats/warm/slot endpoints intentionally remain on the adapter until its removal condition is met.
+
 
 ### S05A: Implement bitemporal scoring, completeness, and freshness
 
@@ -622,14 +667,14 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Checklist**
 
-- [ ] Persist recorded/transaction time separately from a precision-aware valid-time interval, uncertainty, source revision, and supersession-effective time.
-- [ ] Make the request choose or unambiguously default a recorded-time, valid-time, or bitemporal perspective; preserve backward compatibility only through an explicit adapter.
-- [ ] Materialize immutable per-snapshot historical `N`/`df` statistics, or another reviewed scoring state, and bind it to the query context.
-- [ ] Apply tenant, snapshot, generation, recorded-time, valid-time, and as-of filters before every per-arm, union, traversal, and pack cap.
-- [ ] Model late-arriving facts, uncertain dates, conflicts, corrections, and future-data isolation without rewriting source history.
-- [ ] Carry source-durable/indexed/enriched/consolidated/committed watermarks and declared completeness into the plan and receipt.
-- [ ] Define whether a query below its required watermark waits, returns a typed not-ready result, or uses a declared source-only fallback. Never report absence from an incomplete or capped search.
-- [ ] Add property/table tests for future sessions not changing an earlier result and for recorded-time versus valid-time divergence.
+- [x] Persist recorded/transaction time separately from a precision-aware valid-time interval, uncertainty, source revision, and supersession-effective time.
+- [x] Make the request choose or unambiguously default a recorded-time, valid-time, or bitemporal perspective; preserve backward compatibility only through an explicit adapter.
+- [x] Materialize immutable per-snapshot historical `N`/`df` statistics, or another reviewed scoring state, and bind it to the query context.
+- [x] Apply tenant, snapshot, generation, recorded-time, valid-time, and as-of filters before every per-arm, union, traversal, and pack cap.
+- [x] Model late-arriving facts, uncertain dates, conflicts, corrections, and future-data isolation without rewriting source history.
+- [x] Carry source-durable/indexed/enriched/consolidated/committed watermarks and declared completeness into the plan and receipt.
+- [x] Define whether a query below its required watermark waits, returns a typed not-ready result, or uses a declared source-only fallback. Never report absence from an incomplete or capped search.
+- [x] Add property/table tests for future sessions not changing an earlier result and for recorded-time versus valid-time divergence.
 
 **Acceptance**
 
@@ -640,6 +685,11 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Verification:** time-scope, scoring, snapshot, plan, receipt, and API unit tests plus `pnpm typecheck`.
 
+**Verified implementation and evidence (2026-09-26, committed at `e2ae440`):** Maintainer decisions recorded before implementing: below-watermark reads return a typed not-ready result, and the default perspective is recorded time. `TimeScope.ts` defines `TemporalPerspective`, hard perspective filtering with no legacy recall fallback, explicit valid-time uncertainty, and fail-closed parsing. Recorded time now uses manifest `acceptedAtMs`, not the source/session date: snapshot graph format v2 materializes `accepted_at_ms` on each revision and claim, the recorded and bitemporal cuts compare its UTC date, and root validation rejects older graph projections instead of silently applying the wrong axis. `sessionOrd` remains the separately explicit compatibility boundary selected by `asOf`. Manifest schema v13 persists first-reached ms per lifecycle watermark and source acceptance; pre-v13 unknown watermarks remain NULL. `QueryContext` carries the resolved perspective, atomic coverage, and fixed `COMMITTED` required watermark; `AskOptions`, the server API, and the `ask` bin accept an explicit perspective. Snapshot reads carry a `TemporalStatement` (perspective, snapshot, watermark, coverage, caps, verified stats, completeness) on every plan and receipt; legacy plans/receipts carry explicit null. Scoring stats are verified against the bound root and pinned through gather/plan/receipt. Perspective cuts run before per-arm/union caps with declared filtered counts. Empty groundings from degraded searches return `INCOMPLETE_MEMORY`, never absence. Unit tables deliberately give claims conflicting source-session and acceptance dates, so recorded-time tests fail if the implementation regresses to `sessionDate`; ask-level tests cover late-arrival divergence and non-retroactivity. Defined scope notes remain: valid-time intervals are start-bounded `(tEvent, tPrec)` spans; slot-mate grouping caps apply to walk output while the plan cut filters mates before union caps; eval row/envelope types are additive and the legacy lane never emits the new values.
+
+**Future-slice ownership check (2026-09-26):** S06 owns unified ingestion entry points (plus any extraction-side valid-end work if ever required); S07 owns live HydraDB, restart, and concurrency probes; S13 owns per-operation watermark minimums (`requiredWatermark` stays fixed at `COMMITTED` until then). All S05A evidence is unit-level (in-memory manifest, behavior fakes); no live runtime, provider, ingestion, or evaluation claim is made.
+
+
 ### S05B: Deepen the Hydra boundary into typed memory operations
 
 **Goal:** close F-17 without moving storage mechanics into every new caller.
@@ -648,17 +698,17 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 
 **Primary areas:** `packages/hydra`, `SourceIndexPlane.ts`, query/manifest adapters, production import boundaries, admin/test tooling.
 
-**Current groundwork (2026-09-13):** Hydra request parameters now use recursive JSON protocol values; successful response envelopes require the vendored query fields, discriminate each supported cell tag from its value type, and reject row-width mismatches before projection; malformed successful responses become typed availability failures. Causal bookmarks are immutable `Context.Reference` values updated in the current fiber: sequential operations inherit the prior bookmark, independent runtimes start empty, and `withCausalBookmark` initializes an explicit request floor without sharing mutable state. Transport/classification/identity code no longer relies on manual `unknown` walkers. S05B remains open because raw `query`, `msPaths`, paths, rows, and storage-specific composition still reach production callers.
+**Groundwork (2026-09-13):** Hydra request parameters now use recursive JSON protocol values; successful response envelopes require the vendored query fields, discriminate each supported cell tag from its value type, and reject row-width mismatches before projection; malformed successful responses become typed availability failures. Causal bookmarks are immutable `Context.Reference` values updated in the current fiber: sequential operations inherit the prior bookmark, independent runtimes start empty, and `withCausalBookmark` initializes an explicit request floor without sharing mutable state. Transport/classification/identity code no longer relies on manual `unknown` walkers.
 
 **Checklist**
 
-- [ ] Trace every production caller of raw `query`, `msPaths`, rendered Cypher, decoded rows/paths, paging cursors, and scalar cell types.
-- [ ] Expose cohesive operations for source/snapshot commit, active-context resolution, bounded candidate discovery/slot expansion, span hydration, and readiness/reconciliation.
-- [ ] Keep paging, query IDs, bookmarks, retries, timeouts, payload limits, identity verification, collision handling, and safe engine error classification inside the adapter.
-- [ ] Return domain records plus an opaque execution-plan/diagnostic handle, not Hydra rows or a Cypher builder.
-- [ ] Move genuinely necessary unrestricted querying behind an admin/test-only boundary with separate authorization and audit policy.
-- [ ] Preserve focused Hydra adapter tests for engine-specific invariants; add architecture/import tests preventing raw storage types from leaking back into production packages.
-- [ ] Specify no-token, stale-token, cross-target token, and cross-replica causal behavior and test it with two users and two processes in S07.
+- [x] Trace every production caller of raw `query`, `msPaths`, rendered Cypher, decoded rows/paths, paging cursors, and scalar cell types.
+- [x] Expose cohesive operations for source/snapshot commit, active-context resolution, bounded candidate discovery/slot expansion, span hydration, and readiness/reconciliation.
+- [x] Keep paging, query IDs, bookmarks, retries, timeouts, payload limits, identity verification, collision handling, and safe engine error classification inside the adapter.
+- [x] Return domain records plus an opaque execution-plan/diagnostic handle, not Hydra rows or a Cypher builder.
+- [x] Move genuinely necessary unrestricted querying behind an admin/test-only boundary with separate authorization and audit policy.
+- [x] Preserve focused Hydra adapter tests for engine-specific invariants; add architecture/import tests preventing raw storage types from leaking back into production packages.
+- [x] Specify no-token, stale-token, cross-target token, and cross-replica causal behavior and test it with two users and two processes in S07.
 
 **Acceptance**
 
@@ -667,6 +717,10 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 - Admin/test escape hatches cannot be reached by normal API principals.
 
 **Verification:** Hydra adapter contract tests, architecture/import checks, affected query/write tests, and `pnpm typecheck`.
+
+**Causal-token behavior specification (S05B; live proof in S07):** bookmarks are opaque engine-minted strings the adapter forwards verbatim and never parses, mints, or routes. No token: a fiber without a floor (or a `fresh` read) sends no bookmark; the engine serves its latest committed state and the response bookmark becomes that fiber's floor, so read-your-write holds within one fiber flow. Independent fibers and runtimes start empty and never inherit another floor. Stale token: the floor advances only from successful responses, so a rejected stale floor leaves the fiber's floor unchanged; the engine's rejection surfaces as a typed `HydraError` (retryable per the existing classifier) and any retry-fresh policy belongs to the caller, not the adapter. Cross-target token: one client instance targets one `(graph, cell)` pair and always sends its namespace with the request; a floor minted by another target fails with the engine's typed error rather than silently serving foreign state, and multiplexing targets in one fiber flow is unsupported. Cross-replica: processes share no floor — a second process starts empty unless the caller passes an explicit bookmark via `withCausalBookmark` — so two processes may observe different snapshots until both advance past a write; the adapter claims per-fiber monotonicity only, never global linearizability. Open engine-behavior questions (notably the exact stale-bookmark response) are pinned against the real engine by the S07 two-users/two-processes test.
+
+**Verified implementation and evidence (2026-09-26, committed at `e2ae440`):** `HydraMemory` owns typed commit, lookup, bounded discovery, key scan, deletion, identity, and causal operations; paging, retries, timeouts, payload limits, reduced-id verification, collision handling, and error classification remain inside the adapter. `MemoryNode.key`/`MemoryEdge.key` expose stable identities separately from scalar properties, so production callers never depend on the reserved engine identity property. `ExecutionPlan` is an opaque branded handle held in a private `WeakMap`; only the adapter can construct it, and callers receive an immutable `ExecutionPlanDiagnostic` projection for receipts. The package root no longer exports the raw client, Cypher renderers, decoder rows/paths, JSON protocol, bookmark implementation, or test constructors; those exist only on the explicit `@palimpsest/hydra/testing` subpath. `SnapshotSearch` is the domain-shaped application port for retrieval, so `Retrieve`/`Answer`/`Plan` do not import graph paths, discovery inputs, writes, lookups, or relationship directions. Concrete persistence and snapshot adapters retain the generic memory types where translation belongs. `HydraAdmin` remains the only unrestricted-query surface, fails closed without `HYDRA_ADMIN_TOKEN`, audits each query, and is never provided by server `AppLive`. Architecture tests enforce the production root allowlist, prohibit the testing subpath and deep imports, assert the raw exports are absent, and separately prevent retrieval orchestration from importing storage-level values. Focused S05 corrective verification passed 18 files / 123 tests; the final full gates on 2026-09-26 pass `pnpm lint`, `pnpm test:unit` (76 files / 801 tests), `pnpm typecheck`, `pnpm demo:build`, and `git diff --check`. These are local unit/build checks only; S07 still owns live causal and runtime proof.
 
 ### S06: Unify batch, CLI, and live/API ingestion
 
@@ -714,6 +768,7 @@ GitHub issue state is current as of 2026-09-10, but several bodies/comments lag 
 - [ ] Prove ID claims and active pointers survive process restart.
 - [ ] Preserve the existing named volume unless the maintainer authorizes a disposable replacement; never reset it as test setup.
 - [ ] Write a machine-readable evidence artifact with population, runtime, cache, retries, failures, and pass/fail assertions.
+- [ ] Prove the S05B causal-token specification with two users and two processes: no-token first reads, stale-token rejection without floor advance, cross-target rejection, and independent per-process floors.
 
 **Acceptance**
 
@@ -901,6 +956,8 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 
 ### S14: Reconcile and freeze the remaining evaluation contract
 
+**Status:** in progress. S14-A evidence integrity and the S14-B frozen execution harness are committed on main at `e2ae440`; the corresponding Effect 3 harness is preserved separately from the frozen base commit. The maintainer selected the pinned historical code lane and exact upstream scoring protocol and authorized the cache-only dev replay on 2026-09-27. The test arm remains blocked on a passing replay and maintainer sign-off.
+
 **Goal:** preserve what was already read, prove the cleaned code still represents the passed gate, and prevent result-driven changes before the one remaining held-out graph arm.
 
 **Blocked by:** S00 and D5.
@@ -909,31 +966,47 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 
 **Checklist**
 
-- [ ] Reconcile the frozen contract above with the audited population artifact, current implementation, `pre-cleanup-v1`, and the accepted issue deviations. Keep all evaluation requirements in this plan; do not create another spec or run checklist.
-- [ ] Preserve the 2026-08-31 dev gate as read-once evidence. Do not delete, overwrite, or recompute its thresholds or result from newer code.
-- [ ] Record that BM25, full-context, and oracle-session already consumed the 140-question test split at `422f021`; only Palimpsest v2 remains unrun on test.
-- [ ] Freeze the S00 effective membership (dev 60, test 104) in the evaluation manifest. Derive 104-row baseline views from the immutable 140-row committed baseline artifacts without provider calls or overwriting them, and make every join fail on an ID outside or missing from the eligible set.
-- [ ] Replay the cleaned current v2 implementation on all 60 dev questions against the same graph/cache and compare selected span bytes, span hash, model outputs, and final rows to `results/palimpsest-v2-dev.json`.
+- [x] Reconcile the frozen contract above with the audited population artifact, current implementation, `pre-cleanup-v1`, and the accepted issue deviations. Keep all evaluation requirements in this plan; do not create another spec or run checklist.
+- [x] Preserve the 2026-08-31 dev gate as read-once evidence. Do not delete, overwrite, or recompute its thresholds or result from newer code.
+- [x] Record that BM25, full-context, and oracle-session already consumed the 140-question test split at `422f021`; only Palimpsest v2 remains unrun on test.
+- [x] Freeze the S00 effective membership (dev 60, test 104) in the evaluation manifest. Derive 104-row baseline views from the immutable 140-row committed baseline artifacts without provider calls or overwriting them, and make every join fail on an ID outside or missing from the eligible set.
+- [ ] Replay the pinned historical v2 implementation plus the frozen harness-only patch on all 60 dev questions against the same graph/cache and compare evidence-byte hashes, source-locator hash, cache-key/prompt/output proofs, and final rows to `results/palimpsest-v2-dev.json`.
 - [ ] If any semantic field differs, invalidate qualification of the old gate for current code and stop for a D5 decision; do not explain away a difference as “cleanup.”
-- [ ] Freeze dataset/split IDs or hashes, exclusions, answerability rules, arms, prompts/models, rendered prompt/schema hashes, cache policy, retry policy, metrics, paired tests, and acceptance thresholds.
-- [ ] Declare which dev/test data and baseline answers have already been viewed and what held-out/not-blind claim remains valid.
-- [ ] Pin the exact upstream judge commit, endpoint/protocol, model snapshot, temperature/output cap, parser, and deviation policy. Keep any secondary judge or human adjudication separate.
-- [ ] Define incremental session spend, clean-cache rebuild cost, marginal online cost, and amortized ingest cost using a versioned price manifest; never collapse them into one dollar figure.
-- [ ] Add code/config/lockfile/image/runtime hashes to the run manifest.
-- [ ] Require a clean immutable result directory and reject accidental overwrite/merge of unlike runs.
-- [ ] Define invalid-run conditions before running.
-- [ ] State that any post-freeze change capable of altering retrieval, packing, sufficiency, model input/output, or answer selection invalidates the freeze and requires a new reviewed manifest plus the D5 holdout decision.
-- [ ] Permit a post-freeze measurement/infrastructure correction only when semantic replay proves identical selected evidence and model outputs across the entire frozen dev population.
+- [x] Freeze dataset/split IDs or hashes, exclusions, answerability rules, arms, prompts/models, rendered prompt/schema hashes, cache policy, retry policy, metrics, paired tests, and acceptance thresholds.
+- [x] Declare which dev/test data and baseline answers have already been viewed and what held-out/not-blind claim remains valid.
+- [x] Pin the exact upstream judge revision, endpoint/protocol, model snapshot, temperature/output cap, parser, and deviation policy. Keep historical scores as secondary evidence and rescore every frozen answer artifact separately.
+- [x] Define incremental session spend, clean-cache rebuild cost, marginal online cost, and amortized ingest cost using a versioned price manifest; never collapse them into one dollar figure.
+- [x] Add code/config/lockfile/image/runtime and harness hashes to the run manifest.
+- [x] Require immutable result paths and reject accidental overwrite/merge of unlike runs.
+- [x] Define invalid-run conditions before running.
+- [x] State that any post-freeze change capable of altering retrieval, packing, sufficiency, model input/output, or answer selection invalidates the freeze and requires a new reviewed manifest plus the D5 holdout decision.
+- [x] Permit a post-freeze measurement/infrastructure correction only when semantic replay proves identical selected evidence and model outputs across the entire frozen dev population.
 - [ ] Obtain maintainer sign-off on the reconciled freeze before any Palimpsest-v2 test call.
 
 **Acceptance**
 
 - One manifest completely determines the remaining Palimpsest-v2 test arm and rejects drift before provider/store work.
-- Current-code dev replay is semantically identical to the accepted gate, or current code is explicitly disqualified from using that gate until D5 is resolved.
+- The pinned historical lane replay is semantically identical to the accepted gate, or the lane is explicitly disqualified from using that gate until D5 is resolved. Effect 4 production code does not inherit this qualification.
 - No acceptance threshold is computed or changed from the held-out outcome.
 - The manifest identifies already-read arms and refuses to rerun/overwrite their canonical artifacts.
 
 **Verification:** eval config, population, envelope, stats, gate, and table unit tests plus `pnpm typecheck`.
+
+**Verified implementation and evidence (S14-A/S14-B, 2026-09-27, committed at `e2ae440`):** `packages/eval/src/Freeze.ts` owns the unsigned legacy-lane manifest `data/splits/retrieval-v2.freeze.json`. It pins the dataset, split, S00 witness, both semantically parsed population records, the read-once gate, eight already-read arms, the 60/104 eligible memberships, 36 exclusions, historical code/lockfile/harness identity, Hydra image/compose/runtime identity, exact batches, cache/retry policies, invalidity rules, analyses, thresholds, and `data/splits/retrieval-v2.prices.json`. `pnpm freeze --check` reports zero integrity findings. Test-arm preflight now reports only the unrun dev replay and missing sign-off.
+
+`EligibleView.ts` still derives immutable byte-preserving 104-row baseline views and `joinEligible` rejects missing, outside, repeated, or question-contract-mismatched rows. The strengthened replay proof requires every semantic row field to match the gate run (only timing may vary), a warm pass, a cache-hit-only LLM trace with prompt/schema/output hashes, and a 64-hex hash over the actual ordered hydrated evidence bytes; the older locator-only `spanHash` is no longer described as a byte hash. Frozen `eval` selects exactly the manifest IDs, requires 15×4 dev or 26×4 test batches, rejects `--skip-missing`, verifies model/runtime/code/lock/harness identities before work, and writes result, table, rescore, and merge artifacts with exclusive-create semantics. `merge-batches` also checks freeze/code/lock identity and combines all per-batch call traces.
+
+The exact upstream scoring path is separate from answer generation: `packages/eval/bin/rescore.ts` requires explicit `--authorized`, preserves the source artifact hash and answer-bearing fields, scores the exact eligible population through Chat Completions with `gpt-4o-2024-08-06`, `temperature=0`, `max_tokens=10`, `n=1`, records the provider-resolved model, and refuses to write if it differs. Historical local scores remain secondary only.
+
+**Resolved decision `code-identity`:** the cache audit remains as recorded: the accepted runs use Effect 3 draft-07 cache keys, whereas Effect 4 re-encodes JSON Schema and cannot replay them. The maintainer selected option C. A clean detached worktree at `D:\SWE_DEV_NEW\Hack-Hydra-s14-legacy-44930d5`, HEAD `44930d5e44955e0ce59b31ef1297b9fd02bcbb41`, contains only the frozen harness patch. Its length-framed file hash is `1aeecba00e39a1ff0585d3e03d126bb90b56c3a759bee423138812bd8236ce1f`; historical `pnpm typecheck` and `pnpm test:unit` pass (62 files / 601 tests). This lane never qualifies Effect 4 production code.
+
+**Resolved decision `judge-protocol`:** use upstream LongMemEval `src/evaluation/evaluate_qa.py` revision `d6dc8b5`: Chat Completions, `gpt-4o-2024-08-06`, `temperature=0`, `max_tokens=10`, `n=1`, and `'yes' in reply.lower()`. Preserve answer artifacts, rescore all frozen artifacts immutably, and keep the old local scores only as historical secondary evidence.
+
+**Remaining S14 work:** after explicit runtime authorization, execute the 15 cache-only dev batches without recreating HydraDB, merge them, run the proof-requiring comparator, and resolve `dev-semantic-replay` only if all 60 rows pass. Then reconcile the #24/#26/#27 deviations against that evidence and obtain maintainer sign-off. Test-arm execution and upstream rescoring remain separately authorization-gated.
+
+**Authorization boundary (2026-09-27):** both frozen `eval` and `rescore` require an explicit `--authorized` flag after runtime/spend approval. A checked invocation without it refused before constructing HydraDB or provider layers. No replay, provider call, ingestion, cache mutation, or test-arm execution occurred while implementing S14-B.
+
+**Verified commands (2026-09-27):** current tree `pnpm test:unit` (79 files / 834 tests), `pnpm lint`, `pnpm typecheck`, affected eval/LLM unit tests (21 files / 239 tests), `git diff --check`, `pnpm freeze --check` (zero findings), `pnpm freeze --check --purpose dev-replay` (prerequisites qualify; execution still requires `--authorized`), `pnpm freeze --check --purpose test-arm` (refuses on the unrun dev replay and missing sign-off), and `pnpm eligible-views --check` (all three 104-row views match). Historical worktree `pnpm test:unit` (62 files / 601 tests), `pnpm typecheck`, `git diff --check`, and direct `legacyFreezeFindings(..., "dev-replay", ...)` (empty). Authorization-refusal probes for frozen eval and rescore exited before runtime/provider work.
 
 ### S15: Run dev-only ablations and fast/reader A/B
 
@@ -1012,6 +1085,8 @@ The current `plan.stages`, `graphMs`, and `askMs` are the starting point. Preser
 - [ ] Prove batch/API/CLI entry-point equivalence, old-or-new activation visibility, restart recovery, and tenant isolation in the same qualification manifest.
 - [ ] Run dev regression and the temporal/collision/deletion/authorization TCKs on the production path.
 - [ ] Classify any known-test replay as regression evidence, not a second held-out benchmark.
+- [ ] Migrate sessions, stats, warm, slot-chain, server, bin, and evaluation callers off `LegacyG3Adapter`.
+- [ ] Delete `LegacyG3Adapter`, the unsafe legacy write path, and legacy-only tests/wiring only after S16 evidence is preserved and every S16B acceptance check passes.
 - [ ] If production semantics intentionally differ, record the change, invalidate inherited quality claims, and return to D5 before release.
 
 **Acceptance**
@@ -1183,4 +1258,4 @@ Before editing, confirm its decision blockers and inspect the current code and t
 Work only on this slice. Add behavior-focused tests, run pnpm lint and the affected unit tests, and run pnpm typecheck when types or contracts change. Preserve the Effect v4-only dependency graph and do not introduce an Effect v3 compatibility or fallback path. Distinguish unit evidence from live evidence. If a maintainer decision or runtime authorization is missing, stop at that boundary and return the exact decision/evidence needed. Do not close or rewrite GitHub issues unless explicitly asked. If asked to commit, use the commit-work skill and stage only the intended scope.
 ```
 
-S00-S04 and D1-D7 are complete. The next production-path slice is S05; preserve the active-snapshot-only read boundary until S05 wires readers to the activated pointer. Under D5/S14, preserve the original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. S14-S15 may close the frozen legacy experiment while the production lane proceeds independently. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.
+S00-S05B and D1-D7 are complete at `e2ae440`. S14-A/S14-B evidence integrity and frozen harness work are verified; code identity and judge protocol are resolved, while the authorized cache-only dev replay awaits execution and the test arm remains blocked on that replay plus sign-off. The maintainer selected the 2026-09-26 preservation-first sequence: complete S14-S16 before compatibility deletion, then S06, the isolated Docker-backed S07 fixture/matrix, S08-S13, and S16B; migrate remaining compatibility callers and delete `LegacyG3Adapter` only after S16B passes. Preserve the active-snapshot-only read boundary throughout. Keep focused unit/contract tests for distinct invariants and add the declared black-box suite; do not replace the deterministic suite with a few Docker E2Es. Preserve original observed split lists while using the audited eligible population (dev 60, test 104) for exact joins, or obtain explicit approval for another evaluation contract. Do not run the remaining Palimpsest-v2 test arm until S14-S15 pass and runtime/provider authorization is explicit. Do not ingest the 36 missing users merely to restore the old `200/200` claim. Do not treat GE as production qualification until S16B passes.
