@@ -198,8 +198,11 @@ services:
     # Raised with `docker update` rather than a recreate: a recreate would have
     # cost the four users in flight and a second hydration, which is the cost
     # being measured.
-    mem_limit: 5632m
-    memswap_limit: 5632m
+    # The 60-question D5 qualification proved the prior 5.5 GiB cap insufficient:
+    # both concurrency-two and concurrency-one cold batch attempts were OOM-killed
+    # before any answer or provider call. Keep concurrency one and add 1 GiB headroom.
+    mem_limit: 6656m
+    memswap_limit: 6656m
     cpus: 4
     restart: on-failure:3
     # The reviewed runtime contains no HTTP client. This is a liveness check;
