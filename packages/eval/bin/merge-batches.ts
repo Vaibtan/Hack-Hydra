@@ -11,7 +11,7 @@ import {
   readEnvelope,
   resultsStem,
   workspaceRoot,
-  writeEnvelopeAtomic,
+  writeEnvelopeExclusive,
   type EvalEnvelope
 } from "../src/index.js"
 
@@ -39,7 +39,14 @@ if (files.length === 0) {
 }
 
 const parts = files.map((name) => ({ name, envelope: readEnvelope(resolve(resultsDir, name)) }))
-const { refusals, merged } = mergeBatches(parts, [...MEASUREMENT_FIELDS, "system", "pass"])
+const { refusals, merged } = mergeBatches(parts, [
+  ...MEASUREMENT_FIELDS,
+  "system",
+  "pass",
+  "freezeManifestSha256",
+  "codeIdentity",
+  "lockfileSha256"
+])
 
 const variantRefusals = parts.flatMap((part) => {
   const declared = envelopeVariant(part.envelope)
@@ -54,16 +61,26 @@ if (all.length > 0 || merged === null) {
   process.exit(2)
 }
 
-const { batch: _batch, ...first } = parts[0]!.envelope
+const firstPart = parts[0]
+if (firstPart === undefined) throw new Error("batch list unexpectedly empty")
+const { batch: _batch, llmTrace: _llmTrace, ...first } = firstPart.envelope
 const envelope: EvalEnvelope = {
   ...first,
   slice: merged.rows.length,
   requestedSlice: merged.rows.length,
   partial: false,
   batches: merged.count,
+  ...(parts.some((part) => part.envelope.llmTrace !== undefined) && {
+    llmTrace: parts.flatMap((part) => part.envelope.llmTrace ?? [])
+  }),
   rows: merged.rows
 }
 
 const outPath = resolve(resultsDir, `${stem}.json`)
-writeEnvelopeAtomic(outPath, envelope)
+try {
+  writeEnvelopeExclusive(outPath, envelope)
+} catch {
+  console.error(`${outPath} already exists; merged evidence is never overwritten`)
+  process.exit(2)
+}
 console.log(`merged ${files.length} batches (${envelope.rows.length} rows) into ${outPath}`)

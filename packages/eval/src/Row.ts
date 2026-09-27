@@ -3,6 +3,7 @@ import type { HydratedSpan, V2Answer } from "@palimpsest/palimpsest"
 import type { EvalRow, SystemName } from "./Envelope.js"
 import type { Judgement } from "./Judge.js"
 import { errorClass } from "./Tables.js"
+import { createHash } from "node:crypto"
 
 export interface BaselineRead {
   readonly answer: string
@@ -48,6 +49,34 @@ export const responseOf = (outcome: SystemOutcome): string => {
 const sessionsOf = (spans: ReadonlyArray<HydratedSpan>): ReadonlyArray<string> =>
   [...new Set(spans.map((span) => span.sid))].sort()
 
+export const evidenceBytesSha256 = (spans: ReadonlyArray<HydratedSpan>): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify(
+        spans.map((span) => [
+          span.ckey,
+          span.id,
+          span.sid,
+          span.sessionKey,
+          span.turnIdx,
+          span.cs,
+          span.ce,
+          span.sessionOrd,
+          span.sessionDate,
+          span.tEvent,
+          span.speaker,
+          span.status,
+          span.atSession,
+          span.excerpt,
+          span.highlight.start,
+          span.highlight.end,
+          span.label ?? null
+        ])
+      ),
+      "utf8"
+    )
+    .digest("hex")
+
 const common = (
   system: SystemName,
   question: DatasetQuestion,
@@ -66,6 +95,7 @@ const common = (
     judgeTemplate: judgement.template,
     judgeReply: judgement.reply,
     judgeModel: judgement.model,
+    evidenceBytesSha256: evidenceBytesSha256(spans),
     evidenceSessions,
     answerSessions: [...question.answerSessionIds],
     sessionHit: question.answerSessionIds.some((sid) => evidenceSessions.includes(sid)),

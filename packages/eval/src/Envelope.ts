@@ -64,6 +64,7 @@ export const EvalRow = Schema.Struct({
   judgeTemplate: Schema.Literal(...JUDGE_TEMPLATES),
   judgeReply: Schema.String,
   judgeModel: Schema.String,
+  evidenceBytesSha256: opt(Schema.String),
   evidenceSessions: Strings,
   answerSessions: Strings,
   sessionHit: Schema.Boolean,
@@ -105,6 +106,18 @@ export const BatchRecord = Schema.Struct({
   population: Strings
 })
 
+export const EvalLlmCallTrace = Schema.Struct({
+  kind: Schema.String,
+  cacheKey: Schema.String,
+  cache: Schema.Literal("hit", "live"),
+  requestedModel: Schema.String,
+  resolvedModel: Schema.NullOr(Schema.String),
+  protocol: Schema.Literal("responses", "chat-completions"),
+  promptSha256: Schema.String,
+  schemaSha256: Schema.String,
+  outputSha256: Schema.String
+})
+
 export const EvalEnvelope = Schema.Struct({
   system: Schema.Literal(...SYSTEM_NAMES),
   dataset: Schema.String,
@@ -128,6 +141,10 @@ export const EvalEnvelope = Schema.Struct({
   ablations: opt(Strings),
   granularity: opt(Schema.NullOr(Schema.Literal("span", "turn"))),
   fullCtxChars: opt(Schema.NullOr(Schema.Number)),
+  llmTrace: opt(Schema.Array(EvalLlmCallTrace)),
+  freezeManifestSha256: opt(Schema.String),
+  codeIdentity: opt(Schema.String),
+  lockfileSha256: opt(Schema.String),
   rows: Schema.Array(EvalRow)
 })
 export type EvalEnvelope = typeof EvalEnvelope.Type
@@ -209,3 +226,9 @@ export const writeAtomic = (path: string, text: string): void => {
 export const writeEnvelopeAtomic = (path: string, envelope: EvalEnvelope): void =>
   writeAtomic(path, `${JSON.stringify(envelope, null, 2)}
 `)
+
+export const writeExclusive = (path: string, text: string): void =>
+  writeFileSync(path, text, { encoding: "utf8", flag: "wx" })
+
+export const writeEnvelopeExclusive = (path: string, envelope: EvalEnvelope): void =>
+  writeExclusive(path, `${JSON.stringify(envelope, null, 2)}\n`)

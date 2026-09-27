@@ -147,7 +147,7 @@ export const spanTuple = (span: {
   readonly ce: number
 }): string => `${span.sessionKey}|${span.turnIdx}|${span.cs}|${span.ce}`
 
-/** The determinism hash over source spans: "did the reader see the same bytes". */
+/** The determinism hash over source-span locators; it does not hash hydrated excerpt bytes. */
 export const spanHash = (
   spans: ReadonlyArray<{
     readonly sessionKey: string

@@ -23,7 +23,9 @@ export {
   resultsStem,
   variantTokens,
   writeAtomic,
-  writeEnvelopeAtomic
+  writeEnvelopeAtomic,
+  writeEnvelopeExclusive,
+  writeExclusive
 } from "./Envelope.js"
 export type { SystemName } from "./Envelope.js"
 export {
@@ -127,12 +129,15 @@ export { mergeBatches } from "./Batches.js"
 export type { BatchPart, MergedBatches } from "./Batches.js"
 export {
   absentResponse,
+  evidenceBytesSha256,
   graphMsOf,
   responseOf,
   rowFromBaseline,
   rowFromV2
 } from "./Row.js"
 export type { BaselineOutcome, BaselineRead, SystemOutcome, V2Outcome } from "./Row.js"
+export { legacyFreezeFindings, legacyHarnessSha256, readLegacyFreeze, resolveFrozenOutput } from "./LegacyFreeze.js"
+export type { LegacyFreeze, LegacyFreezePurpose, LoadedLegacyFreeze } from "./LegacyFreeze.js"
 export { LIVE_SYSTEMS, RETIRED_SYSTEMS, SYSTEMS } from "./Systems.js"
 export type { SystemDeps, SystemSpec, V2Options } from "./Systems.js"
 export {
