@@ -37,7 +37,12 @@ const QualificationFreeze = Schema.Struct({
       counted: RunPhase
     }),
     scoring: Schema.Struct({ model: Schema.String }),
-    runtime: Schema.Struct({ configSha256: Schema.String, imageId: Schema.String, composeSha256: Schema.String }),
+    runtime: Schema.Struct({
+      configSha256: Schema.String,
+      imageId: Schema.String,
+      composeSha256: Schema.String,
+      queryRuntimeMs: Schema.optional(Schema.Number)
+    }),
     prices: ArtifactPin
   }),
   signOff: Schema.Struct({ by: Schema.String, at: Schema.String, note: Schema.String })
@@ -119,6 +124,10 @@ export const legacyQualificationFindings = (
   }
   if (arm.counted.readTimeoutMs !== undefined) {
     findings.push("qualification warm phase must use the default read timeout")
+  }
+  const queryRuntimeMs = manifest.contract.runtime.queryRuntimeMs ?? 120_000
+  if (arm.priming.readTimeoutMs !== undefined && arm.priming.readTimeoutMs >= queryRuntimeMs) {
+    findings.push("qualification cold read timeout must be lower than the HydraDB query cap")
   }
   if (arm.priming.outputRoot === arm.counted.outputRoot) {
     findings.push("priming and counted outputs must use distinct roots")

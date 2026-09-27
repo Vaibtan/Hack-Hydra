@@ -66,13 +66,15 @@ function Set-HydraPhase {
     [string] $Phase,
     [ValidateSet("", "true", "false")]
     [string] $ReadCache = "",
+    [ValidateRange(30000, 3600000)]
+    [int] $QueryRuntimeMs = 120000,
     [switch] $Restart,
     [ValidateRange(1, 3600)]
     [int] $TimeoutSeconds = 300
   )
 
   $expectedCache = if ($ReadCache -ne "") { $ReadCache } elseif ($Phase -eq "ingest") { "false" } else { "true" }
-  $expectedRuntime = "120000"
+  $expectedRuntime = "$QueryRuntimeMs"
   $env:PALIMPSEST_HYDRADB_READ_CACHE = $expectedCache
   $env:PALIMPSEST_HYDRADB_QUERY_RUNTIME_MS = $expectedRuntime
 

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 
-/** `runtime_config_sha256`: the running node's effective configuration via `docker inspect`; both phases run at a 120 s cap and differ in the read cache. */
+/** `runtime_config_sha256`: the running node's effective configuration via `docker inspect`. */
 const PROJECT = "palimpsest-hydradb-benchmark"
 const SERVICE = "hydradb"
 const CONFIG_PREFIXES = ["GRAPH_", "MALLOC_", "RUST_MIN_STACK"] as const

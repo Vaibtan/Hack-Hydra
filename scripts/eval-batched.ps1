@@ -68,10 +68,16 @@ function Invoke-EvalPass {
 }
 
 $lastBatch = if ($ToBatch -eq 0) { $Batches } else { [Math]::Min($ToBatch, $Batches) }
+$queryRuntimeMs = 120000
+if ($FrozenPurpose -ne "") {
+  $qualification = Get-Content -Raw $Manifest | ConvertFrom-Json
+  $queryRuntimeProperty = $qualification.contract.runtime.PSObject.Properties["queryRuntimeMs"]
+  if ($null -ne $queryRuntimeProperty) { $queryRuntimeMs = [int] $queryRuntimeProperty.Value }
+}
 
 $startedAt = Get-Date
 for ($batch = $FromBatch; $batch -le $lastBatch; $batch++) {
-  if (-not (Set-HydraPhase -Phase eval -Restart -TimeoutSeconds 600).ready) {
+  if (-not (Set-HydraPhase -Phase eval -QueryRuntimeMs $queryRuntimeMs -Restart -TimeoutSeconds 600).ready) {
     Write-Output "batch $batch : node did not become ready; stopping"
     exit 1
   }
