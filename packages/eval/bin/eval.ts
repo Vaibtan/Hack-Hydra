@@ -24,6 +24,7 @@ import {
   judge,
   judgeTemplate,
   legacyFreezeFindings,
+  legacyQualificationFindings,
   leakedTestIds,
   liveExtractionGeneration,
   notIngested,
@@ -37,6 +38,7 @@ import {
   pct,
   readRuntimeConfig,
   readLegacyFreeze,
+  readLegacyQualification,
   readSplitFile,
   renderRunTable,
   responseOf,
@@ -76,19 +78,24 @@ const frozenArg = arg("frozen", "")
 const frozenPurpose =
   frozenArg === ""
     ? null
-    : frozenArg === "dev-replay" || frozenArg === "test-arm"
+    : frozenArg === "dev-replay" || frozenArg === "dev-qualification" || frozenArg === "test-arm"
       ? frozenArg
-      : refuse(`--frozen must be dev-replay or test-arm, not ${JSON.stringify(frozenArg)}`)
+      : refuse(`--frozen must be dev-replay, dev-qualification, or test-arm, not ${JSON.stringify(frozenArg)}`)
 const manifestArg = arg("manifest", "")
 if (frozenPurpose !== null && manifestArg === "") refuse("a frozen run requires --manifest <absolute retrieval-v2.freeze.json>")
-const loadedFreeze = frozenPurpose === null ? null : readLegacyFreeze(manifestArg)
+const loadedQualification = frozenPurpose === "dev-qualification" ? readLegacyQualification(manifestArg) : null
+const loadedFreeze =
+  frozenPurpose === null ? null : loadedQualification?.source ?? readLegacyFreeze(manifestArg)
 const frozenManifest = loadedFreeze?.manifest ?? null
-const frozenArm =
-  frozenManifest === null || frozenPurpose === null
+const qualificationArm = loadedQualification?.manifest.contract.arm ?? null
+const standardFrozenArm =
+  frozenManifest === null || frozenPurpose === null || frozenPurpose === "dev-qualification"
     ? null
     : frozenPurpose === "dev-replay"
       ? frozenManifest.contract.devReplay
       : frozenManifest.contract.testArm
+const frozenArm = qualificationArm ?? standardFrozenArm
+const qualificationContract = loadedQualification?.manifest.contract ?? null
 if (frozenPurpose !== null && !flag("authorized")) {
   refuse(`--frozen ${frozenPurpose} requires --authorized after explicit runtime/spend approval`)
 }
@@ -103,16 +110,30 @@ const batch = orExit(() => parseBatch(arg("batch", "")))
 const ablations = parseAblations()
 const granularity = orExit(() => parseGranularity(arg("granularity", "")))
 const skipMissing = flag("skip-missing")
+const explicitPass = arg("pass", "")
+if (frozenPurpose === "dev-qualification" && explicitPass !== "cold" && explicitPass !== "warm") {
+  refuse("a frozen dev qualification requires --pass cold or --pass warm")
+}
+const qualificationPhase =
+  loadedQualification === null
+    ? null
+    : explicitPass === "cold"
+      ? loadedQualification.manifest.contract.arm.priming
+      : loadedQualification.manifest.contract.arm.counted
 const judgeModel =
-  frozenPurpose === "test-arm" && frozenManifest !== null
-    ? frozenManifest.contract.scoring.model
+  (frozenPurpose === "test-arm" || frozenPurpose === "dev-qualification") && frozenManifest !== null
+    ? loadedQualification?.manifest.contract.scoring.model ?? frozenManifest.contract.scoring.model
     : arg("judge", JUDGE_MODEL)
-const outRelative = arg("out", frozenArm?.outputRoot ?? "results")
-const outDir = resolve(root, outRelative)
+const expectedOutputRoot = qualificationPhase?.outputRoot ?? standardFrozenArm?.outputRoot ?? "results"
+const outRelative = arg("out", expectedOutputRoot)
+const outputBase = loadedQualification?.evidenceRoot ?? root
+const outDir = resolve(outputBase, outRelative)
 const fullCtxChars = Number(arg("fullctx-chars", process.env["PALIMPSEST_FULLCTX_CHARS"] ?? "520000"))
 const DEFAULT_READ_TIMEOUT_MS = 25_000
 const pass: EvalEnvelope["pass"] =
-  Number(process.env["PALIMPSEST_READ_TIMEOUT_MS"] ?? "0") > DEFAULT_READ_TIMEOUT_MS ? "cold" : "warm"
+  explicitPass === "cold" || explicitPass === "warm"
+    ? explicitPass
+    : Number(process.env["PALIMPSEST_READ_TIMEOUT_MS"] ?? "0") > DEFAULT_READ_TIMEOUT_MS ? "cold" : "warm"
 
 const requested = arg("system", "palimpsest-v2")
 const named = requested === "all" ? [...LIVE_SYSTEMS] : requested.split(",").map((s) => s.trim())
@@ -128,22 +149,35 @@ if (loadedFreeze !== null && frozenManifest !== null && frozenArm !== null && fr
   if (systems.length !== 1 || systems[0] !== "palimpsest-v2") refuse("a frozen arm runs only palimpsest-v2")
   if (requestedSplit !== null && requestedSplit !== frozenArm.split) refuse(`the frozen arm requires --split ${frozenArm.split}`)
   if (dataset !== frozenManifest.dataset.name) refuse(`the frozen arm requires dataset ${frozenManifest.dataset.name}`)
-  if (profile !== frozenManifest.contract.profile) refuse(`the frozen arm requires profile ${frozenManifest.contract.profile}`)
+  const frozenProfile = qualificationContract?.profile ?? frozenManifest.contract.profile
+  if (profile !== frozenProfile) refuse(`the frozen arm requires profile ${frozenProfile}`)
   const requestedVariant = variantTokens({ profile, ablations: ablationNames(ablations), granularity })
-  if (requestedVariant.join("\0") !== frozenManifest.contract.variant.join("\0")) {
-    refuse(`the frozen arm requires variant [${frozenManifest.contract.variant.join(", ")}]`)
+  const frozenVariant = qualificationContract?.variant ?? frozenManifest.contract.variant
+  if (requestedVariant.join("\0") !== frozenVariant.join("\0")) {
+    refuse(`the frozen arm requires variant [${frozenVariant.join(", ")}]`)
   }
   if (batch === null || batch.count !== frozenArm.batches) {
     refuse(`the frozen ${frozenPurpose} requires --batch N/${frozenArm.batches}`)
   }
   if (skipMissing) refuse("--skip-missing is incompatible with a frozen population")
-  if (outRelative.replaceAll("\\", "/") !== frozenArm.outputRoot) {
-    refuse(`the frozen ${frozenPurpose} writes only to ${frozenArm.outputRoot}`)
+  if (outRelative.replaceAll("\\", "/") !== expectedOutputRoot) {
+    refuse(`the frozen ${frozenPurpose} ${pass} pass writes only to ${expectedOutputRoot}`)
   }
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
-  const findings = legacyFreezeFindings(loadedFreeze, frozenPurpose, root, head)
+  const findings = (() => {
+    if (loadedQualification !== null) return legacyQualificationFindings(loadedQualification, root, head)
+    if (frozenPurpose === "dev-replay" || frozenPurpose === "test-arm") {
+      return legacyFreezeFindings(loadedFreeze, frozenPurpose, root, head)
+    }
+    return ["the dev-qualification manifest was not loaded"]
+  })()
   if (findings.length > 0) refuse(`frozen preflight failed:\n${findings.map((finding) => `  - ${finding}`).join("\n")}`)
-  process.env["PALIMPSEST_LLM_CACHE_MODE"] = frozenArm.cacheMode
+  if (loadedQualification !== null && concurrency !== loadedQualification.manifest.contract.arm.concurrency) {
+    refuse(`the frozen dev qualification requires --concurrency ${loadedQualification.manifest.contract.arm.concurrency}`)
+  }
+  const cacheMode = qualificationPhase?.cacheMode ?? standardFrozenArm?.cacheMode
+  if (cacheMode === undefined) refuse("the frozen arm does not declare a cache mode")
+  process.env["PALIMPSEST_LLM_CACHE_MODE"] = cacheMode
 }
 
 const splitFile = (() => {
@@ -184,11 +218,12 @@ const program = Effect.gen(function* () {
   const llm = yield* Llm
 
   const models = readPathModels(llm.model)
+  const expectedModels = qualificationContract?.models ?? frozenManifest?.contract.models
   if (
-    frozenManifest !== null &&
-    (models.reader !== frozenManifest.contract.models.reader ||
-      models.select !== frozenManifest.contract.models.select ||
-      models.sufficiency !== frozenManifest.contract.models.sufficiency)
+    expectedModels !== undefined &&
+    (models.reader !== expectedModels.reader ||
+      models.select !== expectedModels.select ||
+      models.sufficiency !== expectedModels.sufficiency)
   ) {
     refuse("configured reader/select/sufficiency models differ from the frozen contract")
   }
@@ -245,12 +280,16 @@ const program = Effect.gen(function* () {
 
   const needsGraph = systems.some((system) => SYSTEMS[system].needsGraph)
   const runtimeConfig = readRuntimeConfig()
+  const expectedRuntime = qualificationContract?.runtime ?? frozenManifest?.contract.runtime
   if (
-    frozenManifest !== null &&
-    (runtimeConfig.sha256 !== frozenManifest.contract.runtime.configSha256 ||
-      runtimeConfig.imageId !== frozenManifest.contract.runtime.imageId)
+    expectedRuntime !== undefined &&
+    (runtimeConfig.sha256 !== expectedRuntime.configSha256 || runtimeConfig.imageId !== expectedRuntime.imageId)
   ) {
     refuse("live HydraDB runtime identity differs from the frozen contract")
+  }
+  const expectedGeneration = qualificationContract?.extractionGeneration ?? frozenManifest?.contract.extractionGeneration
+  if (expectedGeneration !== undefined && liveExtractionGeneration().id !== expectedGeneration) {
+    refuse("live extraction generation differs from the frozen contract")
   }
 
   console.log(`dataset      ${dataset}`)
@@ -308,7 +347,7 @@ const program = Effect.gen(function* () {
       const outcome = yield* SYSTEMS[system].run(question, deps)
       const latencyMs = Date.now() - started
       const judgement =
-        frozenPurpose === "test-arm" && frozenManifest !== null
+        (frozenPurpose === "test-arm" || frozenPurpose === "dev-qualification") && frozenManifest !== null
           ? {
               correct: false,
               template: judgeTemplate(question),
@@ -371,8 +410,10 @@ const program = Effect.gen(function* () {
         fullCtxChars: system === "fullctx" ? fullCtxChars : null,
         ...(loadedFreeze !== null && frozenManifest !== null && {
           llmTrace: yield* llm.callTrace,
-          freezeManifestSha256: loadedFreeze.sha256,
-          codeIdentity: frozenManifest.contract.codeIdentity.baseCommit,
+          freezeManifestSha256: loadedQualification?.sha256 ?? loadedFreeze.sha256,
+          codeIdentity:
+            loadedQualification?.manifest.contract.codeIdentity.harnessCommit ??
+            frozenManifest.contract.codeIdentity.baseCommit,
           lockfileSha256: frozenManifest.contract.codeIdentity.lockfileSha256
         }),
         rows
@@ -401,7 +442,7 @@ const program = Effect.gen(function* () {
     ...(yield* Effect.forEach(datasetSystems, runSystem, { concurrency: 2 }))
   ].sort((a, b) => systems.indexOf(a[0]) - systems.indexOf(b[0]))
 
-  if (frozenPurpose !== "test-arm") {
+  if (frozenPurpose !== "test-arm" && frozenPurpose !== "dev-qualification") {
     const table = renderRunTable({
       population: split === null ? "slice" : `${split} split`,
       dataset,

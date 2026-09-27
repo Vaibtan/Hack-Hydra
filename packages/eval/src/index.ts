@@ -138,6 +138,8 @@ export {
 export type { BaselineOutcome, BaselineRead, SystemOutcome, V2Outcome } from "./Row.js"
 export { legacyFreezeFindings, legacyHarnessSha256, readLegacyFreeze, resolveFrozenOutput } from "./LegacyFreeze.js"
 export type { LegacyFreeze, LegacyFreezePurpose, LoadedLegacyFreeze } from "./LegacyFreeze.js"
+export { legacyQualificationFindings, readLegacyQualification } from "./LegacyQualification.js"
+export type { LegacyQualificationFreeze, LoadedLegacyQualification } from "./LegacyQualification.js"
 export { LIVE_SYSTEMS, RETIRED_SYSTEMS, SYSTEMS } from "./Systems.js"
 export type { SystemDeps, SystemSpec, V2Options } from "./Systems.js"
 export {

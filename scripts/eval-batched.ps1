@@ -21,7 +21,10 @@ param(
   [ValidateRange(1, 200)]
   [int] $FromBatch = 1,
   [ValidateRange(0, 200)]
-  [int] $ToBatch = 0
+  [int] $ToBatch = 0,
+  [ValidateSet("", "dev-qualification")]
+  [string] $FrozenPurpose = "",
+  [string] $Manifest = ""
 )
 
 Set-StrictMode -Version Latest
@@ -50,6 +53,10 @@ function Invoke-EvalPass {
     "--batch", "$Batch/$Batches",
     "--concurrency", "$Concurrency"
   ) + $ExtraArgs
+  if ($FrozenPurpose -ne "") {
+    if ($Manifest -eq "") { throw "-Manifest is required with -FrozenPurpose" }
+    $arguments += @("--frozen", $FrozenPurpose, "--manifest", $Manifest, "--authorized", "--pass", $Pass)
+  }
   if ($Pass -eq "cold") {
     $env:PALIMPSEST_READ_TIMEOUT_MS = "115000"
   } else {
@@ -103,7 +110,11 @@ if ($lastBatch -ne $Batches -or $FromBatch -ne 1) {
 
 $mergeArgs = @("tsx", "packages/eval/bin/merge-batches.ts", "--system", $System, "--split", $Split)
 if ($Variant -ne "") { $mergeArgs += @("--variant", $Variant) }
-if ($ResultsDir -ne "") { $mergeArgs += @("--results", $ResultsDir) }
+if ($FrozenPurpose -eq "dev-qualification") {
+  $qualification = Get-Content -Raw $Manifest | ConvertFrom-Json
+  $evidenceRoot = Split-Path (Split-Path (Split-Path $Manifest -Parent) -Parent) -Parent
+  $mergeArgs += @("--results", (Join-Path $evidenceRoot $qualification.contract.arm.counted.outputRoot))
+} elseif ($ResultsDir -ne "") { $mergeArgs += @("--results", $ResultsDir) }
 Push-Location $WorkingDirectory
 try {
   & npx @mergeArgs
