@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath, loadQuestion } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
@@ -19,7 +19,7 @@ const AppLive = Ingest.layer.pipe(
   Layer.provideMerge(Transcript.layer),
   Layer.provideMerge(ClaimGraph.layer),
   Layer.provideMerge(Supersede.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -37,7 +37,7 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
         const ingest = yield* Ingest
         const claimGraph = yield* ClaimGraph
         const supersede = yield* Supersede
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         const question = yield* loadQuestion("oracle", SOURCE).pipe(Effect.orDie)
 
         const first = yield* ingest.ingestUser(UID, question)
@@ -55,7 +55,7 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
           .map(([stem, df]) => ({ stem, df }))
         const dfChecks = yield* Effect.forEach(topDf, (row) =>
           hydra
-            .msPaths({
+            .discoverPaths({
               sourceLabel: "Token",
               sourceProperty: "tkey",
               sourceValues: [tokenKey(UID, String(row["stem"]))],
@@ -67,7 +67,7 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
               maxLen: 1
             })
             .pipe(
-              Effect.map((paths) => ({
+              Effect.map(({ paths }) => ({
                 stem: String(row["stem"]),
                 stored: Number(row["df"]),
                 actual: new Set(
@@ -87,7 +87,7 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
         )[0]!
         const ckey = sampleClaim.ckey
         const anchors = [...new Set(stems(sampleClaim.text))].slice(0, 6)
-        const paths = yield* hydra.msPaths({
+        const { paths } = yield* hydra.discoverPaths({
           sourceLabel: "Token",
           sourceProperty: "tkey",
           sourceValues: anchors.map((stem) => tokenKey(UID, stem)),
@@ -99,7 +99,7 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
           maxLen: 2
         })
 
-        const evidencePaths = yield* hydra.msPaths({
+        const { paths: evidencePaths } = yield* hydra.discoverPaths({
           sourceLabel: "Claim",
           sourceProperty: "ckey",
           sourceValues: [ckey],
@@ -145,7 +145,7 @@ describe.skipIf(!hasOracle)("claim graph writes", () => {
   it("keeps a second user's graph entirely separate", async () => {
     const counts = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         const mine = yield* readUserStats(hydra, UID)
         const theirs = yield* readUserStats(hydra, "no-such-user")
         return [

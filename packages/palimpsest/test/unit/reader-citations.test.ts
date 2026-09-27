@@ -1,4 +1,4 @@
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { NodeHttpClient } from "@effect/platform-node"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
@@ -75,7 +75,7 @@ const read = async (
   const prompts: Array<string> = []
   const layer = Reader.layer.pipe(
     Layer.provide(stubLlm(replies, prompts)),
-    Layer.provideMerge(HydraClient.layer),
+    Layer.provideMerge(HydraMemoryLive),
     Layer.provide(NodeHttpClient.layerUndici)
   )
   const answer = await runWithBehaviorFakes(

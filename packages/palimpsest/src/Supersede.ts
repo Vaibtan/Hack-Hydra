@@ -1,4 +1,4 @@
-import { HydraClient, type HydraError, type HydraPath } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError, type MemoryPath } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { claimKind } from "./Keys.js"
@@ -98,7 +98,7 @@ const renderPrompt = (
   ].join("\n")
 
 export const foldSupersessionEdges = (
-  paths: ReadonlyArray<HydraPath>,
+  paths: ReadonlyArray<MemoryPath>,
   asOf?: number
 ): ReadonlyMap<string, { readonly newer: string; readonly atSession: number }> => {
   const byOlder = new Map<string, { newer: string; atSession: number }>()
@@ -126,7 +126,7 @@ export const foldSupersessionEdges = (
 }
 
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
   const llm = yield* Llm
 
   const readSlotClaims = (
@@ -137,7 +137,7 @@ const make = Effect.gen(function* () {
       const bySlot = new Map<string, Array<SourceLinkedSlotClaim>>()
       if (skeys.length === 0) return bySlot
 
-      const paths = yield* hydra.msPaths({
+      const { paths } = yield* hydra.discoverPaths({
         sourceLabel: "Slot",
         sourceProperty: "skey",
         sourceValues: skeys,
@@ -245,16 +245,16 @@ const make = Effect.gen(function* () {
       )
 
       const edges = results.flatMap((result) => result.edges)
-      yield* hydra.batchRel(
-        "SUPERSEDED_BY",
-        edges.map((edge) => ({
+      yield* hydra.commitWrites({
+        edges: edges.map((edge) => ({
+          type: "SUPERSEDED_BY",
           srcLabel: "Claim",
           srcKey: edge.olderCkey,
           dstLabel: "Claim",
           dstKey: edge.newerCkey,
           properties: { at_session: edge.atSession }
         }))
-      )
+      })
 
       return {
         slotsExamined: slots.length,
@@ -299,7 +299,7 @@ const make = Effect.gen(function* () {
         return new Map<string, { readonly newer: string; readonly atSession: number }>()
       }
 
-      const paths = yield* hydra.msPaths({
+      const { paths } = yield* hydra.discoverPaths({
         sourceLabel: "Claim",
         sourceProperty: "ckey",
         sourceValues: ckeys,

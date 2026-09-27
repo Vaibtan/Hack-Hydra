@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest"
 import {
+  applyPerspectiveScope,
   applyTimeScope,
   claimSpan,
+  DEFAULT_TEMPORAL_PERSPECTIVE,
+  inPerspective,
   inScope,
   intervalSentence,
+  parseTemporalPerspective,
   resolveTimeInterval,
-  type DayInterval
+  validUncertainty,
+  type DayInterval,
+  type PerspectiveCut,
+  type TemporalPerspective
 } from "../../src/TimeScope.js"
 import { questionDateInt } from "../../src/Plan.js"
 
@@ -278,5 +285,122 @@ describe("the question's own date", () => {
   it("is zero when there is no date, so no phrase is resolved against year zero", () => {
     expect(questionDateInt(undefined)).toBe(0)
     expect(questionDateInt("some Tuesday")).toBe(0)
+  })
+})
+
+describe("temporal perspective cuts", () => {
+  interface PerspectiveFixture extends ClaimFixture {
+    readonly sessionOrd: number
+    readonly acceptedAtMs: number
+  }
+
+  const acceptedAtMs = (dateInt: number): number =>
+    Date.UTC(Math.floor(dateInt / 10_000), Math.floor(dateInt / 100) % 100 - 1, dateInt % 100)
+
+  const pclaim = (
+    tEvent: number,
+    tPrec: string,
+    sessionDate: number,
+    sessionOrd: number,
+    acceptedDate = sessionDate
+  ): PerspectiveFixture => ({
+    ...claim(tEvent, tPrec, sessionDate),
+    sessionOrd,
+    acceptedAtMs: acceptedAtMs(acceptedDate)
+  })
+
+  const JANUARY = at("in january", 20230520)!
+
+  const cut = (over: Partial<PerspectiveCut> & { perspective: TemporalPerspective }): PerspectiveCut => ({
+    interval: JANUARY,
+    questionDate: 20230520,
+    asOf: 10,
+    ...over
+  })
+
+  /** Recorded in June about January: a late arrival under a May question. */
+  const lateArrival = pclaim(20230115, "day", 20230110, 9, 20230601)
+  /** Recorded in January about June: valid in the future, recorded in range. */
+  const earlyRecord = pclaim(20230601, "day", 20230610, 2, 20230115)
+  /** Recorded and valid in January. */
+  const steady = pclaim(20230115, "day", 20230720, 3, 20230120)
+
+  it("defaults to recorded time", () => {
+    expect(DEFAULT_TEMPORAL_PERSPECTIVE).toBe("recorded-time")
+  })
+
+  it("parses explicit perspectives and rejects unknown ones", () => {
+    expect(parseTemporalPerspective("recorded-time")).toBe("recorded-time")
+    expect(parseTemporalPerspective("valid-time")).toBe("valid-time")
+    expect(parseTemporalPerspective("bitemporal")).toBe("bitemporal")
+    expect(parseTemporalPerspective("recent")).toBeNull()
+    expect(parseTemporalPerspective("")).toBeNull()
+  })
+
+  it("cuts every perspective at the exact recorded asOf", () => {
+    const perspectives: ReadonlyArray<TemporalPerspective> = ["recorded-time", "valid-time", "bitemporal"]
+    for (const perspective of perspectives) {
+      expect(inPerspective(steady, cut({ perspective, asOf: 2 }))).toBe(false)
+      expect(inPerspective(steady, cut({ perspective, asOf: 3 }))).toBe(true)
+    }
+  })
+
+  it("matches the interval on the recorded axis under recorded time", () => {
+    expect(inPerspective(earlyRecord, cut({ perspective: "recorded-time" }))).toBe(true)
+    expect(inPerspective(lateArrival, cut({ perspective: "recorded-time" }))).toBe(false)
+  })
+
+  it("uses manifest acceptance rather than the source session date as recorded time", () => {
+    const sourceDatedJanuaryAcceptedJune = pclaim(20230115, "day", 20230115, 4, 20230601)
+    const sourceDatedJuneAcceptedJanuary = pclaim(20230601, "day", 20230601, 5, 20230115)
+    expect(inPerspective(sourceDatedJanuaryAcceptedJune, cut({ perspective: "recorded-time" }))).toBe(false)
+    expect(inPerspective(sourceDatedJuneAcceptedJanuary, cut({ perspective: "recorded-time" }))).toBe(true)
+  })
+
+  it("isolates future sessions under recorded time even without a phrase", () => {
+    const noPhrase = cut({ perspective: "recorded-time", interval: null })
+    expect(inPerspective(lateArrival, noPhrase)).toBe(false)
+    expect(inPerspective(steady, noPhrase)).toBe(true)
+  })
+
+  it("matches the interval on the valid axis under valid time, ignoring future recording", () => {
+    expect(inPerspective(lateArrival, cut({ perspective: "valid-time" }))).toBe(true)
+    expect(inPerspective(earlyRecord, cut({ perspective: "valid-time" }))).toBe(false)
+  })
+
+  it("requires both axes under bitemporal", () => {
+    expect(inPerspective(steady, cut({ perspective: "bitemporal" }))).toBe(true)
+    expect(inPerspective(lateArrival, cut({ perspective: "bitemporal" }))).toBe(false)
+    expect(inPerspective(earlyRecord, cut({ perspective: "bitemporal" }))).toBe(false)
+  })
+
+  it("diverges recorded and valid answers on late arrivals and corrections", () => {
+    const correction = pclaim(20230115, "day", 20230310, 5)
+    const cases: ReadonlyArray<{ name: string; claim: PerspectiveFixture }> = [
+      { name: "late arrival", claim: lateArrival },
+      { name: "correction", claim: correction }
+    ]
+    for (const { name, claim: candidate } of cases) {
+      expect(inPerspective(candidate, cut({ perspective: "recorded-time" })), name).toBe(false)
+      expect(inPerspective(candidate, cut({ perspective: "valid-time" })), name).toBe(true)
+    }
+  })
+
+  it("filters hard, without the legacy recall fallback", () => {
+    const claims = [steady, lateArrival, earlyRecord, pclaim(20230601, "day", 20230602, 9), pclaim(0, "none", 20230603, 9)]
+    const report = applyPerspectiveScope(claims, cut({ perspective: "recorded-time" }))
+
+    expect(report).toMatchObject({ applied: true, inScope: 2, outOfScope: 3 })
+    expect(report.claims).toEqual([steady, earlyRecord])
+  })
+})
+
+describe("valid-time uncertainty", () => {
+  it("derives explicitly from extraction precision", () => {
+    expect(validUncertainty("none", 0)).toBe("unknown")
+    expect(validUncertainty("day", 0)).toBe("unknown")
+    expect(validUncertainty("year", 20230000)).toBe("year")
+    expect(validUncertainty("month", 20230300)).toBe("month")
+    expect(validUncertainty("day", 20230314)).toBe("day")
   })
 })

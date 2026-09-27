@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, type HydraError } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError } from "@palimpsest/hydra"
 import { Context, Effect, Layer, Option } from "effect"
 import { sessionKey, turnChunkKey, turnKey } from "./Keys.js"
 import { linkToUser, readUserVertices } from "./User.js"
@@ -29,28 +29,26 @@ export interface TranscriptReport {
 }
 
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
 
   const ingest = (
     uid: string,
     sessions: ReadonlyArray<DatasetSession>
   ): Effect.Effect<TranscriptReport, HydraError> =>
     Effect.gen(function* () {
-      yield* hydra.batchMerge(
-        "Session",
-        sessions.map((session) => ({
-          key: sessionKey(uid, session.key),
-          properties: {
-            sess: sessionKey(uid, session.key),
-            uid,
-            sid: session.sid,
-            session_ord: session.sessionOrd,
-            date: session.date.dateInt,
-            ts: session.date.ts,
-            n_turns: session.turns.length
-          }
-        }))
-      )
+      const sessionVertices = sessions.map((session) => ({
+        label: "Session",
+        key: sessionKey(uid, session.key),
+        properties: {
+          sess: sessionKey(uid, session.key),
+          uid,
+          sid: session.sid,
+          session_ord: session.sessionOrd,
+          date: session.date.dateInt,
+          ts: session.date.ts,
+          n_turns: session.turns.length
+        }
+      }))
 
       const turns = sessions.flatMap((session) => {
         const sourceDigest = canonicalSessionSource(session).sourceDigest
@@ -62,61 +60,55 @@ const make = Effect.gen(function* () {
         }))
       })
 
-      yield* hydra.batchMerge(
-        "Turn",
-        turns.map(({ session, turn, chunks, sourceDigest }) => ({
-          key: turnKey(uid, session.key, turn.turnIdx),
-          properties: {
-            turn: turnKey(uid, session.key, turn.turnIdx),
-            uid,
-            sid: session.sid,
-            session_ord: session.sessionOrd,
-            turn_idx: turn.turnIdx,
-            role: turn.role,
-            text: chunks[0] ?? "",
-            chunks: chunks.length,
-            source_digest: sourceDigest,
-            source_session_id: session.key
-          }
-        }))
-      )
+      const turnVertices = turns.map(({ session, turn, chunks, sourceDigest }) => ({
+        label: "Turn",
+        key: turnKey(uid, session.key, turn.turnIdx),
+        properties: {
+          turn: turnKey(uid, session.key, turn.turnIdx),
+          uid,
+          sid: session.sid,
+          session_ord: session.sessionOrd,
+          turn_idx: turn.turnIdx,
+          role: turn.role,
+          text: chunks[0] ?? "",
+          chunks: chunks.length,
+          source_digest: sourceDigest,
+          source_session_id: session.key
+        }
+      }))
 
       const overflow = turns.flatMap(({ session, turn, chunks }) =>
         chunks.slice(1).map((text, index) => ({ session, turn, text, chunkIdx: index + 1 }))
       )
-      if (overflow.length > 0) {
-        yield* hydra.batchMerge(
-          "TurnChunk",
-          overflow.map(({ session, turn, text, chunkIdx }) => ({
-            key: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx),
-            properties: {
-              tchunk: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx),
-              uid,
-              chunk_idx: chunkIdx,
-              text
-            }
-          }))
-        )
-        yield* hydra.batchRel(
-          "HAS_CHUNK",
-          overflow.map(({ session, turn, chunkIdx }) => ({
-            srcLabel: "Turn",
-            srcKey: turnKey(uid, session.key, turn.turnIdx),
-            dstLabel: "TurnChunk",
-            dstKey: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx)
-          }))
-        )
-      }
+      const chunkVertices = overflow.map(({ session, turn, text, chunkIdx }) => ({
+        label: "TurnChunk",
+        key: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx),
+        properties: {
+          tchunk: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx),
+          uid,
+          chunk_idx: chunkIdx,
+          text
+        }
+      }))
+      const chunkEdges = overflow.map(({ session, turn, chunkIdx }) => ({
+        type: "HAS_CHUNK",
+        srcLabel: "Turn",
+        srcKey: turnKey(uid, session.key, turn.turnIdx),
+        dstLabel: "TurnChunk",
+        dstKey: turnChunkKey(uid, session.key, turn.turnIdx, chunkIdx)
+      }))
+      const turnEdges = turns.map(({ session, turn }) => ({
+        type: "HAS_TURN",
+        srcLabel: "Session",
+        srcKey: sessionKey(uid, session.key),
+        dstLabel: "Turn",
+        dstKey: turnKey(uid, session.key, turn.turnIdx)
+      }))
 
-      yield* hydra.batchRel(
-        "HAS_TURN",
-        turns.map(({ session, turn }) => ({
-          srcLabel: "Session",
-          srcKey: sessionKey(uid, session.key),
-          dstLabel: "Turn",
-          dstKey: turnKey(uid, session.key, turn.turnIdx)
-        }))
-      )
+      yield* hydra.commitWrites({
+        vertices: [...sessionVertices, ...turnVertices, ...chunkVertices],
+        edges: [...chunkEdges, ...turnEdges]
+      })
 
       yield* linkToUser(
         hydra,
@@ -139,20 +131,17 @@ const make = Effect.gen(function* () {
     turnIdx: number
   ): Effect.Effect<Option.Option<StoredTurn>, HydraError> =>
     Effect.gen(function* () {
-      const found = yield* hydra.getById("Turn", turnKey(uid, sid, turnIdx), [
-        "sid",
-        "turn_idx",
-        "session_ord",
-        "role",
-        "text",
-        "chunks"
-      ])
+      const found = yield* hydra.resolveNode({
+        label: "Turn",
+        key: turnKey(uid, sid, turnIdx),
+        properties: ["sid", "turn_idx", "session_ord", "role", "text", "chunks"]
+      })
       if (found._tag === "None") return Option.none()
-      const row = found.value
+      const row = found.value.properties
 
       let text = String(row["text"])
       if (Number(row["chunks"]) > 1) {
-        const paths = yield* hydra.msPaths({
+        const { paths } = yield* hydra.discoverPaths({
           sourceLabel: "Turn",
           sourceProperty: "turn",
           sourceValues: [turnKey(uid, sid, turnIdx)],
@@ -203,11 +192,9 @@ const make = Effect.gen(function* () {
         ["Turn", "turn"],
         ["TurnChunk", "tchunk"]
       ] as const) {
-        const result = yield* hydra.query(
-          `MATCH (n:${label}) WHERE n.uid = $uid RETURN n.${property} AS key`,
-          { uid }
+        keys.push(
+          ...(yield* hydra.scanKeys({ label, keyProperty: property, filterProperty: "uid", filterValue: uid }))
         )
-        keys.push(...result.rows.map((row) => String(row["key"])))
       }
       yield* hydra.deleteByKeys(keys)
     })

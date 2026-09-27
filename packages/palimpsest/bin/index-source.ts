@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadQuestion, parseDatasetName } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { ingestGenerationConfig } from "../src/GenerationConfig.js"
 import { SourceIndex, SourceIndexLive } from "../src/SourceIndexing.js"
@@ -19,7 +19,7 @@ const dataset = parseDatasetName(arg("dataset", "s"))
 const tenant = arg("tenant", "default")
 
 const HttpLive = NodeHttpClient.layerUndici
-const HydraLive = HydraClient.layer.pipe(Layer.provide(HttpLive))
+const HydraLive = HydraMemoryLive.pipe(Layer.provide(HttpLive))
 const LlmStackLive = LlmLive().pipe(Layer.provide(HttpLive))
 const SourceIndexStackLive = SourceIndexLive.pipe(Layer.provide(HydraLive))
 const AppLive = Layer.mergeAll(HydraLive, LlmStackLive, SourceIndexStackLive)

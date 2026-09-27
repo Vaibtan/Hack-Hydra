@@ -1,24 +1,26 @@
-import type { HydraPath } from "@palimpsest/hydra"
+import type { MemoryPath } from "@palimpsest/hydra"
 import { describe, expect, it } from "vitest"
 import { reachedRows } from "../../src/Rows.js"
 import { applyAsOf, beforeAsOf, convergenceThreshold, decide, idf, orderEvidence, rank, scoreReached, type ReachedClaim } from "../../src/Scoring.js"
 
-const scorePaths = (paths: ReadonlyArray<HydraPath>, totalClaims: number) =>
+const scorePaths = (paths: ReadonlyArray<MemoryPath>, totalClaims: number) =>
   scoreReached(reachedRows(paths), totalClaims)
 
 const path = (
   anchor: { stem: string; df: number },
   claim: { ckey: string; sessionOrd?: number; tEvent?: number },
   viaEntity = false
-): HydraPath => {
+): MemoryPath => {
   const token = {
     id: 1,
+    key: `u|t|${anchor.stem}`,
     labels: ["Token"],
     properties: { stem: anchor.stem, tkey: `u|t|${anchor.stem}`, df: anchor.df }
   }
-  const entity = { id: 2, labels: ["Entity"], properties: { ekey: "u|e|x" } }
+  const entity = { id: 2, key: "u|e|x", labels: ["Entity"], properties: { ekey: "u|e|x" } }
   const target = {
     id: 3,
+    key: claim.ckey,
     labels: ["Claim"],
     properties: {
       ckey: claim.ckey,
@@ -40,6 +42,7 @@ const path = (
     nodes,
     relationships: nodes.slice(1).map((node, i) => ({
       id: 100 + i,
+      key: `${nodes[i]!.key}|edge|${node.key}`,
       type: i === 0 && viaEntity ? "NAMES" : viaEntity ? "MENTIONS" : "HITS",
       src: nodes[i]!.id,
       dst: node.id,

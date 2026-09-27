@@ -99,6 +99,16 @@ export const renderGetByIdQuery = (label: string, properties: ReadonlyArray<stri
   return `MATCH (n:${label} {id: $id}) RETURN ${projection}`
 }
 
+/** Collect one key property over every vertex of a label matching a filter value. */
+export const renderKeyScanQuery = (scan: {
+  readonly label: string
+  readonly keyProperty: string
+  readonly filterProperty: string
+}): string =>
+  `MATCH (n:${requireIdentifier("label", scan.label)}) ` +
+  `WHERE n.${requireIdentifier("filterProperty", scan.filterProperty)} = $value ` +
+  `RETURN n.${requireIdentifier("keyProperty", scan.keyProperty)} AS key`
+
 /** Read every stored full identity that currently owns a global reduced id. */
 export const renderGraphIdentityLookupQuery = (kind: "relationship" | "vertex"): string =>
   kind === "vertex"

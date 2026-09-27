@@ -94,6 +94,7 @@ const span = (
   highlightStart = 0
 ) => ({
   ckey,
+  id: ckey.slice(-8),
   sessionKey,
   turnIdx,
   cs,

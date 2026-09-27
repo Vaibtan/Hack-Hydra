@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath, loadQuestion } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
@@ -9,11 +9,11 @@ import { Transcript } from "../../src/Transcript.js"
 const hasOracle = existsSync(datasetPath("oracle"))
 
 const layer = Transcript.layer.pipe(
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
-const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraClient>): Promise<A> =>
+const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraMemory>): Promise<A> =>
   Effect.runPromise(Effect.provide(effect, layer))
 
 const UID = "gpt4_2655b836"

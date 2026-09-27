@@ -1,4 +1,4 @@
-import { HydraClient, type HydraError, type HydraProperties } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError, type MemoryProperties } from "@palimpsest/hydra"
 import { Effect, Option } from "effect"
 import { userKey } from "./Keys.js"
 
@@ -39,26 +39,27 @@ const COUNT_PROPERTIES = [
 const ensured = new Set<string>()
 
 export const ensureUser = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string
 ): Effect.Effect<void, HydraError> =>
   Effect.gen(function* () {
     if (ensured.has(uid)) return
-    yield* hydra.batchMerge("User", [
-      { key: userKey(uid), properties: { ukey: userKey(uid), uid } }
-    ])
+    yield* hydra.commitWrites({
+      vertices: [{ label: "User", key: userKey(uid), properties: { ukey: userKey(uid), uid } }]
+    })
     ensured.add(uid)
   })
 
 export const writeUserStats = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   stats: UserStats
 ): Effect.Effect<void, HydraError> =>
   Effect.gen(function* () {
     ensured.add(uid)
-    yield* hydra.batchMerge("User", [
-      {
+    yield* hydra.commitWrites({
+      vertices: [{
+        label: "User",
         key: userKey(uid),
         properties: {
           ukey: userKey(uid),
@@ -72,32 +73,32 @@ export const writeUserStats = (
           n_supersessions: stats.supersessions,
           n_contested: stats.contestedSlots
         }
-      }
-    ])
+      }]
+    })
   })
 
 /** The counts, in one ~100 ms read by id. `None` when the user was never indexed. */
 export const readUserStats = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string
 ): Effect.Effect<Option.Option<UserStats>, HydraError> =>
-  hydra.getById("User", userKey(uid), [...COUNT_PROPERTIES]).pipe(
+  hydra.resolveNode({ label: "User", key: userKey(uid), properties: [...COUNT_PROPERTIES] }).pipe(
     Effect.map(
-      Option.map((row) => ({
-        claims: Number(row["n_claims"] ?? 0),
-        entities: Number(row["n_entities"] ?? 0),
-        slots: Number(row["n_slots"] ?? 0),
-        tokens: Number(row["n_tokens"] ?? 0),
-        sessions: Number(row["n_sessions"] ?? 0),
-        turns: Number(row["n_turns"] ?? 0),
-        supersessions: Number(row["n_supersessions"] ?? 0),
-        contestedSlots: Number(row["n_contested"] ?? 0)
+      Option.map((node) => ({
+        claims: Number(node.properties["n_claims"] ?? 0),
+        entities: Number(node.properties["n_entities"] ?? 0),
+        slots: Number(node.properties["n_slots"] ?? 0),
+        tokens: Number(node.properties["n_tokens"] ?? 0),
+        sessions: Number(node.properties["n_sessions"] ?? 0),
+        turns: Number(node.properties["n_turns"] ?? 0),
+        supersessions: Number(node.properties["n_supersessions"] ?? 0),
+        contestedSlots: Number(node.properties["n_contested"] ?? 0)
       }))
     )
   )
 
 export const bumpUserStats = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   delta: Partial<UserStats>
 ): Effect.Effect<UserStats, HydraError> =>
@@ -122,7 +123,7 @@ export const bumpUserStats = (
 export type UserEdge = "HAS_ENTITY" | "HAS_SLOT" | "HAS_SESSION" | "HAS_SOURCE_REVISION"
 
 export const linkToUser = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   relType: UserEdge,
   dstLabel: "Entity" | "Slot" | "Session" | "SourceSession",
@@ -131,24 +132,24 @@ export const linkToUser = (
   Effect.gen(function* () {
     if (keys.length === 0) return
     yield* ensureUser(hydra, uid)
-    yield* hydra.batchRel(
-      relType,
-      keys.map((key) => ({
+    yield* hydra.commitWrites({
+      edges: keys.map((key) => ({
+        type: relType,
         srcLabel: "User",
         srcKey: userKey(uid),
         dstLabel,
         dstKey: key
       }))
-    )
+    })
   })
 
 export const readUserVertices = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   relType: UserEdge
-): Effect.Effect<ReadonlyArray<HydraProperties>, HydraError> =>
+): Effect.Effect<ReadonlyArray<MemoryProperties>, HydraError> =>
   hydra
-    .msPaths({
+    .discoverPaths({
       sourceLabel: "User",
       sourceProperty: "ukey",
       sourceValues: [userKey(uid)],
@@ -157,8 +158,8 @@ export const readUserVertices = (
       maxLen: 1
     })
     .pipe(
-      Effect.map((paths) => {
-        const out: Array<HydraProperties> = []
+      Effect.map(({ paths }) => {
+        const out: Array<MemoryProperties> = []
         for (const path of paths) {
           if (path.relationships.length !== 1) continue
           const node = path.nodes[path.nodes.length - 1]
@@ -190,7 +191,7 @@ export const WARM_SOURCES_PER_WALK = 200
 export const WARM_BUDGET_MS = 15_000
 
 const warmHop = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   source: {
     readonly label: string
     readonly property: string
@@ -216,7 +217,7 @@ const warmHop = (
       }
       const batch = source.values.slice(at, at + WARM_SOURCES_PER_WALK)
       const outcome = yield* Effect.result(
-        hydra.msPaths({
+        hydra.discoverPaths({
           sourceLabel: source.label,
           sourceProperty: source.property,
           sourceValues: batch,
@@ -229,7 +230,7 @@ const warmHop = (
         failed++
         continue
       }
-      for (const path of outcome.success) {
+      for (const path of outcome.success.paths) {
         const node = path.nodes[path.nodes.length - 1]
         const key = String(node?.properties[targetProperty] ?? "")
         if (key !== "") keys.add(key)
@@ -239,7 +240,7 @@ const warmHop = (
   })
 
 export const warmUser = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   options: { readonly deep?: boolean; readonly budgetMs?: number } = {}
 ): Effect.Effect<Option.Option<WarmReport>, HydraError> =>
@@ -258,7 +259,7 @@ export const warmUser = (
       { concurrency: 3 }
     )
     const keysOf = (
-      rows: ReadonlyArray<HydraProperties>,
+      rows: ReadonlyArray<MemoryProperties>,
       property: string
     ): ReadonlyArray<string> =>
       rows.map((row) => String(row[property] ?? "")).filter((key) => key !== "")

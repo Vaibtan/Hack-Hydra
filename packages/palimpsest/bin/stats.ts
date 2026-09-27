@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraAdmin, HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { ClaimGraph } from "../src/ClaimGraph.js"
@@ -18,14 +18,13 @@ const showTokens = process.argv.includes("--tokens")
 
 const AppLive = ClaimGraph.layer.pipe(
   Layer.provideMerge(Supersede.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const program = Effect.gen(function* () {
   const claimGraph = yield* ClaimGraph
-  const hydra = yield* HydraClient
   const s = yield* claimGraph.stats(uid)
 
   console.log(`uid              ${uid}`)
@@ -49,14 +48,22 @@ const program = Effect.gen(function* () {
   }
 
   if (showTokens) {
-    const df = yield* hydra.query(
-      "MATCH (t:Token) WHERE t.uid = $uid RETURN t.stem AS stem, t.df AS df ORDER BY df DESC LIMIT 10",
-      { uid }
+    // The store-wide Token scan is genuinely unrestricted: it runs through
+    // the admin boundary (separate token + audit) instead of the typed ops.
+    const df = yield* Effect.provide(
+      Effect.gen(function* () {
+        const admin = yield* HydraAdmin
+        return yield* admin.query(
+          "MATCH (t:Token) WHERE t.uid = $uid RETURN t.stem AS stem, t.df AS df ORDER BY df DESC LIMIT 10",
+          { uid }
+        )
+      }),
+      HydraAdmin.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
     )
     console.log("")
     console.log("most common anchors  (store-wide Token scan — slow by construction)")
     for (const row of df.rows) {
-      console.log(`  ${String(row["stem"]).padEnd(24)}df ${row["df"]}`)
+      console.log(`  ${String(row["stem"]).padEnd(24)}df ${String(row["df"])}`)
     }
   }
 })

@@ -1,14 +1,13 @@
 import { createHash } from "node:crypto"
 import {
-  FULL_KEY_PROPERTY,
-  HydraClient,
-  isHydraPath,
+  HydraMemory,
   type HydraError,
-  type HydraPath,
-  type MsPathsConfig,
-  type Scalar
+  type MemoryPath,
+  type MemoryProperties,
+  type PropertyValue,
+  type RelDirection
 } from "@palimpsest/hydra"
-import { Context, Data, Effect, Layer, Option, Result, Schema } from "effect"
+import { Context, Data, Effect, Layer, Option, Result } from "effect"
 import { claimDigest } from "./ClaimGraph.js"
 import type { EntityCanonicalView } from "./EntityCanonicalView.js"
 import type { ExtractionArtifact } from "./ExtractionArtifact.js"
@@ -40,7 +39,8 @@ import type { UserIndexSnapshot } from "./UserIndexSnapshot.js"
 // HydraDB has no list type; aliases are one string joined by the ASCII unit separator.
 const ALIAS_SEPARATOR = "\u001f"
 
-const SNAPSHOT_GRAPH_FORMAT = "palimpsest.snapshot-graph.v1"
+/** Read-time compatibility marker for the materialized snapshot projection. */
+export const SNAPSHOT_GRAPH_FORMAT = "palimpsest.snapshot-graph.v2"
 
 /**
  * Snapshot graph keys are tenant-and-snapshot scoped (S03): the same digest,
@@ -72,6 +72,13 @@ export const snapshotClaimKey = (
   digest: string
 ): string => `${snapshotRootKey(scope, snapshotId)}|claim|${commitId}|${digest}`
 
+export const snapshotEvidenceKey = (
+  scope: MemoryScope,
+  snapshotId: string,
+  commitId: string,
+  turnIdx: number
+): string => `${snapshotRootKey(scope, snapshotId)}|evidence|${commitId}|${turnIdx}`
+
 export const snapshotSlotKey = (
   scope: MemoryScope,
   snapshotId: string,
@@ -88,6 +95,7 @@ export type SnapshotVertexLabel =
   | "SnapshotRevision"
   | "SnapshotEntity"
   | "SnapshotClaim"
+  | "SnapshotEvidence"
   | "SnapshotSlot"
   | "SnapshotToken"
 
@@ -97,6 +105,7 @@ export type SnapshotRelationType =
   | "SNAPSHOT_HAS_SLOT"
   | "SNAPSHOT_HAS_TOKEN"
   | "SNAPSHOT_HAS_CLAIM"
+  | "SNAPSHOT_HAS_EVIDENCE"
   | "SNAPSHOT_DERIVED_FROM"
   | "SNAPSHOT_EVIDENCE"
   | "SNAPSHOT_MENTIONS"
@@ -111,6 +120,7 @@ const KEY_PROPERTY: Readonly<Record<SnapshotVertexLabel, string>> = {
   SnapshotRevision: "snapshot_revision",
   SnapshotEntity: "snapshot_entity",
   SnapshotClaim: "snapshot_claim",
+  SnapshotEvidence: "snapshot_evidence",
   SnapshotSlot: "snapshot_slot",
   SnapshotToken: "snapshot_token"
 }
@@ -120,7 +130,8 @@ const MEMBER_RELATIONS: Readonly<Partial<Record<SnapshotVertexLabel, SnapshotRel
   SnapshotEntity: "SNAPSHOT_HAS_ENTITY",
   SnapshotSlot: "SNAPSHOT_HAS_SLOT",
   SnapshotToken: "SNAPSHOT_HAS_TOKEN",
-  SnapshotClaim: "SNAPSHOT_HAS_CLAIM"
+  SnapshotClaim: "SNAPSHOT_HAS_CLAIM",
+  SnapshotEvidence: "SNAPSHOT_HAS_EVIDENCE"
 }
 
 const MEMBER_RELATION_TYPES: ReadonlyArray<SnapshotRelationType> = [
@@ -128,7 +139,8 @@ const MEMBER_RELATION_TYPES: ReadonlyArray<SnapshotRelationType> = [
   "SNAPSHOT_HAS_ENTITY",
   "SNAPSHOT_HAS_SLOT",
   "SNAPSHOT_HAS_TOKEN",
-  "SNAPSHOT_HAS_CLAIM"
+  "SNAPSHOT_HAS_CLAIM",
+  "SNAPSHOT_HAS_EVIDENCE"
 ]
 
 const MEMBER_WRITE_ORDER: ReadonlyArray<Exclude<SnapshotVertexLabel, "SnapshotRoot">> = [
@@ -136,7 +148,8 @@ const MEMBER_WRITE_ORDER: ReadonlyArray<Exclude<SnapshotVertexLabel, "SnapshotRo
   "SnapshotEntity",
   "SnapshotSlot",
   "SnapshotToken",
-  "SnapshotClaim"
+  "SnapshotClaim",
+  "SnapshotEvidence"
 ]
 
 const RELATION_WRITE_ORDER: ReadonlyArray<SnapshotRelationType> = [
@@ -145,6 +158,7 @@ const RELATION_WRITE_ORDER: ReadonlyArray<SnapshotRelationType> = [
   "SNAPSHOT_HAS_SLOT",
   "SNAPSHOT_HAS_TOKEN",
   "SNAPSHOT_HAS_CLAIM",
+  "SNAPSHOT_HAS_EVIDENCE",
   "SNAPSHOT_DERIVED_FROM",
   "SNAPSHOT_EVIDENCE",
   "SNAPSHOT_MENTIONS",
@@ -220,16 +234,16 @@ export class SnapshotGraphVerifyRejected extends Data.TaggedError("SnapshotGraph
 export interface SnapshotGraphVertex {
   readonly label: SnapshotVertexLabel
   readonly key: string
-  readonly properties: Readonly<Record<string, Scalar>>
+  readonly properties: Readonly<Record<string, PropertyValue>>
 }
 
 export interface SnapshotGraphRelation {
   readonly type: SnapshotRelationType
   readonly srcLabel: SnapshotVertexLabel
   readonly srcKey: string
-  readonly dstLabel: SnapshotVertexLabel | "SourceTurn"
+  readonly dstLabel: SnapshotVertexLabel
   readonly dstKey: string
-  readonly properties: Readonly<Record<string, Scalar>>
+  readonly properties: Readonly<Record<string, PropertyValue>>
 }
 
 /** Session header fields read back off the durable SourceSession vertex. */
@@ -291,13 +305,13 @@ const snapshotDigest = (
   vertices: ReadonlyArray<{
     readonly key: string
     readonly label: string
-    readonly properties: Readonly<Record<string, Scalar>>
+    readonly properties: Readonly<Record<string, PropertyValue>>
   }>,
   relations: ReadonlyArray<{
     readonly type: string
     readonly srcKey: string
     readonly dstKey: string
-    readonly properties: Readonly<Record<string, Scalar>>
+    readonly properties: Readonly<Record<string, PropertyValue>>
   }>
 ): string =>
   createHash("sha256")
@@ -527,6 +541,7 @@ export const planSnapshotGraph = (
   }
 
   const claimVertices = new Map<string, SnapshotGraphVertex>()
+  const evidenceVertices = new Map<string, SnapshotGraphVertex>()
   const claimKeyByReference = new Map<string, string>()
   const sessionOrdByClaimKey = new Map<string, number>()
   const revisionVertices = new Map<string, SnapshotGraphVertex>()
@@ -564,6 +579,7 @@ export const planSnapshotGraph = (
           claim_digest: digest,
           logical_session_id: revision.logicalSessionId,
           source_digest: revision.sourceDigest,
+          accepted_at_ms: revision.acceptedAtMs,
           sid: artifact.extraction.sid,
           session_ord: revision.sessionOrdinal,
           session_date: session.dateInt,
@@ -590,15 +606,31 @@ export const planSnapshotGraph = (
         type: "SNAPSHOT_EVIDENCE",
         srcLabel: "SnapshotClaim",
         srcKey: claimKey,
-        dstLabel: "SourceTurn",
-        dstKey: sourceTurnKey(
-          scope,
-          revision.logicalSessionId,
-          revision.sourceDigest,
-          claim.span.turnIdx
-        ),
+        dstLabel: "SnapshotEvidence",
+        dstKey: snapshotEvidenceKey(scope, snapshotId, revision.commitId, claim.span.turnIdx),
         properties: { ...base, cs: claim.span.cs, ce: claim.span.ce }
       })
+      const evidenceKey = snapshotEvidenceKey(scope, snapshotId, revision.commitId, claim.span.turnIdx)
+      if (!evidenceVertices.has(evidenceKey)) {
+        evidenceVertices.set(evidenceKey, {
+          label: "SnapshotEvidence",
+          key: evidenceKey,
+          properties: {
+            ...base,
+            snapshot_evidence: evidenceKey,
+            commit_id: revision.commitId,
+            logical_session_id: revision.logicalSessionId,
+            source_digest: revision.sourceDigest,
+            turn_idx: claim.span.turnIdx,
+            source_turn_key: sourceTurnKey(
+              scope,
+              revision.logicalSessionId,
+              revision.sourceDigest,
+              claim.span.turnIdx
+            )
+          }
+        })
+      }
 
       for (const entity of claim.entities) {
         const canonicalId = canonicalByIdentity.get(indexEntityIdentityId(entity))
@@ -676,6 +708,7 @@ export const planSnapshotGraph = (
         logical_session_id: revision.logicalSessionId,
         source_digest: revision.sourceDigest,
         source_bytes: revision.sourceBytes,
+        accepted_at_ms: revision.acceptedAtMs,
         session_ord: revision.sessionOrdinal,
         extraction_generation: revision.extractionGeneration,
         artifact_id: artifact.id,
@@ -773,7 +806,12 @@ export const planSnapshotGraph = (
       properties: { ...base, snapshot_token: tokenKey, stem: token.stem, df: token.hits.size }
     })
   }
-  members.push(...revisionVertices.values(), ...entityVertices.values(), ...claimVertices.values())
+  members.push(
+    ...revisionVertices.values(),
+    ...entityVertices.values(),
+    ...claimVertices.values(),
+    ...evidenceVertices.values()
+  )
   members.sort(byVertexOrder)
   // HAS_* edges are added here, once per member vertex — they enumerate the
   // namespace in one walk and give verification its cardinality coverage.
@@ -797,6 +835,7 @@ export const planSnapshotGraph = (
     properties: {
       ...base,
       snapshot_root: rootKey,
+      graph_format: SNAPSHOT_GRAPH_FORMAT,
       index_generation: snapshot.indexGenerationId,
       canonical_view_id: snapshot.canonicalViewId,
       manifest_schema_version: snapshot.manifestSchemaVersion,
@@ -804,6 +843,7 @@ export const planSnapshotGraph = (
       n_revisions: revisionVertices.size,
       n_entities: entityVertices.size,
       n_claims: claimVertices.size,
+      n_evidence: evidenceVertices.size,
       n_slots: slotAccum.size,
       n_tokens: tokenAccum.size
     }
@@ -841,37 +881,22 @@ export type SnapshotGraphError =
 interface ObservedVertex {
   readonly label: string
   readonly key: string
-  readonly properties: Record<string, Scalar>
+  readonly properties: Record<string, PropertyValue>
 }
 
 interface ObservedRelation {
   readonly type: string
   readonly srcKey: string
   readonly dstKey: string
-  readonly properties: Record<string, Scalar>
+  readonly properties: Record<string, PropertyValue>
 }
 
-const RELATION_RESERVED_PROPERTIES = new Set([FULL_KEY_PROPERTY, "id"])
+/** Memory property bags are scalars and exclude the adapter's identity property. */
+const vertexProperties = (properties: MemoryProperties) => ({ ...properties })
 
-/** Stored/read property bags mix in the reserved full-key cell and Hydra's null/path cells. */
-type StoredProperties = Readonly<Record<string, Scalar | HydraPath | null>>
-
-const vertexProperties = (properties: StoredProperties) =>
+const relationProperties = (properties: MemoryProperties): Record<string, PropertyValue> =>
   Object.fromEntries(
-    Object.entries(properties).filter(
-      (entry): entry is [string, Scalar] =>
-        entry[0] !== FULL_KEY_PROPERTY && entry[1] !== null && !isHydraPath(entry[1])
-    )
-  )
-
-const relationProperties = (properties: StoredProperties) =>
-  Object.fromEntries(
-    Object.entries(properties).filter(
-      (entry): entry is [string, Scalar] =>
-        !RELATION_RESERVED_PROPERTIES.has(entry[0]) &&
-        entry[1] !== null &&
-        !isHydraPath(entry[1])
-    )
+    Object.entries(properties).filter(([name]) => name !== "id")
   )
 
 const chunksOf = <A>(items: ReadonlyArray<A>, size: number): ReadonlyArray<ReadonlyArray<A>> => {
@@ -881,7 +906,7 @@ const chunksOf = <A>(items: ReadonlyArray<A>, size: number): ReadonlyArray<Reado
 }
 
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
   const manifest = yield* IngestManifest
 
   const gatherSource = (scope: MemoryScope, snapshotId: string, commitId: string) =>
@@ -906,11 +931,11 @@ const make = Effect.gen(function* () {
           })
         )
       }
-      const row = yield* hydra.getById(
-        "SourceSession",
-        sourceSessionKey(scope, revision.logicalSessionId, revision.sourceDigest),
-        [...SOURCE_SESSION_PROPERTIES]
-      )
+      const row = yield* hydra.resolveNode({
+        label: "SourceSession",
+        key: sourceSessionKey(scope, revision.logicalSessionId, revision.sourceDigest),
+        properties: [...SOURCE_SESSION_PROPERTIES]
+      })
       if (Option.isNone(row)) {
         return yield* Effect.fail(
           new SnapshotGraphBuildRejected({
@@ -921,26 +946,16 @@ const make = Effect.gen(function* () {
         )
       }
       const session: SnapshotSourceSession = {
-        sid: String(row.value["sid"] ?? ""),
-        sessionOrd: Number(row.value["session_ord"]),
-        dateInt: Number(row.value["date"]),
-        turns: Number(row.value["n_turns"])
+        sid: String(row.value.properties["sid"] ?? ""),
+        sessionOrd: Number(row.value.properties["session_ord"]),
+        dateInt: Number(row.value.properties["date"]),
+        turns: Number(row.value.properties["n_turns"])
       }
       return { revision, artifact, session } satisfies SnapshotGraphSource
     })
 
   const writePlan = (plan: SnapshotGraphPlan) =>
-    Effect.gen(function* () {
-      yield* hydra.batchMerge("SnapshotRoot", [plan.root])
-      for (const label of MEMBER_WRITE_ORDER) {
-        const rows = plan.members.filter((member) => member.label === label)
-        if (rows.length > 0) yield* hydra.batchMerge(label, rows)
-      }
-      for (const type of RELATION_WRITE_ORDER) {
-        const rows = plan.relations.filter((relation) => relation.type === type)
-        if (rows.length > 0) yield* hydra.batchRel(type, rows)
-      }
-    })
+    hydra.commitWrites({ vertices: [plan.root, ...plan.members], edges: plan.relations })
 
   /**
    * Read-back (S03): enumerate the whole namespace via the HAS edges, walk the
@@ -957,14 +972,13 @@ const make = Effect.gen(function* () {
         JSON.stringify([type, srcKey, dstKey])
       const observedMembers = new Map<string, ObservedVertex>()
       const observedRelations = new Map<string, ObservedRelation>()
-      const collectRelation = (path: HydraPath): void => {
+      const collectRelation = (path: MemoryPath): void => {
         const source = path.nodes[0]
         const destination = path.nodes[path.nodes.length - 1]
         const relation = path.relationships[0]
         if (source === undefined || destination === undefined || relation === undefined) return
-        const srcKey = source.properties[FULL_KEY_PROPERTY]
-        const dstKey = destination.properties[FULL_KEY_PROPERTY]
-        if (!Schema.is(Schema.String)(srcKey) || !Schema.is(Schema.String)(dstKey)) return
+        const srcKey = source.key
+        const dstKey = destination.key
         observedRelations.set(relationId(relation.type, srcKey, dstKey), {
           type: relation.type,
           srcKey,
@@ -973,16 +987,16 @@ const make = Effect.gen(function* () {
         })
       }
 
-      const rootRow = yield* hydra.getById(
-        "SnapshotRoot",
-        plan.root.key,
-        Object.keys(plan.root.properties)
-      )
+      const rootRow = yield* hydra.resolveNode({
+        label: "SnapshotRoot",
+        key: plan.root.key,
+        properties: Object.keys(plan.root.properties)
+      })
       if (Option.isNone(rootRow)) return yield* fail("missingRoot", plan.root.key)
       const observedRoot: ObservedVertex = {
         label: "SnapshotRoot",
         key: plan.root.key,
-        properties: vertexProperties(rootRow.value)
+        properties: vertexProperties(rootRow.value.properties)
       }
       if (canonicalJson(plan.root.properties) !== canonicalJson(observedRoot.properties)) {
         return yield* fail(
@@ -991,7 +1005,7 @@ const make = Effect.gen(function* () {
         )
       }
 
-      const memberPaths = yield* hydra.msPaths({
+      const { paths: memberPaths } = yield* hydra.discoverPaths({
         sourceLabel: "SnapshotRoot",
         sourceProperty: KEY_PROPERTY.SnapshotRoot,
         sourceValues: [plan.root.key],
@@ -1001,7 +1015,7 @@ const make = Effect.gen(function* () {
       })
       // getById projects only the requested props; the member walk returns the
       // root's full stored property set, which also catches unexpected props.
-      let observedRootFull: Record<string, Scalar> | undefined
+      let observedRootFull: Record<string, PropertyValue> | undefined
       for (const path of memberPaths) {
         const source = path.nodes[0]
         if (source !== undefined) {
@@ -1013,9 +1027,9 @@ const make = Effect.gen(function* () {
         }
         const vertex = path.nodes[path.nodes.length - 1]
         if (vertex === undefined) continue
-        const key = vertex.properties[FULL_KEY_PROPERTY]
+        const key = vertex.key
         const label = vertex.labels[0]
-        if (!Schema.is(Schema.String)(key) || label === undefined) continue
+        if (key === "" || label === undefined) continue
         observedMembers.set(JSON.stringify([label, key]), {
           label,
           key,
@@ -1044,13 +1058,13 @@ const make = Effect.gen(function* () {
       const collectWalks = (
         label: SnapshotVertexLabel,
         sourceValues: ReadonlyArray<string>,
-        relDirection: MsPathsConfig["relDirection"]
+        relDirection: RelDirection
       ) =>
         Effect.forEach(
           chunksOf(sourceValues, VERIFY_SOURCES_PER_WALK),
           (chunk) =>
             Effect.map(
-              hydra.msPaths({
+              hydra.discoverPaths({
                 sourceLabel: label,
                 sourceProperty: KEY_PROPERTY[label],
                 sourceValues: chunk,
@@ -1058,7 +1072,7 @@ const make = Effect.gen(function* () {
                 relDirection,
                 maxLen: 1
               }),
-              (paths) => {
+              ({ paths }) => {
                 for (const path of paths) collectRelation(path)
               }
             ),

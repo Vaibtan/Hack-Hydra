@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { Effect, Layer, Option } from "effect"
 import { Transcript } from "../src/Transcript.js"
 
@@ -34,7 +34,7 @@ Effect.runPromise(
   program.pipe(
     Effect.provide(
       Transcript.layer.pipe(
-        Layer.provideMerge(HydraClient.layer),
+        Layer.provideMerge(HydraMemoryLive),
         Layer.provide(NodeHttpClient.layerUndici)
       )
     )

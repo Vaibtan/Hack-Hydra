@@ -1,4 +1,5 @@
-import { HydraClient, HydraUnavailable, type HydraPath } from "@palimpsest/hydra"
+import { HydraMemory, HydraUnavailable, type MemoryPath, type NodeLookup } from "@palimpsest/hydra"
+import { makeExecutionPlan } from "@palimpsest/hydra/testing"
 import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import { WARM_SOURCES_PER_WALK, warmUser } from "../../src/User.js"
@@ -6,6 +7,7 @@ import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
 const node = (property: string, key: string) => ({
   id: 1,
+  key,
   labels: [],
   properties: { [property]: key }
 })
@@ -15,10 +17,10 @@ const path = (
   source: string,
   targetProperty: string,
   target: string
-): HydraPath =>
-  behaviorFake<HydraPath>({
+): MemoryPath =>
+  behaviorFake<MemoryPath>({
     nodes: [node(sourceProperty, source), node(targetProperty, target)],
-    relationships: [{ id: 1, type: "REL", src: 1, dst: 1, properties: {} }]
+    relationships: [{ id: 1, key: `${source}|REL|${target}`, type: "REL", src: 1, dst: 1, properties: {} }]
   })
 
 interface Call {
@@ -36,32 +38,28 @@ const stubHydra = (
     readonly calls: Array<Call>
     readonly now: { value: number }
   }
-) =>
-  Layer.succeed(HydraClient, behaviorFake<HydraClient>({
-    getById: (label: string, key: string) =>
+) => {
+  const plan = makeExecutionPlan({ queryText: "", parameters: {} })
+  return Layer.succeed(HydraMemory, behaviorFake<HydraMemory>({
+    resolveNode: (lookup: NodeLookup) =>
       Effect.succeed(
         Option.some({
-          ukey: key,
-          claims: 10,
-          entities: options.entities,
-          slots: options.slots,
-          tokens: 0,
-          sessions: options.sessions,
-          turns: 0,
-          supersessions: 0,
-          contested_slots: 0,
-          n_claims: 10,
-          n_entities: options.entities,
-          n_slots: options.slots,
-          n_tokens: 0,
-          n_sessions: options.sessions,
-          n_turns: 0,
-          n_supersessions: 0,
-          n_contested_slots: 0,
-          label
+          id: 1,
+          labels: [lookup.label],
+          properties: {
+            ukey: lookup.key,
+            n_claims: 10,
+            n_entities: options.entities,
+            n_slots: options.slots,
+            n_tokens: 0,
+            n_sessions: options.sessions,
+            n_turns: 0,
+            n_supersessions: 0,
+            n_contested: 0
+          }
         })
       ),
-    msPaths: (config: {
+    discoverPaths: (config: {
       readonly relTypes: ReadonlyArray<string>
       readonly sourceValues: ReadonlyArray<string>
       readonly sourceProperty: string
@@ -78,11 +76,12 @@ const stubHydra = (
                 : options.sessions
           const property =
             relType === "HAS_ENTITY" ? "ekey" : relType === "HAS_SLOT" ? "skey" : "sess"
-          return Effect.succeed(
-            Array.from({ length: count }, (_, i) =>
+          return Effect.succeed({
+            paths: Array.from({ length: count }, (_, i) =>
               path("ukey", "u|user", property, `u|${property}|${i}`)
-            )
-          )
+            ),
+            plan
+          })
         }
         options.calls.push({ relType, sources: config.sourceValues.length })
         const answered = options.answer(relType, config.sourceValues)
@@ -91,13 +90,15 @@ const stubHydra = (
         }
         const target =
           relType === "NAMES" ? "tkey" : relType === "FILLS" ? "ckey" : relType === "HITS" ? "ckey" : "turn"
-        return Effect.succeed(
-          Array.from({ length: answered }, (_, i) =>
+        return Effect.succeed({
+          paths: Array.from({ length: answered }, (_, i) =>
             path(config.sourceProperty, config.sourceValues[0]!, target, `u|${target}|${i}`)
-          )
-        )
+          ),
+          plan
+        })
       })
   }))
+}
 
 const warm = (
   options: Parameters<typeof stubHydra>[0],
@@ -106,7 +107,7 @@ const warm = (
   runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         return yield* warmUser(hydra, "u", warmOptions)
       }),
       stubHydra(options)

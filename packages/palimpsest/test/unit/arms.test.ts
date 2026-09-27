@@ -240,9 +240,10 @@ describe("the convergence config every anchor arm shares", () => {
 })
 
 const path = (names: ReadonlyArray<string>) => ({
-  nodes: names.map((name, i) => ({ id: i, labels: [], properties: { name } })),
+  nodes: names.map((name, i) => ({ id: i, key: `node:${i}`, labels: [], properties: { name } })),
   relationships: names.slice(1).map((_, i) => ({
     id: i,
+    key: `node:${i}|MENTIONS|node:${i + 1}`,
     type: "MENTIONS",
     src: i,
     dst: i + 1,

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { RoutePolicy } from "./Routes.js"
-import { shortId } from "./Select.js"
+
 import type { Route } from "./Understand.js"
 
 export type PackLabel = "CURRENT" | "EARLIER STATEMENT" | "SUPERSEDED"
@@ -94,7 +94,7 @@ export interface BudgetReport<A> {
   readonly overBudget: boolean
 }
 
-export const applyBudget = <A extends { readonly ckey: string; readonly excerpt: string }>(
+export const applyBudget = <A extends { readonly ckey: string; readonly id: string; readonly excerpt: string }>(
   spans: ReadonlyArray<A>,
   options: {
     readonly budget?: number
@@ -128,7 +128,7 @@ export const applyBudget = <A extends { readonly ckey: string; readonly excerpt:
     dropped,
     drops: dropped.map((span) => ({
       ckey: span.ckey,
-      id: shortId(span.ckey),
+      id: span.id,
       reason: "budget" as const,
       chars: span.excerpt.length
     })),
@@ -147,7 +147,7 @@ export const spanTuple = (span: {
   readonly ce: number
 }): string => `${span.sessionKey}|${span.turnIdx}|${span.cs}|${span.ce}`
 
-/** The determinism hash over source spans: "did the reader see the same bytes". */
+/** The determinism hash over source-span locators; it does not hash hydrated excerpt bytes. */
 export const spanHash = (
   spans: ReadonlyArray<{
     readonly sessionKey: string

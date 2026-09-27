@@ -1,8 +1,8 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, type DatasetQuestion } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv, readPathModels, verifyModels } from "@palimpsest/llm"
-import { ClaimGraph, Reader, Retrieve, Supersede } from "@palimpsest/palimpsest"
+import { ClaimGraph, LegacyG3Adapter, Supersede, Transcript } from "@palimpsest/palimpsest"
 import { Effect, Layer, Schema } from "effect"
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
@@ -118,18 +118,18 @@ if (merge) {
   process.exit(0)
 }
 
-const AppLive = Retrieve.layer.pipe(
-  Layer.provideMerge(Reader.layer),
+const AppLive = LegacyG3Adapter.layer.pipe(
+  Layer.provideMerge(Transcript.layer),
   Layer.provideMerge(Supersede.layer),
   Layer.provideMerge(ClaimGraph.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const program = Effect.gen(function* () {
-  const retrieve = yield* Retrieve
-  const reader = yield* Reader
+  const legacy = yield* LegacyG3Adapter
+
   const claimGraph = yield* ClaimGraph
   const llm = yield* Llm
 
@@ -201,16 +201,16 @@ const program = Effect.gen(function* () {
         const uid = uidFor(prefix, question.questionId)
         const questionDate = question.questionDate.raw
 
-        const ask = yield* retrieve.ask(uid, question.question, { questionDate, profile })
+        const ask = yield* legacy.retrieve.ask(uid, question.question, { questionDate, profile })
         if (ask.verdict === "ABSENT") return null
 
         const plan = ask.plan
-        const withRoute = yield* reader.read(question.question, questionDate, ask.evidence, {
+        const withRoute = yield* legacy.reader.read(question.question, questionDate, ask.evidence, {
           route: plan.route,
           slotOf: new Map(Object.entries(plan.slots)),
           protectedKeys: new Set(plan.protectedKeys)
         })
-        const withoutRoute = yield* reader.readSpans(
+        const withoutRoute = yield* legacy.reader.readSpans(
           question.question,
           questionDate,
           withRoute.spans,

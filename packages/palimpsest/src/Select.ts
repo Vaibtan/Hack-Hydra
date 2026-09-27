@@ -7,6 +7,10 @@ const selectModel = (): string | undefined => configuredModel("PALIMPSEST_SELECT
 
 export const shortId = (ckey: string): string => ckey.slice(-8)
 
+/** The id the pipeline cites: the candidate's own id when the lane assigns one, else the key tail. */
+export const candidateId = (candidate: { readonly ckey: string; readonly id?: string }): string =>
+  candidate.id ?? shortId(candidate.ckey)
+
 export const MAX_KEPT_TURNS = 30
 
 export const ALWAYS_KEEP_TOP_CONVERGENCE = 3
@@ -67,7 +71,7 @@ export const enforceSelection = (
   }
 
   const rejected = ordered.filter(
-    (candidate) => !guaranteed.has(candidate.ckey) && !keptIds.has(shortId(candidate.ckey))
+    (candidate) => !guaranteed.has(candidate.ckey) && !keptIds.has(candidateId(candidate))
   )
 
   const turns = new Set<string>()
@@ -83,7 +87,7 @@ export const enforceSelection = (
   const cappedOut: Array<Candidate> = []
   for (const candidate of ordered) {
     if (guaranteed.has(candidate.ckey)) continue
-    if (!keptIds.has(shortId(candidate.ckey))) continue
+    if (!keptIds.has(candidateId(candidate))) continue
     const turn = `${candidate.sessionKey}|${candidate.turnIdx}`
     if (turns.size >= maxTurns && !turns.has(turn)) {
       cappedOut.push(candidate)
@@ -145,7 +149,7 @@ export const renderCandidateTable = (candidates: ReadonlyArray<Candidate>): stri
     .map((candidate) => {
       const dated = candidate.tEvent > 0 ? ` about ${candidate.tEvent}` : ""
       return (
-        `[${shortId(candidate.ckey)}] ${candidate.speaker} on ${candidate.sessionDate}${dated} · ` +
+        `[${candidateId(candidate)}] ${candidate.speaker} on ${candidate.sessionDate}${dated} · ` +
         `${candidate.arms.join(",")} · ${candidate.text}`
       )
     })

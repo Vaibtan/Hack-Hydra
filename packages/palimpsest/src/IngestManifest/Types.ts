@@ -64,6 +64,10 @@ export interface SourceRevision {
   readonly manifestVersion: number
   readonly failureCode: string | null
   readonly failureRetryable: boolean | null
+  /** Source acceptance (recorded-time origin): `created_at_ms`. */
+  readonly acceptedAtMs: number
+  /** First-reached ms per lifecycle watermark; null when unreached or unknown (pre-v13 rows). */
+  readonly reachedAtMs: { readonly [K in IngestState]: number | null }
 }
 
 /** Commit-id-keyed delta for the rebuildable per-user projections. */
@@ -235,6 +239,19 @@ export interface StoreSupersessionDecisions {
   readonly links: ReadonlyArray<SupersessionDecisionLink>
 }
 
+/** One independently durable provider result within a revision's enrichment. */
+export interface SupersessionChainDecisions {
+  readonly commitId: string
+  readonly chainId: string
+  readonly links: ReadonlyArray<SupersessionDecisionLink>
+}
+
+export interface StoreSupersessionChainDecisions {
+  readonly revision: SourceRevision
+  readonly chainId: string
+  readonly links: ReadonlyArray<SupersessionDecisionLink>
+}
+
 /**
  * The durable manifest record for one immutable per-user projection. It
  * reconstructs the snapshot's full content without reading mutable session
@@ -258,6 +275,19 @@ export interface ActiveIndexSnapshot {
   readonly record: UserIndexSnapshotRecord
   readonly manifestVersion: number
   readonly activatedAtMs: number
+}
+
+/**
+ * One transactionally observed query binding. Coverage and scope-existence
+ * facts come from the same SQLite read transaction as the active pointer, so a
+ * request cannot combine one snapshot with a later manifest state.
+ */
+export interface ActiveQuerySnapshotBinding {
+  readonly active: ActiveIndexSnapshot | null
+  readonly manifestVersion: number
+  readonly scopeRevisions: number
+  readonly uncommittedRevisions: number
+  readonly snapshots: number
 }
 
 export class InvalidGraphIdClaim extends Data.TaggedError("InvalidGraphIdClaim")<{
@@ -604,6 +634,8 @@ export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestU
     | "readSourceRevisionByCommitId"
     | "storeSupersessionDecisions"
     | "readSupersessionDecisions"
+    | "storeSupersessionChainDecisions"
+    | "readSupersessionChainDecisions"
     | "applyProjectionDelta"
     | "readProjection"
     | "readProjectionCounts"
@@ -629,6 +661,7 @@ export class IngestManifestUnavailable extends Data.TaggedError("IngestManifestU
     | "readUserIndexSnapshot"
     | "listUserIndexSnapshots"
     | "readActiveIndexSnapshot"
+    | "readActiveQuerySnapshotBinding"
     | "activateIndexSnapshot"
     | "commitAndActivateIndexSnapshot"
   readonly cause: unknown

@@ -2,8 +2,17 @@ import type { DatasetQuestion } from "@palimpsest/dataset"
 import { Llm } from "@palimpsest/llm"
 import { Effect } from "effect"
 
-/** Upstream pins `gpt-4o-2024-08-06`; the alias is used and the resolved model recorded per row. */
-export const JUDGE_MODEL = "gpt-4o"
+/** Exact model snapshot pinned by upstream LongMemEval `evaluate_qa.py`. */
+export const JUDGE_MODEL = "gpt-4o-2024-08-06"
+export const JUDGE_PROTOCOL = {
+  endpoint: "chat-completions",
+  model: JUDGE_MODEL,
+  temperature: 0,
+  maxTokens: 10,
+  n: 1
+} as const
+/** Historical local scoring identity retained only for cache-only semantic replay. */
+export const LEGACY_JUDGE_MODEL = "gpt-4o"
 
 /** Which LongMemEval `evaluate_qa.py` template a question is scored by. */
 export type JudgeTemplate =
@@ -63,6 +72,7 @@ export interface Judgement {
   readonly template: JudgeTemplate
   readonly reply: string
   readonly model: string
+  readonly resolvedModel: string | null
   readonly cached: boolean
 }
 
@@ -76,13 +86,44 @@ export const judge = (
     const template = judgeTemplate(question)
     const prompt = judgePrompt(template, question.question, question.answer, response)
     const generated = yield* llm
-      .generateText({ kind: "judge", prompt, model })
+      .generateText({
+        kind: "judge-upstream-v1",
+        prompt,
+        model,
+        protocol: JUDGE_PROTOCOL.endpoint,
+        temperature: JUDGE_PROTOCOL.temperature,
+        maxOutputTokens: JUDGE_PROTOCOL.maxTokens,
+        n: JUDGE_PROTOCOL.n
+      })
       .pipe(Effect.orDie)
     return {
       correct: judgeLabel(generated.value),
       template,
       reply: generated.value.trim(),
       model: generated.model,
+      resolvedModel: generated.resolvedModel,
+      cached: generated.cached
+    }
+  })
+
+/** Reproduce the historical local judge call exactly; its scores remain secondary evidence. */
+export const legacyJudge = (
+  question: DatasetQuestion,
+  response: string
+): Effect.Effect<Judgement, never, Llm> =>
+  Effect.gen(function* () {
+    const llm = yield* Llm
+    const template = judgeTemplate(question)
+    const prompt = judgePrompt(template, question.question, question.answer, response)
+    const generated = yield* llm
+      .generateText({ kind: "judge", prompt, model: LEGACY_JUDGE_MODEL, protocol: "responses" })
+      .pipe(Effect.orDie)
+    return {
+      correct: judgeLabel(generated.value),
+      template,
+      reply: generated.value.trim(),
+      model: generated.model,
+      resolvedModel: generated.resolvedModel,
       cached: generated.cached
     }
   })

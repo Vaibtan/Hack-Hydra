@@ -2,7 +2,7 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { Effect, Layer, Option, Schema } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
-import { HydraClient } from "../../src/index.js"
+import { HydraClient } from "../../src/Client.js"
 import { createTransport } from "../../src/Transport.js"
 
 const HydraTestLive = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))

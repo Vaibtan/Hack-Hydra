@@ -1,18 +1,20 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { Retrieve } from "../../src/Retrieve.js"
+import { LegacyG3Adapter } from "../../src/LegacyG3Adapter.js"
 import { Supersede } from "../../src/Supersede.js"
+import { Transcript } from "../../src/Transcript.js"
 
 const hasDataset = existsSync(datasetPath("s"))
 
-const AppLive = Retrieve.layer.pipe(
+const AppLive = LegacyG3Adapter.layer.pipe(
   Layer.provideMerge(Supersede.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -27,8 +29,8 @@ describe.skipIf(!hasDataset)("retrieval", () => {
   it("answers from converged claims and reaches the answer's session", async () => {
     const result = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        return yield* retrieve.ask(UID, QUESTION)
+        const legacy = yield* LegacyG3Adapter
+        return yield* legacy.retrieve.ask(UID, QUESTION)
       })
     )
 
@@ -61,9 +63,9 @@ describe.skipIf(!hasDataset)("retrieval", () => {
   it("gives the same hash for the same question against the same graph", async () => {
     const [a, b] = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        const first = yield* retrieve.ask(UID, QUESTION)
-        const second = yield* retrieve.ask(UID, QUESTION)
+        const legacy = yield* LegacyG3Adapter
+        const first = yield* legacy.retrieve.ask(UID, QUESTION)
+        const second = yield* legacy.retrieve.ask(UID, QUESTION)
         return [first, second] as const
       })
     )
@@ -74,8 +76,8 @@ describe.skipIf(!hasDataset)("retrieval", () => {
   it("replays an earlier belief with as-of, without a snapshot", async () => {
     const early = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        return yield* retrieve.ask(UID, QUESTION, { asOf: 4 })
+        const legacy = yield* LegacyG3Adapter
+        return yield* legacy.retrieve.ask(UID, QUESTION, { asOf: 4 })
       })
     )
     const texts = early.evidence.map((claim) => claim.text).join(" ")
@@ -88,8 +90,8 @@ describe.skipIf(!hasDataset)("retrieval", () => {
   it("abstains structurally on a question this user never discussed", async () => {
     const absent = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        return yield* retrieve.ask(
+        const legacy = yield* LegacyG3Adapter
+        return yield* legacy.retrieve.ask(
           UID,
           "What did the veterinarian say about my chinchilla's dental surgery?"
         )

@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, vertexId } from "@palimpsest/hydra"
+import { HydraMemory, vertexId } from "@palimpsest/hydra"
 import { createIndexGeneration } from "../../src/IndexGeneration.js"
 import { IngestCommitLockMemory } from "../../src/IngestCommitLock.js"
 import { IngestManifest, makeIngestManifestTestLayer } from "../../src/IngestManifest.js"
@@ -76,7 +76,7 @@ describe("runTransactionalSourceIndex", () => {
     const collidingIdentity = "forced-collision"
     const collisionReducer = (key: string): number =>
       key === collidingIdentity ? vertexId(sessionKey) : vertexId(key)
-    const existingGraphIdentityLookup = Layer.succeed(HydraClient, behaviorFake<HydraClient>({
+    const existingGraphIdentityLookup = Layer.succeed(HydraMemory, behaviorFake<HydraMemory>({
       readGraphIdentities: (_kind: "relationship" | "vertex", reducedId: number) =>
         Effect.succeed(reducedId === vertexId(sessionKey) ? [collidingIdentity] : [])
     }))

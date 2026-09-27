@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import type { DatasetSession } from "@palimpsest/dataset"
 import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
@@ -7,11 +7,11 @@ import { turnKey } from "../../src/Keys.js"
 import { Transcript } from "../../src/Transcript.js"
 
 const layer = Transcript.layer.pipe(
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
-const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraClient>): Promise<A> =>
+const run = <A, E>(effect: Effect.Effect<A, E, Transcript | HydraMemory>): Promise<A> =>
   Effect.runPromise(Effect.provide(effect, layer))
 
 const UID_A = "probe-transcript-a"

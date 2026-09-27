@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import { Effect, Layer, Option } from "effect"
 import { userKey } from "../src/Keys.js"
@@ -22,10 +22,10 @@ if (uids.length === 0) {
   process.exit(2)
 }
 
-const AppLive = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const AppLive = HydraMemoryLive.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const program = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
 
   for (const uid of uids) {
     const report = yield* warmUser(hydra, uid, {

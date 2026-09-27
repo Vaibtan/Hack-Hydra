@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, parseDatasetName, type DatasetQuestion } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraAdmin, HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import {
   ClaimGraph,
@@ -34,7 +34,8 @@ const extraUids = arg("uid", "")
 const userConcurrency = Number(arg("users", "2"))
 
 const AppLive = ClaimGraph.layer.pipe(
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
+  Layer.provideMerge(HydraAdmin.layer),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
@@ -44,7 +45,8 @@ interface Target {
 }
 
 const program = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
+  const admin = yield* HydraAdmin
   const claimGraph = yield* ClaimGraph
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const byId = new Map(questions.map((question) => [question.questionId, question]))
@@ -80,12 +82,12 @@ const program = Effect.gen(function* () {
         const t0 = Date.now()
 
         const scan = (label: string, property: string) =>
-          hydra
+          admin
             .query(`MATCH (n:${label}) WHERE n.uid = $uid RETURN n.${property} AS k`, { uid })
             .pipe(Effect.map((result) => result.rows.map((row) => String(row["k"]))))
 
         const ekeys = yield* scan("Entity", "ekey")
-        const claims = yield* hydra
+        const claims = yield* admin
           .query("MATCH (n:Claim) WHERE n.uid = $uid RETURN count(*) AS c", { uid })
           .pipe(Effect.map((result) => Number(result.rows[0]?.["c"] ?? 0)))
 
@@ -95,10 +97,10 @@ const program = Effect.gen(function* () {
           return null
         }
 
-        const tokens = yield* hydra
+        const tokens = yield* admin
           .query("MATCH (n:Token) WHERE n.uid = $uid RETURN count(*) AS c", { uid })
           .pipe(Effect.map((result) => Number(result.rows[0]?.["c"] ?? 0)))
-        const slotRows = yield* hydra
+        const slotRows = yield* admin
           .query(
             "MATCH (n:Slot) WHERE n.uid = $uid RETURN n.skey AS skey, n.n_claims AS n_claims",
             { uid }
@@ -118,13 +120,13 @@ const program = Effect.gen(function* () {
           contested.map((slot) => slot.skey)
         )
 
-        yield* hydra.batchMerge(
-          "Session",
-          question.sessions.map((session) => ({
+        yield* hydra.commitWrites({
+          vertices: question.sessions.map((session) => ({
+            label: "Session",
             key: sessionKey(uid, session.key),
             properties: { n_turns: session.turns.length }
           }))
-        )
+        })
 
         yield* linkToUser(hydra, uid, "HAS_ENTITY", "Entity", ekeys)
         yield* linkToUser(hydra, uid, "HAS_SLOT", "Slot", slotRows.map((slot) => slot.skey))

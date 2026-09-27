@@ -1,0 +1,601 @@
+{
+  "schemaVersion": 1,
+  "lane": "retrieval-v2-legacy-g3",
+  "claim": {
+    "kind": "held-out-not-blind",
+    "statement": "Held out from Palimpsest-v2 tuning but not blind. The effective test population is the 104 of the original 140 test questions whose users the S00 witness proves completely query-visible under legacy prefix g3; the other 36 are excluded as missing-source and are not ingested for this lane. Both splits were observed before this freeze, and BM25, full-context and oracle-session answers on all 140 original test questions were read at 422f021. The one remaining Palimpsest-v2 arm is legacy evidence closure: it is neither production-path qualification (S16B) nor a blind quality claim, which requires the ADR-0007 private holdout.",
+    "viewed": [
+      "dev (60 questions): v1 and v2 rows, judge outcomes and the adoption-gate numbers (gate read 2026-08-31T20:29:00.443Z); BM25, full-context and oracle-session rows (02f3f54)",
+      "test (original 140 questions): BM25, full-context and oracle-session answers and judge outcomes (422f021)",
+      "test: no Palimpsest pipeline output has been read. Every committed pre-split result (results/*-20.json and results/*-60.json, 2026-08-19) covers dev questions only, and a read-only audit of .cache/llm on 2026-09-26 found no anchors, select or sufficiency entry with a stored prompt for any test question; 88 anchors and 283 read entries from 2026-08-19 predate prompt storage and cannot be classified"
+    ]
+  },
+  "contract": {
+    "codeIdentity": {
+      "strategy": "pinned-historical-commit",
+      "baseCommit": "44930d5e44955e0ce59b31ef1297b9fd02bcbb41",
+      "lockfileSha256": "fd8a47e1464fd453857edb4453cabdf9fdb9b1a2c3ed1a4e73fb579dc29bb33a",
+      "harnessPatchSha256": "1aeecba00e39a1ff0585d3e03d126bb90b56c3a759bee423138812bd8236ce1f"
+    },
+    "scoring": {
+      "upstreamRevision": "d6dc8b5",
+      "endpoint": "chat-completions",
+      "model": "gpt-4o-2024-08-06",
+      "temperature": 0,
+      "maxTokens": 10,
+      "n": 1,
+      "parser": "case-insensitive-yes-substring",
+      "historicalScores": "secondary-only",
+      "scope": "rescore-all-frozen-answer-artifacts"
+    },
+    "models": {
+      "reader": "gpt-5.6-luna",
+      "select": "gpt-5.6-luna",
+      "sufficiency": "gpt-5.6-luna"
+    },
+    "extractionGeneration": "extract-v1-fffef7bb23a92938adeba1bd1b781a016b019a7bfac75708368dc719fd4de6e4",
+    "profile": "full",
+    "variant": [],
+    "granularity": null,
+    "devReplay": {
+      "split": "dev",
+      "eligible": 60,
+      "cacheMode": "cache-only",
+      "batches": 15,
+      "batchSize": 4,
+      "outputRoot": "artifacts/retrieval-v2/dev-replay"
+    },
+    "testArm": {
+      "split": "test",
+      "eligible": 104,
+      "cacheMode": "read-write",
+      "batches": 26,
+      "batchSize": 4,
+      "outputRoot": "artifacts/retrieval-v2/test-arm"
+    },
+    "retry": {
+      "initialDelayMs": 1000,
+      "multiplier": 2,
+      "maxRetries": 4,
+      "jitter": true
+    },
+    "runtime": {
+      "configSha256": "58bab098b96b8e4523856bd05a9330c65fb75a988b843ce28ce58f2de4b9b087",
+      "imageId": "sha256:514349a17890bf2a35e5e5eb81b41c09b771b07e497fa3f51eb22e7727d66081",
+      "composeSha256": "2894777e045f57931539cbbfc4a77db46f8d511f0e5e9430dd3ff34883fa54d5"
+    },
+    "prices": {
+      "path": "data/splits/retrieval-v2.prices.json",
+      "sha256": "ee69f269e43d04aac031d1e7e912ce38a630cd7ac22c41de3a80b794bfad4b26",
+      "commit": "draft-s14"
+    },
+    "invalidRunConditions": [
+      "any pinned artifact, population record, code, lockfile, image, compose file, or runtime hash differs",
+      "eligible membership is not exactly dev 60 or test 104, contains duplicates, or a batch is missing or overlaps",
+      "an output path exists before a run or merge, or an output root overlaps canonical results",
+      "the dev replay records any live provider call, cache miss, cold pass, semantic row difference, or evidence-byte difference",
+      "the provider-resolved judge model differs from gpt-4o-2024-08-06",
+      "the graph prefix is not g3 or the runtime is recreated, reset, reingested, or mutated outside the authorized arm",
+      "any post-freeze change can alter retrieval, packing, sufficiency, model input or output, or answer selection"
+    ],
+    "metrics": [
+      "answerable accuracy",
+      "abstention accuracy",
+      "false abstention rate",
+      "per-question paired correctness",
+      "graph latency p50",
+      "reader input tokens p50",
+      "four separately reported cost categories from the pinned price manifest"
+    ],
+    "pairedTests": [
+      "exact two-sided McNemar on paired correctness",
+      "95 percent paired difference interval"
+    ],
+    "acceptanceThresholds": {
+      "minimumAnswerableCorrectGain": 3,
+      "maximumWorstTypeRegressionPoints": 8,
+      "maximumFalseAbstentionPercent": 8,
+      "minimumAbstentionCorrect": 3,
+      "maximumWarmGraphP50Ms": 400,
+      "maximumReaderInputTokensP50": 1200
+    }
+  },
+  "dataset": {
+    "name": "s",
+    "path": "data/longmemeval_s_cleaned.json",
+    "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+  },
+  "inputs": {
+    "split": {
+      "path": "data/splits/retrieval-v2.json",
+      "sha256": "25a7347df24c9999d11bdf965deedc1bf77093a7c04fb36c4e0da4a8950d0b3e",
+      "commit": "44930d5"
+    },
+    "witness": {
+      "path": "data/splits/retrieval-v2.reconcile.json",
+      "sha256": "b700a6d839dc184edbae3a7e668600576e5c758345f70e6755b567778a45267a",
+      "commit": "44930d5"
+    },
+    "populationDev": {
+      "path": "data/splits/population-dev.json",
+      "sha256": "bae112578c4338834544a2fd1b1d795e1d7558cc0e6dfaa544e83c00f665b708",
+      "commit": "44930d5"
+    },
+    "populationTest": {
+      "path": "data/splits/population-test.json",
+      "sha256": "69c7fc6c91e93fa01c4c2164f27ed62ce260babf38a92865c5580eb114f5dd1e",
+      "commit": "44930d5"
+    }
+  },
+  "population": {
+    "prefix": "g3",
+    "membershipSha256": "a7cb77b0d571786debac74d9f05cc3b354b07f6cd5f4a1648bee879a73f17c9c",
+    "original": {
+      "dev": 60,
+      "test": 140
+    },
+    "eligible": {
+      "dev": [
+        "001be529",
+        "00ca467f",
+        "0100672e",
+        "01493427",
+        "031748ae",
+        "031748ae_abs",
+        "06878be2",
+        "06db6396",
+        "06f04340",
+        "07741c44",
+        "07741c45",
+        "078150f1",
+        "07b6f563",
+        "0862e8bf",
+        "0862e8bf_abs",
+        "08e075c7",
+        "08f4fc43",
+        "0977f2af",
+        "099778bb",
+        "09ba9854",
+        "09ba9854_abs",
+        "09d032c9",
+        "0a34ad58",
+        "0a995998",
+        "0bb5a684",
+        "0bc8ad92",
+        "0bc8ad93",
+        "0db4c65d",
+        "0ddfec37",
+        "0ddfec37_abs",
+        "0e4e4c46",
+        "0e5e2d1a",
+        "0ea62687",
+        "0edc2aef",
+        "0f05491a",
+        "10d9b85a",
+        "10e09553",
+        "118b2229",
+        "1192316e",
+        "129d1232",
+        "1568498a",
+        "15745da0",
+        "15745da0_abs",
+        "157a136e",
+        "16c90bf4",
+        "184da446",
+        "18dcd5a5",
+        "1903aded",
+        "195a1a1b",
+        "19b5f2b3",
+        "19b5f2b3_abs",
+        "1a1907b4",
+        "1a8a66a6",
+        "1b9b7252",
+        "1c0ddc50",
+        "1d4da289",
+        "1d4e3b97",
+        "1da05512",
+        "1de5cff2",
+        "1e043500"
+      ],
+      "test": [
+        "18bc8abd",
+        "1c549ce4",
+        "1cea1afa",
+        "1f2b8d4f",
+        "1faac195",
+        "2133c1b5",
+        "2133c1b5_abs",
+        "21436231",
+        "21d02d0d",
+        "22d2cb42",
+        "2311e44b",
+        "2311e44b_abs",
+        "2318644b",
+        "25e5aa4f",
+        "2698e78f",
+        "2698e78f_abs",
+        "26bdc477",
+        "27016adc",
+        "2788b940",
+        "28bcfaac",
+        "28dc39ac",
+        "29f2956b",
+        "29f2956b_abs",
+        "2a1811e2",
+        "2b8f3739",
+        "2bf43736",
+        "2c63a862",
+        "2ce6a0f2",
+        "2e6d26dc",
+        "2ebe6c90",
+        "2ebe6c92",
+        "311778f1",
+        "32260d93",
+        "3249768e",
+        "352ab8bd",
+        "35a27287",
+        "36580ce8",
+        "36b9f61e",
+        "370a8ff4",
+        "37d43f65",
+        "37f165cf",
+        "38146c39",
+        "3a704032",
+        "3b6f954b",
+        "3ba21379",
+        "3c1045c8",
+        "3d86fd0a",
+        "3e321797",
+        "3f1e9474",
+        "3fdac837",
+        "3fe836c9",
+        "4100d0a0",
+        "41275add",
+        "41698283",
+        "42ec0761",
+        "4388e9dd",
+        "45dc21b6",
+        "488d3006",
+        "4b24c848",
+        "4baee567",
+        "4c36ccef",
+        "4d6b87c8",
+        "4dfccbf7",
+        "4dfccbf8",
+        "4fd1909e",
+        "505af2f5",
+        "50635ada",
+        "51a45a95",
+        "51b23612",
+        "54026fce",
+        "545bd2b5",
+        "561fabcd",
+        "577d4d32",
+        "57f827a0",
+        "5809eb10",
+        "5831f84d",
+        "58470ed2",
+        "58bf7951",
+        "58ef2f1c",
+        "59524333",
+        "5a4f22c0",
+        "5c40ec5b",
+        "5d3d2817",
+        "5e1b23de",
+        "60bf93ed_abs",
+        "6456829e_abs",
+        "6aeb4375_abs",
+        "80ec1f4f_abs",
+        "88432d0a_abs",
+        "982b5123_abs",
+        "a96c20ee_abs",
+        "ba358f49_abs",
+        "bc8a6e93_abs",
+        "c8090214_abs",
+        "e5ba910e_abs",
+        "edced276_abs",
+        "eeda8a6d_abs",
+        "f4f1d8a4_abs",
+        "f685340e_abs",
+        "gpt4_372c3eed_abs",
+        "gpt4_70e84552_abs",
+        "gpt4_93159ced_abs",
+        "gpt4_c27434e8_abs",
+        "gpt4_fe651585_abs"
+      ]
+    },
+    "exclusions": [
+      {
+        "questionId": "60d45044",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6222b6eb",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "65240037",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6613b389",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "66f24dbb",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6ade9755",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6ae235be",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6b168ec8",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6b7dfb22",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6e984301",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "6e984302",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "70b3e69b",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "71017276",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "71017277",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "7161e7e2",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "71a3fd6b",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "75832dbd",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "75f70248",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "8077ef71",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "8a2466db",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "8c18457d",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "95228167",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "982b5123",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "993da5e2",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "9a707b81",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "9a707b82",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "a3045048",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "a3838d2b",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "a89d7624",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "af082822",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "afdc33df",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "b0479f84",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "b29f3365",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "b6025781",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "caf03d32",
+        "reason": "missing-source"
+      },
+      {
+        "questionId": "d24813b1",
+        "reason": "missing-source"
+      }
+    ]
+  },
+  "gate": {
+    "readAt": "2026-08-31T20:29:00.443Z",
+    "passed": true,
+    "recordSha256": "1d9adb90686f172426a5259829bb2a913b995bd4eea11441130dabb0aa2474b4",
+    "report": {
+      "path": "results/gate-dev.md",
+      "sha256": "28116e092d1176e26d6b5b8660bd323c383fc7c6c8115ef7244d624c1d0a85cc",
+      "commit": "4d45e09"
+    }
+  },
+  "alreadyRead": [
+    {
+      "system": "palimpsest",
+      "split": "dev",
+      "artifact": {
+        "path": "results/palimpsest-dev.json",
+        "sha256": "ecf74de832ef524ade64b211812cb4051560d052d5c19b89f114af999277916e",
+        "commit": "72a2fe5"
+      },
+      "rows": 60
+    },
+    {
+      "system": "palimpsest-v2",
+      "split": "dev",
+      "artifact": {
+        "path": "results/palimpsest-v2-dev.json",
+        "sha256": "86e265460b7f66d4fa2260f90de4702a5a819a511e5c7872040536c7737a91db",
+        "commit": "6473f79"
+      },
+      "rows": 60
+    },
+    {
+      "system": "bm25",
+      "split": "dev",
+      "artifact": {
+        "path": "results/bm25-dev.json",
+        "sha256": "c11870fc288da5da6a4199da456dc5c11704f7ad06a38acbe3e58b93a989b7c5",
+        "commit": "02f3f54"
+      },
+      "rows": 60
+    },
+    {
+      "system": "fullctx",
+      "split": "dev",
+      "artifact": {
+        "path": "results/fullctx-dev.json",
+        "sha256": "204d0ddb0c6ea20377e0ae81e89c553829d3055750f4ccf015258292c480d129",
+        "commit": "02f3f54"
+      },
+      "rows": 60
+    },
+    {
+      "system": "oracle-session",
+      "split": "dev",
+      "artifact": {
+        "path": "results/oracle-session-dev.json",
+        "sha256": "05e044d55d7e2125e6717f2121383cd7194acd72d2413b61598229cc705053df",
+        "commit": "02f3f54"
+      },
+      "rows": 60
+    },
+    {
+      "system": "bm25",
+      "split": "test",
+      "artifact": {
+        "path": "results/bm25-test.json",
+        "sha256": "2694956fc83e1ec28d1b8d932cce76720dff1c55be16058876501f92e765be11",
+        "commit": "422f021"
+      },
+      "rows": 140
+    },
+    {
+      "system": "fullctx",
+      "split": "test",
+      "artifact": {
+        "path": "results/fullctx-test.json",
+        "sha256": "603167b0027ae76e740fc9f7cf4219910bd99d5b8ff4588cf9c82be170b27dfe",
+        "commit": "422f021"
+      },
+      "rows": 140
+    },
+    {
+      "system": "oracle-session",
+      "split": "test",
+      "artifact": {
+        "path": "results/oracle-session-test.json",
+        "sha256": "1733019841f8dc100006896df75e9b5469ec70dddf718a4c34c5bbfc14881b9c",
+        "commit": "422f021"
+      },
+      "rows": 140
+    }
+  ],
+  "remaining": {
+    "system": "palimpsest-v2",
+    "split": "test",
+    "population": "eligible",
+    "result": "results/palimpsest-v2-test.json",
+    "runs": 1
+  },
+  "blockers": [
+    {
+      "id": "code-identity",
+      "kind": "maintainer-decision",
+      "status": "resolved",
+      "summary": "Maintainer selected a detached clean worktree at 44930d5e44955e0ce59b31ef1297b9fd02bcbb41 with a reviewed harness-only patch. It must replay all 60 dev questions cache-only before it can inherit the gate; no Effect-v4 production code is qualified by this lane.",
+      "evidence": [
+        "read-only cache audit 2026-09-26: 618/618 read, 90/90 select, 68/68 sufficiency and 60/61 v2-era anchors entries reproduce only under the draft-07 encoding; none under the current encoding",
+        "pnpm-lock.yaml at 6473f79, 422f021 and 44930d5 pins effect 3.22.1, @effect/ai 0.37.0 and @effect/ai-openai 0.41.0; at 9705c32 effect and @effect/ai-openai 4.0.0-beta.107",
+        "maintainer approval in the 2026-09-27 continuation session"
+      ]
+    },
+    {
+      "id": "judge-protocol",
+      "kind": "maintainer-decision",
+      "status": "resolved",
+      "summary": "Maintainer selected the exact upstream LongMemEval scoring protocol. Preserve answer artifacts, treat old scores as secondary historical data, and immutably rescore every frozen answer artifact with Chat Completions, gpt-4o-2024-08-06, temperature 0, max_tokens 10, n 1, and the upstream yes-substring parser.",
+      "evidence": [
+        "upstream evaluate_qa.py: model_zoo gpt-4o -> gpt-4o-2024-08-06; chat.completions with n=1, temperature=0, max_tokens=10; label = 'yes' in reply.lower(); abstention = '_abs' in question_id",
+        "local: packages/eval/src/Judge.ts via packages/llm generateText (POST /responses, no temperature or max_output_tokens); 0 of 500 dataset ids contain '_abs' other than as a suffix",
+        "maintainer approval in the 2026-09-27 continuation session"
+      ]
+    },
+    {
+      "id": "run-configuration",
+      "kind": "implementation",
+      "status": "resolved",
+      "summary": "The manifest freezes both arms, models, exact 4-question batching, cache/retry/runtime identities, invalidity rules, analyses, thresholds and prices. The current and pinned historical harnesses select exact eligible membership, enforce cache-only replay, emit evidence/LLM proofs and never overwrite result or merge artifacts.",
+      "evidence": [
+        "packages/eval/bin/eval.ts",
+        "packages/eval/bin/merge-batches.ts",
+        "packages/llm/src/Llm.ts",
+        "historical harness 1aeecba00e39a1ff0585d3e03d126bb90b56c3a759bee423138812bd8236ce1f on 44930d5e44955e0ce59b31ef1297b9fd02bcbb41",
+        "data/splits/retrieval-v2.prices.json"
+      ]
+    },
+    {
+      "id": "dev-semantic-replay",
+      "kind": "authorized-run",
+      "status": "open",
+      "summary": "No post-cleanup semantic replay of the 60 dev questions exists. Before any test call, a replay under the chosen code identity must be semantically identical to results/palimpsest-v2-dev.json under `pnpm replay-compare`, with zero live provider calls, or the inherited gate no longer qualifies the code.",
+      "evidence": [
+        "docs/run-log.md 2026-09-04",
+        "docs/palimpsest-implementation-plan.md S14"
+      ]
+    }
+  ],
+  "signOff": null
+}

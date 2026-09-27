@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory as HydraMemoryService } from "@palimpsest/hydra"
 import { Data, Effect, Layer, Result } from "effect"
 import { describe, expect, it } from "vitest"
 import { makeHydraMemory, relIdentity, writeSourcePlane, type HydraMemory } from "../HydraMemory.js"
@@ -28,12 +28,18 @@ import {
 import { SourceTranscript } from "../../src/SourceTranscript.js"
 import {
   collectSupersessionChains,
+  decideSlotSupersession,
   matchKeyEquivalences,
   pairsToDecisionLinks,
+  SupersessionDecisionUnavailable,
   type SupersessionChain,
   type SupersessionIndexPair,
   type SupersessionChainSource
 } from "../../src/SupersessionDecision.js"
+import { classifySourceIndexFailure } from "../../src/SourceIndexing.js"
+import { Llm } from "@palimpsest/llm"
+import { AiError } from "effect/unstable/ai"
+import { behaviorFake } from "../BehaviorFake.js"
 import {
   commitScope,
   runTransactionalSourceCommit,
@@ -120,6 +126,20 @@ const claimC1: ExtractedClaim = {
   keywords: ["Berlin"],
   located: "exact"
 }
+const claimA2: ExtractedClaim = {
+  ...claimA1,
+  text: "Nate works at Acme.",
+  slot: { entityCanon: "Nate", attr: "employer" },
+  span: { turnIdx: 0, cs: 21, ce: 38 },
+  keywords: ["Acme"]
+}
+const claimB2: ExtractedClaim = {
+  ...claimB1,
+  text: "Nathan now works at Globex.",
+  slot: { entityCanon: "Nathan", attr: "employer" },
+  span: { turnIdx: 0, cs: 0, ce: 28 },
+  keywords: ["Globex"]
+}
 
 class TestDeciderError extends Data.TaggedError("TestDeciderError")<{
   readonly reason: string
@@ -144,7 +164,7 @@ const artifactFor = (
 const makeTestLayer = (memory: HydraMemory) => {
   const deps = Layer.mergeAll(
     IngestManifestLayerMemory,
-    Layer.succeed(HydraClient, memory.client),
+    Layer.succeed(HydraMemoryService, memory.client),
     IngestCommitLockMemory
   )
   const services = Layer.provide(
@@ -157,7 +177,7 @@ const makeTestLayer = (memory: HydraMemory) => {
 type TestRequirements =
   | IngestManifest
   | IngestCommitLock
-  | HydraClient
+  | HydraMemoryService
   | SourceTranscript
   | IndexGraph
   | SnapshotGraph
@@ -257,8 +277,6 @@ const registerVerified = (
       })
     )
     yield* manifest.storeEntityCanonicalView({ ...SCOPE_INPUT, view })
-    yield* manifest.activateEntityCanonicalView({ ...SCOPE_INPUT, viewId: view.id })
-    yield* manifest.activateIndexGeneration({ ...SCOPE_INPUT, generationId: GENERATION.id })
     const snapshot = Result.getOrThrow(
       createUserIndexSnapshot({
         scope: snapshotScope,
@@ -292,7 +310,9 @@ describe("runTransactionalSourceCommit", () => {
         const manifest = yield* IngestManifest
         const active = yield* readActive(manifest)
         const decisions = yield* manifest.readSupersessionDecisions(committed.revision)
-        return { committed, active, decisions }
+        const activeView = yield* manifest.readActiveEntityCanonicalView(SCOPE_INPUT)
+        const activeGeneration = yield* manifest.readActiveIndexGeneration(SCOPE_INPUT)
+        return { committed, active, decisions, activeView, activeGeneration }
       })
     )
     expect(result.committed.revision.state).toBe("COMMITTED")
@@ -304,6 +324,8 @@ describe("runTransactionalSourceCommit", () => {
       result.committed.revision.commitId
     ])
     expect(result.active?.record.state).toBe("ACTIVE")
+    expect(result.activeView?.id).toBe(result.active?.record.snapshot.canonicalViewId)
+    expect(result.activeGeneration?.id).toBe(result.active?.record.snapshot.indexGenerationId)
     expect(result.decisions?.commitId).toBe(result.committed.revision.commitId)
     expect(result.decisions?.links).toEqual([])
     expect(seen.extractCalls).toBe(1)
@@ -498,6 +520,112 @@ describe("runTransactionalSourceCommit", () => {
     )
   })
 
+  it("persists each successful chain before a later provider failure", async () => {
+    const memory = makeHydraMemory()
+    const seen = counters()
+    const result = await run(
+      memory,
+      Effect.gen(function* () {
+        yield* commitWith(seen, [claimA1, claimA2], sessionA)
+        const first = yield* Effect.result(
+          commitWith(seen, [claimB1, claimB2], sessionB, (chain) =>
+            chain.attr === "residence"
+              ? Effect.fail(new TestDeciderError({ reason: "provider down" }))
+              : Effect.succeed([])
+          )
+        )
+        const manifest = yield* IngestManifest
+        const revision = (
+          yield* manifest.begin(sourceRevisionInputForSession(scope, sessionB, EXTRACTION))
+        ).revision
+        const successful = seen.chains.find((chain) => chain.attr === "employer")
+        if (successful === undefined) return yield* Effect.die("missing successful chain")
+        const checkpoint = yield* manifest.readSupersessionChainDecisions(
+          revision,
+          successful.id
+        )
+        const recovered = yield* commitWith(seen, [claimB1, claimB2], sessionB)
+        return { first, checkpoint, recovered }
+      })
+    )
+    expect(Result.isFailure(result.first)).toBe(true)
+    expect(result.checkpoint?.links).toEqual([])
+    expect(seen.chains.map((chain) => chain.attr)).toEqual([
+      "employer",
+      "residence",
+      "residence"
+    ])
+    expect(result.recovered.revision.state).toBe("COMMITTED")
+    expect(result.recovered.queryVisible).toBe(true)
+  })
+
+  it("keeps all active pointers on the previous snapshot when verification fails, then retries", async () => {
+    const memory = makeHydraMemory()
+    const seen = counters()
+    const result = await run(
+      memory,
+      Effect.gen(function* () {
+        const first = yield* commitWith(seen, [claimA1], sessionA)
+        const manifest = yield* IngestManifest
+        const beforeSnapshot = yield* readActive(manifest)
+        const beforeView = yield* manifest.readActiveEntityCanonicalView(SCOPE_INPUT)
+        const beforeGeneration = yield* manifest.readActiveIndexGeneration(SCOPE_INPUT)
+        const seeded = yield* seedTo(memory, sessionB, [claimB1], "ENRICHED")
+        memory.onRead = () => {
+          memory.onRead = undefined
+          const victim = [...memory.vertices.entries()].find(
+            ([, vertex]) =>
+              vertex.label === "SnapshotClaim" &&
+              vertex.properties["snapshot_id"] !== beforeSnapshot?.record.snapshot.id
+          )
+          if (victim !== undefined) memory.vertices.delete(victim[0])
+        }
+        const failed = yield* Effect.result(
+          runTransactionalSourceCommit({
+            sourceRevision: sourceRevisionInputForSession(scope, sessionB, EXTRACTION),
+            indexGeneration: GENERATION,
+            session: sessionB,
+            extract: () => Effect.die("seeded revision must not extract"),
+            decideSupersession: () => Effect.die("seeded enrichment must not decide"),
+            classifyFailure: ({ error }) => classifySourceIndexFailure({ error })
+          })
+        )
+        const failedRevision = yield* manifest.readSourceRevisionByCommitId(seeded.commitId)
+        const afterSnapshot = yield* readActive(manifest)
+        const afterView = yield* manifest.readActiveEntityCanonicalView(SCOPE_INPUT)
+        const afterGeneration = yield* manifest.readActiveIndexGeneration(SCOPE_INPUT)
+        const recovered = yield* commitWith(seen, [claimB1], sessionB)
+        return {
+          first,
+          failed,
+          failedRevision,
+          beforeSnapshot,
+          beforeView,
+          beforeGeneration,
+          afterSnapshot,
+          afterView,
+          afterGeneration,
+          recovered
+        }
+      })
+    )
+    expect(result.failed).toMatchObject({
+      _tag: "Failure",
+      failure: { _tag: "IngestStageFailed", stage: "CONSOLIDATED", retryable: true }
+    })
+    expect(result.failedRevision).toMatchObject({
+      state: "ENRICHED",
+      failureCode: "SnapshotGraphVerifyRejected",
+      failureRetryable: true
+    })
+    expect(result.afterSnapshot?.record.snapshot.id).toBe(result.beforeSnapshot?.record.snapshot.id)
+    expect(result.afterView?.id).toBe(result.beforeView?.id)
+    expect(result.afterGeneration?.id).toBe(result.beforeGeneration?.id)
+    expect(result.recovered.revision.state).toBe("COMMITTED")
+    expect(result.recovered.snapshotId).not.toBe(result.first.snapshotId)
+    expect(result.recovered.queryVisible).toBe(true)
+  })
+
   it("a non-retryable stage failure blocks later retries", async () => {
     const memory = makeHydraMemory()
     const seen = counters()
@@ -619,7 +747,7 @@ describe("commitScope", () => {
       commitScope({ tenant: scope.tenantId, uid: scope.uid, indexGeneration: GENERATION })
     )
     expect(result).toBeNull()
-    expect(memory.calls.batchMerge).toBe(0)
+    expect(memory.calls.commitWrites).toBe(0)
   })
 })
 
@@ -911,7 +1039,16 @@ const revisionStub = (session: DatasetSession, commitId: string): SourceRevision
     state: "ENRICHED",
     manifestVersion: 1,
     failureCode: null,
-    failureRetryable: null
+    failureRetryable: null,
+    acceptedAtMs: 1700000000000,
+    reachedAtMs: {
+      RECEIVED: 1700000000000,
+      SOURCE_DURABLE: 1700000001000,
+      INDEXED: 1700000002000,
+      ENRICHED: 1700000003000,
+      CONSOLIDATED: null,
+      COMMITTED: null
+    }
   }
 }
 
@@ -933,6 +1070,41 @@ const contestedChain = (): SupersessionChain => {
   if (found === undefined) throw new Error("expected a contested chain")
   return found
 }
+
+describe("decideSlotSupersession", () => {
+  it("keeps provider failures typed and production-classifies them as retryable", async () => {
+    const providerError = new AiError.AiError({
+      module: "TestProvider",
+      method: "generateObject",
+      reason: new AiError.InternalProviderError({ description: "provider unavailable" })
+    })
+    const llm = behaviorFake<Llm>({
+      model: "test",
+      cacheDir: "",
+      concurrency: 1,
+      generateObject: () => Effect.fail(providerError),
+      usage: Effect.succeed({ inputTokens: 0, outputTokens: 0, calls: 0, cacheHits: 0 }),
+      resetUsage: Effect.void
+    })
+    const result = await Effect.runPromise(
+      decideSlotSupersession(contestedChain()).pipe(
+        Effect.provideService(Llm, llm),
+        Effect.result
+      )
+    )
+    expect(result).toMatchObject({
+      _tag: "Failure",
+      failure: { _tag: "SupersessionDecisionUnavailable", cause: providerError }
+    })
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(SupersessionDecisionUnavailable)
+      expect(classifySourceIndexFailure({ error: result.failure })).toEqual({
+        code: "SupersessionDecisionUnavailable",
+        retryable: true
+      })
+    }
+  })
+})
 
 describe("collectSupersessionChains", () => {
   it("groups contested slots across canon spellings through match keys", () => {

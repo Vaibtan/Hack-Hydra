@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import {
   EvalRow,
   absentResponse,
+  evidenceBytesSha256,
   graphMsOf,
   responseOf,
   rowFromBaseline,
@@ -43,7 +44,14 @@ const span = (sid: string, ckey: string): HydratedSpan => ({
   highlight: { start: 2, end: 15 }
 })
 
-const judgement: Judgement = { correct: true, template: "default", reply: "yes", model: "gpt-4o", cached: true }
+const judgement: Judgement = {
+  correct: true,
+  template: "default",
+  reply: "yes",
+  model: "gpt-4o-2024-08-06",
+  resolvedModel: "gpt-4o-2024-08-06",
+  cached: true
+}
 
 const read = (spans: ReadonlyArray<HydratedSpan>) => ({
   answer: "a bike",
@@ -89,6 +97,13 @@ const answered = (over: Partial<{ read: ReturnType<typeof read> | null; verdict:
 const outcome = (a: V2EvaluationAnswer): V2Outcome => ({ kind: "v2", answered: a, ablations: [] })
 
 describe("rowFromV2", () => {
+  it("hashes hydrated evidence bytes as well as source locators", () => {
+    const original = span("s2", "u|c|1")
+    const changed = { ...original, excerpt: "I bought a car" }
+    expect(evidenceBytesSha256([original])).not.toBe(evidenceBytesSha256([changed]))
+    expect(evidenceBytesSha256([original])).toMatch(/^[0-9a-f]{64}$/)
+  })
+
   it("is a total function producing a decodable row", () => {
     const row = rowFromV2(question, outcome(answered()), judgement, 1500)
     expect(() => Schema.decodeUnknownSync(EvalRow)(JSON.parse(JSON.stringify(row)))).not.toThrow()

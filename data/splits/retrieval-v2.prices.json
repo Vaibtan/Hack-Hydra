@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "currency": "USD",
+  "unit": "per-1m-tokens",
+  "recordedAt": "2026-09-27",
+  "models": {
+    "gpt-5.6-luna": {
+      "input": 0.2,
+      "output": 1.2,
+      "source": "repository pricing catalog used by the frozen legacy lane"
+    },
+    "gpt-4o-2024-08-06": {
+      "input": 2.5,
+      "output": 10,
+      "source": "OpenAI model pricing for the pinned gpt-4o snapshot"
+    }
+  },
+  "reportedCosts": {
+    "incrementalSession": "provider tokens incurred by one frozen evaluation session, separated by model",
+    "cleanCacheRebuild": "provider tokens required to rebuild every cache entry from an empty cache",
+    "marginalOnline": "provider tokens for one online query after ingestion and cache priming",
+    "amortizedIngest": "ingestion provider cost divided by the exact eligible user or session population"
+  },
+  "rule": "Report all four cost categories separately; never collapse them into one dollar figure."
+}

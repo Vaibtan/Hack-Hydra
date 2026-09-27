@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, vertexId } from "@palimpsest/hydra"
+import { HydraMemory as HydraMemoryService, vertexId } from "@palimpsest/hydra"
 import { Effect, Layer, Result } from "effect"
 import { describe, expect, it } from "vitest"
 import { makeHydraMemory, relIdentity, writeSourcePlane, type HydraMemory } from "../HydraMemory.js"
@@ -33,6 +33,7 @@ import {
   planSnapshotGraph,
   SnapshotGraph,
   snapshotClaimKey,
+  snapshotEvidenceKey,
   snapshotEntityKey,
   snapshotRootKey,
   snapshotSlotKey,
@@ -126,20 +127,34 @@ const revisionFor = (
   source: ReturnType<typeof canonicalSessionSource>,
   commitId: string,
   state: SourceRevision["state"] = "COMMITTED"
-): SourceRevision => ({
-  tenant: scope.tenantId,
-  uid: scope.uid,
-  logicalSessionId: session.key,
-  sourceDigest: source.sourceDigest,
-  sourceBytes: source.sourceBytes,
-  extractionGeneration: EXTRACTION.id,
-  sessionOrdinal: session.sessionOrd,
-  commitId,
-  state,
-  manifestVersion: 1,
-  failureCode: null,
-  failureRetryable: null
-})
+): SourceRevision => {
+  const order = ["RECEIVED", "SOURCE_DURABLE", "INDEXED", "ENRICHED", "CONSOLIDATED", "COMMITTED"]
+  const at = (stage: SourceRevision["state"]): number | null =>
+    order.indexOf(stage) <= order.indexOf(state) ? 1700000000000 : null
+  return {
+    tenant: scope.tenantId,
+    uid: scope.uid,
+    logicalSessionId: session.key,
+    sourceDigest: source.sourceDigest,
+    sourceBytes: source.sourceBytes,
+    extractionGeneration: EXTRACTION.id,
+    sessionOrdinal: session.sessionOrd,
+    commitId,
+    state,
+    manifestVersion: 1,
+    failureCode: null,
+    failureRetryable: null,
+    acceptedAtMs: 1700000000000,
+    reachedAtMs: {
+      RECEIVED: at("RECEIVED"),
+      SOURCE_DURABLE: at("SOURCE_DURABLE"),
+      INDEXED: at("INDEXED"),
+      ENRICHED: at("ENRICHED"),
+      CONSOLIDATED: at("CONSOLIDATED"),
+      COMMITTED: at("COMMITTED")
+    }
+  }
+}
 
 const sessionFixture = (revision: SourceRevision, session: DatasetSession): SnapshotSourceSession => ({
   sid: session.sid,
@@ -257,7 +272,7 @@ const registerSnapshot = (
   })
 
 const makeLayer = (fake: HydraMemory, manifestLayer = IngestManifestLayerMemory) => {
-  const deps = Layer.mergeAll(manifestLayer, Layer.succeed(HydraClient, fake.client))
+  const deps = Layer.mergeAll(manifestLayer, Layer.succeed(HydraMemoryService, fake.client))
   return Layer.mergeAll(deps, Layer.provide(SnapshotGraph.layer, deps))
 }
 
@@ -350,14 +365,8 @@ describe("planSnapshotGraph", () => {
     }
     for (const relation of same.success.relations) {
       expect(relation.properties["snapshot_id"]).toBe(snapshotAB.id)
-      // Only SNAPSHOT_EVIDENCE points outside the snapshot namespace, and only
-      // into the tenant-scoped durable source plane.
       expect(relation.srcKey.startsWith(prefix)).toBe(true)
-      if (relation.type !== "SNAPSHOT_EVIDENCE") {
-        expect(relation.dstKey.startsWith(prefix)).toBe(true)
-      } else {
-        expect(relation.dstKey.startsWith(`${scopePrefix(scope)}|srcsess|`)).toBe(true)
-      }
+      expect(relation.dstKey.startsWith(prefix)).toBe(true)
     }
 
     const keys = [same.success.root.key, ...same.success.members.map((member) => member.key)]
@@ -427,7 +436,7 @@ describe("planSnapshotGraph", () => {
     expect(fills.map((relation) => relation.srcKey).sort()).toEqual([claimAKey, claimBKey].sort())
   })
 
-  it("links every claim to its revision and durable source turn", () => {
+  it("links every claim to its revision and snapshot-scoped evidence locator", () => {
     const planned = planSnapshotGraph(planInput(nateNathanView, [revisionA.commitId, revisionB.commitId]))
     if (planned._tag === "Failure") return expect.unreachable(planned.failure.message)
 
@@ -448,15 +457,24 @@ describe("planSnapshotGraph", () => {
       expect.objectContaining({
         type: "SNAPSHOT_EVIDENCE",
         srcKey: claimAKey,
-        dstLabel: "SourceTurn",
-        dstKey: sourceTurnKey(scope, sessionA.key, sourceA.sourceDigest, 0),
+        dstLabel: "SnapshotEvidence",
+        dstKey: snapshotEvidenceKey(scope, snapshotAB.id, revisionA.commitId, 0),
         properties: expect.objectContaining({ cs: 0, ce: 20 })
       })
     )
+    const evidence = planned.success.members.find(
+      (member) => member.key === snapshotEvidenceKey(scope, snapshotAB.id, revisionA.commitId, 0)
+    )
+    expect(evidence?.properties).toMatchObject({
+      commit_id: revisionA.commitId,
+      turn_idx: 0,
+      source_turn_key: sourceTurnKey(scope, sessionA.key, sourceA.sourceDigest, 0)
+    })
     const claim = planned.success.members.find((member) => member.key === claimAKey)
     expect(claim?.properties).toMatchObject({
       commit_id: revisionA.commitId,
       claim_digest: claimDigest(claimA1, sessionA.key),
+      accepted_at_ms: revisionA.acceptedAtMs,
       session_ord: 1,
       session_date: 20260820,
       turn_idx: 0,
@@ -665,12 +683,18 @@ describe("SnapshotGraph.build", () => {
     expect(revisions.map((vertex) => vertex.properties["commit_id"]).sort()).toEqual(
       [...result.built.snapshot.sourceCommitIds].sort()
     )
+    expect(
+      revisions.every((vertex) => Number(vertex.properties["accepted_at_ms"] ?? 0) > 0)
+    ).toBe(true)
     const evidence = [...fake.relations.values()].filter(
       (relation) => relation.type === "SNAPSHOT_EVIDENCE"
     )
     expect(evidence).toHaveLength(3)
     for (const relation of evidence) {
-      expect(fake.vertices.get(relation.dstKey)?.label).toBe("SourceTurn")
+      expect(fake.vertices.get(relation.dstKey)?.label).toBe("SnapshotEvidence")
+      expect(String(fake.vertices.get(relation.dstKey)?.properties["source_turn_key"])).toContain(
+        `${scopePrefix(scope)}|srcsess|`
+      )
     }
   })
 
@@ -924,7 +948,6 @@ describe("SnapshotGraph.build", () => {
     }
     for (const relation of fake.relations.values()) {
       if (!relation.type.startsWith("SNAPSHOT_")) continue
-      if (relation.type === "SNAPSHOT_EVIDENCE") continue
       const inA = relation.srcKey.includes(prefixA)
       const inB = relation.srcKey.includes(prefixB)
       expect(inA !== inB).toBe(true)

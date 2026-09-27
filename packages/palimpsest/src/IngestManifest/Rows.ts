@@ -19,6 +19,15 @@ export const integer = (row: DatabaseRow, column: string): number => {
   return value
 }
 
+export const nullableInteger = (row: DatabaseRow, column: string): number | null => {
+  const value = row[column]
+  if (value === null) return null
+  if (!Schema.is(Schema.Number)(value) || !Number.isSafeInteger(value)) {
+    throw new Error(`manifest column ${column} was not a nullable safe integer`)
+  }
+  return value
+}
+
 export const nullableText = (row: DatabaseRow, column: string): string | null => {
   const value = row[column]
   if (value === null) return null
@@ -62,12 +71,23 @@ export const decodeRevision = (row: DatabaseRow): SourceRevision => {
     state,
     manifestVersion: integer(row, "manifest_version"),
     failureCode: nullableText(row, "failure_code"),
-    failureRetryable: nullableBoolean(row, "failure_retryable")
+    failureRetryable: nullableBoolean(row, "failure_retryable"),
+    acceptedAtMs: integer(row, "created_at_ms"),
+    reachedAtMs: {
+      RECEIVED: nullableInteger(row, "received_at_ms"),
+      SOURCE_DURABLE: nullableInteger(row, "source_durable_at_ms"),
+      INDEXED: nullableInteger(row, "indexed_at_ms"),
+      ENRICHED: nullableInteger(row, "enriched_at_ms"),
+      CONSOLIDATED: nullableInteger(row, "consolidated_at_ms"),
+      COMMITTED: nullableInteger(row, "committed_at_ms")
+    }
   }
 }
 
 export const REVISION_COLUMNS = `tenant, uid, logical_session_id, source_digest, source_bytes, extraction_generation,
-              session_ordinal, commit_id, state, manifest_version, failure_code, failure_retryable`
+              session_ordinal, commit_id, state, manifest_version, failure_code, failure_retryable,
+              created_at_ms, received_at_ms, source_durable_at_ms, indexed_at_ms, enriched_at_ms,
+              consolidated_at_ms, committed_at_ms`
 
 export const selectRevision = (database: DatabaseSync, key: string): SourceRevision | undefined => {
   const row = database
@@ -88,6 +108,19 @@ export const selectRevisionByCommitId = (
 
 export const transaction = <A>(database: DatabaseSync, operation: () => A): A => {
   database.exec("BEGIN IMMEDIATE")
+  try {
+    const result = operation()
+    database.exec("COMMIT")
+    return result
+  } catch (cause) {
+    database.exec("ROLLBACK")
+    throw cause
+  }
+}
+
+/** One consistent SQLite read snapshot without reserving the single writer slot. */
+export const readTransaction = <A>(database: DatabaseSync, operation: () => A): A => {
+  database.exec("BEGIN")
   try {
     const result = operation()
     database.exec("COMMIT")

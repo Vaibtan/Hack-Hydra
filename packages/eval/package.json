@@ -21,7 +21,11 @@
     "step-load": "tsx bin/step-load.ts",
     "risk-coverage": "tsx bin/risk-coverage.ts",
     "reader-ab": "tsx bin/reader-ab.ts",
-    "gate": "tsx bin/gate.ts"
+    "gate": "tsx bin/gate.ts",
+    "freeze": "tsx bin/freeze.ts",
+    "eligible-views": "tsx bin/eligible-views.ts",
+    "replay-compare": "tsx bin/replay-compare.ts",
+    "rescore": "tsx bin/rescore.ts"
   },
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",

@@ -1,6 +1,6 @@
 import type { Llm } from "@palimpsest/llm"
 import type { DatasetQuestion, DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, type HydraError } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError } from "@palimpsest/hydra"
 import { Context, Effect, Layer, Option } from "effect"
 import { ClaimGraph } from "./ClaimGraph.js"
 import type { SupersedeReport } from "./Supersede.js"
@@ -45,7 +45,7 @@ const make = Effect.gen(function* () {
   const transcript = yield* Transcript
   const claimGraph = yield* ClaimGraph
   const supersede = yield* Supersede
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
 
   const ingestUser = (
     uid: string,
@@ -146,15 +146,16 @@ const make = Effect.gen(function* () {
         Effect.map(Option.getOrElse((): UserStats => EMPTY_STATS))
       )
 
-      const existing = yield* hydra.getById("Session", sessionKey(uid, session.key), [
-        "sess",
-        "session_ord"
-      ])
+      const existing = yield* hydra.resolveNode({
+        label: "Session",
+        key: sessionKey(uid, session.key),
+        properties: ["sess", "session_ord"]
+      })
       if (existing._tag === "Some") {
         return {
           uid,
           sid: session.sid,
-          sessionOrd: Number(existing.value["session_ord"] ?? 0),
+          sessionOrd: Number(existing.value.properties["session_ord"] ?? 0),
           claims: 0,
           dropped: 0,
           touchedSlots: [],

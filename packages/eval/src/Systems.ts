@@ -1,6 +1,6 @@
 import type { DatasetQuestion } from "@palimpsest/dataset"
 import type { Llm } from "@palimpsest/llm"
-import { answerV2, determinismHash, type HydratedSpan, type Reader, type Retrieve } from "@palimpsest/palimpsest"
+import { answerV2, determinismHash, type HydratedSpan, type LegacyReader, type LegacyRetrieve } from "@palimpsest/palimpsest"
 import { Effect } from "effect"
 import { buildIndex, fullContextSpans, topSpans } from "./Bm25.js"
 import { ablationNames, type AblationFlags } from "./Cli.js"
@@ -15,8 +15,8 @@ export interface V2Options {
 }
 
 export interface SystemDeps {
-  readonly retrieve: Retrieve
-  readonly reader: Reader
+  readonly retrieve: LegacyRetrieve
+  readonly reader: LegacyReader
   readonly uid: string
   readonly v2: V2Options
   readonly fullCtxChars: number

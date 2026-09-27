@@ -1,24 +1,30 @@
-import { HydraClient, type HydraPath, type MsPathsConfig } from "@palimpsest/hydra"
+import { HydraMemory, type DiscoveryInput, type MemoryPath } from "@palimpsest/hydra"
+import { makeExecutionPlan } from "@palimpsest/hydra/testing"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { describe, expect, it } from "vitest"
 import { turnKey } from "../../src/Keys.js"
-import { Reader, SPAN_CONTEXT, type ReadAnswer } from "../../src/Reader.js"
+import { LegacyG3Adapter } from "../../src/LegacyG3Adapter.js"
+import { SPAN_CONTEXT, type ReadAnswer } from "../../src/Reader.js"
+import { Supersede } from "../../src/Supersede.js"
+import { Transcript } from "../../src/Transcript.js"
 import type { AsOfLabelled } from "../../src/Scoring.js"
 import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
-type Node = HydraPath["nodes"][number]
+type Node = MemoryPath["nodes"][number]
 
 const node = (id: number, label: string, properties: Node["properties"]): Node => ({
   id,
+  key: `${label}:${id}`,
   labels: [label],
   properties
 })
 
-const pathOf = (nodes: ReadonlyArray<Node>, types: ReadonlyArray<string>): HydraPath => ({
+const pathOf = (nodes: ReadonlyArray<Node>, types: ReadonlyArray<string>): MemoryPath => ({
   nodes,
   relationships: types.map((type, i) => ({
     id: 100 + i,
+    key: `${nodes[i]?.key ?? ""}|${type}|${nodes[i + 1]?.key ?? ""}`,
     type,
     src: nodes[i]?.id ?? 0,
     dst: nodes[i + 1]?.id ?? 0,
@@ -55,7 +61,7 @@ const claim = (ckey: string, turnIdx: number, cs: number, ce: number): AsOfLabel
 })
 
 /** Turn 1 spilled into a second chunk; turn 0 is a short assistant turn; `u|c|ghost` has no EVIDENCE edge. */
-const graph = (config: MsPathsConfig, calls: Array<string>): ReadonlyArray<HydraPath> => {
+const graph = (config: DiscoveryInput, calls: Array<string>): ReadonlyArray<MemoryPath> => {
   calls.push(`${config.sourceLabel}:${config.relTypes.join("+")}`)
   const turn1 = node(11, "Turn", { turn: turnKey(UID, "s2", 1), text: HEAD, chunks: 2, role: "user" })
   const turn0 = node(10, "Turn", { turn: turnKey(UID, "s2", 0), text: "Tell me.", chunks: 1, role: "assistant" })
@@ -117,16 +123,23 @@ const read = async (
   route: "fact" | "assistant_output"
 ): Promise<{ readonly answer: ReadAnswer; readonly calls: ReadonlyArray<string> }> => {
   const calls: Array<string> = []
-  const hydra = Layer.succeed(HydraClient, behaviorFake<HydraClient>({
-    msPaths: (config: MsPathsConfig) => Effect.sync(() => graph(config, calls))
+  const plan = makeExecutionPlan({ queryText: "", parameters: {} })
+  const hydra = Layer.succeed(HydraMemory, behaviorFake<HydraMemory>({
+    discoverPaths: (config: DiscoveryInput) =>
+      Effect.sync(() => ({ paths: graph(config, calls), plan }))
   }))
   const answer = await runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
-        const reader = yield* Reader
-        return yield* reader.read("q", "2023/05/01 (Mon) 10:00", evidence, { route })
+        const legacy = yield* LegacyG3Adapter
+        return yield* legacy.reader.read("q", "2023/05/01 (Mon) 10:00", evidence, { route })
       }),
-      Reader.layer.pipe(Layer.provide(hydra), Layer.provide(stubLlm))
+      LegacyG3Adapter.layer.pipe(
+        Layer.provideMerge(hydra),
+        Layer.provideMerge(Layer.succeed(Supersede, behaviorFake<Supersede>({}))),
+        Layer.provideMerge(Layer.succeed(Transcript, behaviorFake<Transcript>({}))),
+        Layer.provideMerge(stubLlm)
+      )
     )
   )
   return { answer, calls }

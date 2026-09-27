@@ -26,6 +26,18 @@ export const Highlight = Schema.Struct({
   end: Schema.Number
 })
 
+/** Immutable source-plane locator for one public citation. */
+export const EvidenceSourceLocator = Schema.Struct({
+  snapshotId: Schema.String,
+  commitId: Schema.String,
+  sourceDigest: Schema.String,
+  logicalSessionId: Schema.String,
+  sourceTurnKey: Schema.String,
+  turnIdx: Schema.Number,
+  offsetStart: Schema.Number,
+  offsetEnd: Schema.Number
+})
+
 /** Verbatim turn text with the Span located inside it; never a Claim's text. */
 export const EvidenceSpan = Schema.Struct({
   ckey: Schema.String,
@@ -37,6 +49,7 @@ export const EvidenceSpan = Schema.Struct({
   speaker: Schema.String,
   status: Schema.Literals(["CURRENT", "SUPERSEDED"]),
   atSession: Schema.NullOr(Schema.Number),
+  source: EvidenceSourceLocator,
   excerpt: Schema.String,
   highlight: Highlight
 })
@@ -54,6 +67,33 @@ export const QueryParameters = Schema.Record(
 )
 
 /** A replayable decision trace; it is not a completeness or integrity proof. */
+export const TemporalPerspective = Schema.Literals(["recorded-time", "valid-time", "bitemporal"])
+
+export const TemporalStatement = Schema.Struct({
+  perspective: TemporalPerspective,
+  snapshotId: Schema.String,
+  watermark: Schema.Literal("COMMITTED"),
+  coverage: Schema.Struct({
+    revisionsCovered: Schema.Number,
+    scopeRevisions: Schema.Number,
+    uncommitted: Schema.Number
+  }),
+  caps: Schema.Struct({
+    topK: Schema.Number,
+    maxLen: Schema.Number,
+    unionCap: Schema.Number,
+    armCap: Schema.Number
+  }),
+  stats: Schema.Struct({ snapshotId: Schema.String, totalClaims: Schema.Number }),
+  completeness: Schema.Struct({
+    complete: Schema.Boolean,
+    timedOutArms: Schema.Array(Schema.String),
+    unionDropped: Schema.Number,
+    slotMateCapped: Schema.Boolean,
+    perspectiveFiltered: Schema.Number
+  })
+})
+
 export const Receipt = Schema.Struct({
   question: Schema.String,
   uid: Schema.String,
@@ -77,7 +117,8 @@ export const Receipt = Schema.Struct({
     select: Schema.String,
     sufficiency: Schema.String
   }),
-  convergence: Schema.Array(ConvergenceRow)
+  convergence: Schema.Array(ConvergenceRow),
+  temporal: Schema.NullOr(TemporalStatement)
 })
 
 export const ArmKind = Schema.Literals(["probe", "subQuestion", "convergence", "discovery", "slotMate"])
@@ -155,7 +196,8 @@ export const RetrievalPlan = Schema.Struct({
   stages: Schema.Record(Schema.String, Schema.Number),
   askMs: Schema.Number,
   /** The HydraDB stages alone. */
-  graphMs: Schema.Number
+  graphMs: Schema.Number,
+  temporal: Schema.NullOr(TemporalStatement)
 })
 
 export const AskRequest = Schema.Struct({
@@ -166,6 +208,8 @@ export const AskRequest = Schema.Struct({
   questionDate: Schema.optional(Schema.String),
   /** Read the memory as it stood at session `k`. */
   asOf: Schema.optional(Schema.Number),
+  /** Which time axis to filter on; defaults to recorded time. */
+  perspective: Schema.optional(TemporalPerspective),
   historical: Schema.optional(Schema.Boolean),
   /** Skip the pack and the reader: the retrieval verdict, plan and hydrated evidence only. */
   retrieveOnly: Schema.optional(Schema.Boolean),
@@ -176,12 +220,13 @@ export const AskRequest = Schema.Struct({
 export const AbstentionReason = Schema.Literals([
   "A1_no_anchors",
   "A2_no_convergence",
+  "INCOMPLETE_MEMORY",
   "INSUFFICIENT_EVIDENCE",
   "CONTRADICTED_PREMISE"
 ])
 
 export const AskResponse = Schema.Struct({
-  verdict: Schema.Literals(["ANSWER", "ABSENT"]),
+  verdict: Schema.Literals(["ANSWER", "ABSENT", "INCOMPLETE"]),
   reason: Schema.NullOr(AbstentionReason),
   answer: Schema.NullOr(Schema.String),
   /** The reader declined: distinct from a structural ABSENT. */

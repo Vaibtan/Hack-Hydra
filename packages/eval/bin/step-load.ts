@@ -1,12 +1,13 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, parseDatasetName, type DatasetQuestion } from "@palimpsest/dataset"
-import { HydraClient, type HydraProperties } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive, type MemoryProperties } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import {
   claimKind,
   ClaimGraph,
-  Retrieve,
+  LegacyG3Adapter,
   Supersede,
+  Transcript,
   readUserStats,
   readUserVertices,
   type UserStats
@@ -45,10 +46,11 @@ const workspaceRoot = (): string => {
 const uidFor = (questionId: string): string =>
   prefix === "" ? questionId : `${prefix}-${questionId}`
 
-const AppLive = Retrieve.layer.pipe(
+const AppLive = LegacyG3Adapter.layer.pipe(
   Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(Transcript.layer),
   Layer.provideMerge(ClaimGraph.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -72,13 +74,13 @@ const median = (values: ReadonlyArray<number>): number => {
 }
 
 const countEdges = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string
 ): Effect.Effect<Readonly<Record<string, number>>, never> =>
   Effect.gen(function* () {
     const fromClaims = (relType: string) =>
       hydra
-        .msPaths({
+        .discoverPaths({
           sourceLabel: "Claim",
           sourceProperty: "kind",
           sourceValues: [claimKind(uid)],
@@ -87,7 +89,7 @@ const countEdges = (
           maxLen: 1
         })
         .pipe(
-          Effect.map((paths) => paths.length),
+          Effect.map(({ paths }) => paths.length),
           Effect.catch(() => Effect.succeed(-1))
         )
 
@@ -97,7 +99,7 @@ const countEdges = (
     const hits = yield* fromClaims("HITS")
 
     const entities = yield* readUserVertices(hydra, uid, "HAS_ENTITY").pipe(
-      Effect.catch(() => Effect.succeed(new Array<HydraProperties>()))
+      Effect.catch(() => Effect.succeed(new Array<MemoryProperties>()))
     )
     const entityKeys = entities
       .map((row) => String(row["ekey"] ?? ""))
@@ -106,7 +108,7 @@ const countEdges = (
       entityKeys.length === 0
         ? 0
         : yield* hydra
-            .msPaths({
+            .discoverPaths({
               sourceLabel: "Entity",
               sourceProperty: "ekey",
               sourceValues: entityKeys,
@@ -115,7 +117,7 @@ const countEdges = (
               maxLen: 1
             })
             .pipe(
-              Effect.map((paths) => paths.length),
+              Effect.map(({ paths }) => paths.length),
               Effect.catch(() => Effect.succeed(-1))
             )
 
@@ -123,8 +125,8 @@ const countEdges = (
   })
 
 const program = Effect.gen(function* () {
-  const hydra = yield* HydraClient
-  const retrieve = yield* Retrieve
+  const hydra = yield* HydraMemory
+  const legacy = yield* LegacyG3Adapter
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const population = benchmarkSlice(questions, sliceSize)
 
@@ -178,11 +180,11 @@ const program = Effect.gen(function* () {
       ],
       { concurrency: 3 }
     )
-    const cold = yield* retrieve.ask(uid, question.question, {
+    const cold = yield* legacy.retrieve.ask(uid, question.question, {
       questionDate: question.questionDate.raw
     })
     coldGraphMs.push(cold.timings.graphMs)
-    const warm = yield* retrieve.ask(uid, question.question, {
+    const warm = yield* legacy.retrieve.ask(uid, question.question, {
       questionDate: question.questionDate.raw
     })
     graphMs.push(warm.timings.graphMs)

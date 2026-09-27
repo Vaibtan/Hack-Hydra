@@ -9,7 +9,10 @@ import { InvalidMemoryScope, parseMemoryScope } from "./MemoryScope.js"
 import { SnapshotGraph } from "./SnapshotGraph.js"
 import { sourceRevisionInputForSession } from "./SourceIdentity.js"
 import { SourceTranscript } from "./SourceTranscript.js"
-import { decideSlotSupersession } from "./SupersessionDecision.js"
+import {
+  decideSlotSupersession,
+  type SupersessionDecisionUnavailable
+} from "./SupersessionDecision.js"
 import {
   runTransactionalSourceCommit,
   runTransactionalSourceIndex,
@@ -45,8 +48,8 @@ export const planSourceIndexSession = (
   })
 }
 
-const classifyFailure = (input: {
-  readonly error: SourceIndexStageError<never>
+export const classifySourceIndexFailure = (input: {
+  readonly error: SourceIndexStageError<SupersessionDecisionUnavailable>
 }): SourceIndexFailureClassification => {
   switch (input.error._tag) {
     case "HydraEngineError":
@@ -55,6 +58,9 @@ const classifyFailure = (input: {
     case "IngestManifestUnavailable":
     case "SnapshotActivationConflict":
     case "SnapshotActivePointerConflict":
+    case "SnapshotGraphBuildRejected":
+    case "SnapshotGraphVerifyRejected":
+    case "SupersessionDecisionUnavailable":
       return { code: input.error._tag, retryable: true }
     case "GraphIdCollision":
       return { code: "GRAPH_ID_COLLISION", retryable: false }
@@ -81,7 +87,7 @@ export const indexSourceSession = (input: PlanSourceIndexSession) =>
       indexGeneration: plan.success.indexGeneration,
       session: input.session,
       extract: extractSession,
-      classifyFailure: ({ error }) => classifyFailure({ error })
+      classifyFailure: ({ error }) => classifySourceIndexFailure({ error })
     })
   })
 
@@ -96,7 +102,7 @@ export const commitSourceSession = (input: PlanSourceIndexSession) =>
       session: input.session,
       extract: extractSession,
       decideSupersession: decideSlotSupersession,
-      classifyFailure: ({ error }) => classifyFailure({ error })
+      classifyFailure: ({ error }) => classifySourceIndexFailure({ error })
     })
   })
 

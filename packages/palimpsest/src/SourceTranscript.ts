@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError, type PropertyValue } from "@palimpsest/hydra"
 import { Context, Data, Effect, Layer, Option, Result } from "effect"
 import type { SourceRevision } from "./IngestManifest.js"
 import { chunkText } from "./Chunk.js"
@@ -46,7 +46,7 @@ export class SourceTranscriptRevisionMismatch extends Data.TaggedError(
 
 export interface SourceTranscriptVertex {
   readonly key: string
-  readonly properties: Readonly<Record<string, Scalar>>
+  readonly properties: Readonly<Record<string, PropertyValue>>
 }
 
 export interface SourceTranscriptRelation {
@@ -103,7 +103,7 @@ export const planSourceTranscriptWrite = (
     date: session.date.dateInt,
     ts: session.date.ts,
     n_turns: session.turns.length
-  } satisfies Record<string, Scalar>
+  } satisfies Record<string, PropertyValue>
 
   const turnWrites: Array<SourceTranscriptVertex> = []
   const chunkWrites: Array<SourceTranscriptVertex> = []
@@ -189,7 +189,7 @@ export const planSourceTranscriptWrite = (
 }
 
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
 
   const write = (
     revision: SourceRevision,
@@ -199,18 +199,15 @@ const make = Effect.gen(function* () {
       const plan = planSourceTranscriptWrite(revision, session)
       if (plan._tag === "Failure") return yield* Effect.fail(plan.failure)
 
-      yield* hydra.batchMerge("MemoryScope", [plan.success.scope])
-      yield* hydra.batchMerge("SourceSession", [plan.success.session])
-      yield* hydra.batchMerge("SourceTurn", plan.success.turns)
-      if (plan.success.chunks.length > 0) {
-        yield* hydra.batchMerge("SourceTurnChunk", plan.success.chunks)
-      }
-      const turnRelations = plan.success.relations.filter((relation) => relation.type === "SOURCE_HAS_TURN")
-      if (turnRelations.length > 0) yield* hydra.batchRel("SOURCE_HAS_TURN", turnRelations)
-      const chunkRelations = plan.success.relations.filter((relation) => relation.type === "SOURCE_HAS_CHUNK")
-      if (chunkRelations.length > 0) yield* hydra.batchRel("SOURCE_HAS_CHUNK", chunkRelations)
-      const scopeRelations = plan.success.relations.filter((relation) => relation.type === "HAS_SOURCE_REVISION")
-      if (scopeRelations.length > 0) yield* hydra.batchRel("HAS_SOURCE_REVISION", scopeRelations)
+      yield* hydra.commitWrites({
+        vertices: [
+          { label: "MemoryScope", ...plan.success.scope },
+          { label: "SourceSession", ...plan.success.session },
+          ...plan.success.turns.map((turn) => ({ label: "SourceTurn", ...turn })),
+          ...plan.success.chunks.map((chunk) => ({ label: "SourceTurnChunk", ...chunk }))
+        ],
+        edges: plan.success.relations
+      })
 
       return {
         sourceDigest: plan.success.sourceDigest,

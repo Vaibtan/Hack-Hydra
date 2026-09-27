@@ -1,8 +1,10 @@
-import { renderMsPathsQuery } from "@palimpsest/hydra"
+import type { ExecutionPlanDiagnostic } from "@palimpsest/hydra"
 import type { ReadPathModels } from "@palimpsest/llm"
 import { createHash } from "node:crypto"
 import {
-  convergenceConfig,
+
+  ARM_CAP,
+  UNION_CAP,
   unionArms,
   type ArmKind,
   type Candidate,
@@ -11,14 +13,21 @@ import {
 } from "./Arms.js"
 import type { Gathered } from "./Gather.js"
 import type { BudgetDropReason } from "./Pack.js"
-import { shortId, type DropReason, type SelectionReport } from "./Select.js"
+import { candidateId, type DropReason, type SelectionReport } from "./Select.js"
 import {
   convergenceThreshold,
   rank,
   type AbstentionReason,
   type AsOfLabelled
 } from "./Scoring.js"
-import { applyTimeScope, intervalSentence, type DayInterval, type TimeScopeReport } from "./TimeScope.js"
+import {
+  applyPerspectiveScope,
+  applyTimeScope,
+  intervalSentence,
+  type DayInterval,
+  type TemporalPerspective,
+  type TimeScopeReport
+} from "./TimeScope.js"
 import type { Route, Understood } from "./Understand.js"
 
 export interface RetrievalPlan {
@@ -50,6 +59,56 @@ export interface RetrievalPlan {
   readonly protectedKeys: ReadonlyArray<string>
   readonly unionSessions: ReadonlyArray<string>
   readonly ablations: Ablations
+  /** The D7 temporal statement; null on the legacy lane, which predates perspectives. */
+  readonly temporal: TemporalStatement | null
+}
+
+/** Which revisions the bound snapshot covers, against the scope's recorded total. */
+export interface SnapshotCoverage {
+  readonly revisionsCovered: number
+  readonly scopeRevisions: number
+  readonly uncommitted: number
+}
+
+/** The idf denominator and its binding, verified against the bound snapshot before any arm ran. */
+export interface SnapshotScoringStats {
+  readonly snapshotId: string
+  readonly totalClaims: number
+}
+
+/** Why a search may be incomplete: timeouts, caps, and perspective filtering, all declared. */
+export interface CompletenessStatement {
+  readonly complete: boolean
+  readonly timedOutArms: ReadonlyArray<string>
+  readonly unionDropped: number
+  readonly slotMateCapped: boolean
+  readonly perspectiveFiltered: number
+}
+
+/** Every snapshot answer/absence states the snapshot, perspective, watermark, caps, and completeness it depends on. */
+export interface TemporalStatement {
+  readonly perspective: TemporalPerspective
+  readonly snapshotId: string
+  readonly watermark: "COMMITTED"
+  readonly coverage: SnapshotCoverage
+  readonly caps: {
+    readonly topK: number
+    readonly maxLen: number
+    readonly unionCap: number
+    readonly armCap: number
+  }
+  readonly stats: SnapshotScoringStats
+  readonly completeness: CompletenessStatement
+}
+
+/** Snapshot-lane input for the temporal statement; absent on the legacy lane. */
+export interface TemporalPlanInput {
+  readonly perspective: TemporalPerspective
+  readonly snapshotId: string
+  readonly coverage: SnapshotCoverage
+  readonly stats: SnapshotScoringStats
+  /** Claims the gather cut dropped before any union, traversal slice, or cap. */
+  readonly upstreamFiltered: number
 }
 
 export interface PlanArm {
@@ -115,10 +174,12 @@ export interface Receipt {
     readonly score: number
     readonly anchors: ReadonlyArray<string>
   }>
+  /** The D7 temporal statement; null on the legacy lane, which predates perspectives. */
+  readonly temporal: TemporalStatement | null
 }
 
 export interface AskResult {
-  readonly verdict: "ANSWER" | "ABSENT"
+  readonly verdict: "ANSWER" | "ABSENT" | "INCOMPLETE"
   readonly reason: AbstentionReason | null
   readonly evidence: ReadonlyArray<AsOfLabelled>
   readonly receipt: Receipt
@@ -143,6 +204,8 @@ export interface AskOptions {
   /** The question's own date, verbatim; part of the understand cache key. */
   readonly questionDate?: string
   readonly asOf?: number
+  /** Snapshot lane only; defaults to recorded time. The legacy lane ignores it. */
+  readonly perspective?: TemporalPerspective
   readonly historical?: boolean
   readonly topK?: number
   readonly maxLen?: number
@@ -204,10 +267,14 @@ export type PlanInput = Pick<
   | "reaching"
   | "discovery"
   | "slotMate"
->
+  | "query1Plan"
+> & {
+  /** Present on the snapshot lane only; its presence selects perspective scoping. */
+  readonly temporal?: TemporalPlanInput
+}
 
 export const planFromArms = (gathered: PlanInput): Planned => {
-  const { understood, terms, reaching, discovery, slotMate, topK, maxLen, uid } = gathered
+  const { understood, terms, reaching, discovery, slotMate, topK, uid } = gathered
   const arms: ReadonlyArray<LiveArm> = [...reaching, discovery, slotMate]
   const union = unionArms(arms, unionOptionsFor(gathered.asOf))
   const convergence = reaching[0]!
@@ -216,7 +283,16 @@ export const planFromArms = (gathered: PlanInput): Planned => {
     gathered.questionDate > 0 && gathered.ablations.noTimeScope !== true
       ? understood.timeInterval
       : null
-  const scoped = applyTimeScope(union.candidates, interval)
+  const temporalInput = gathered.temporal
+  const scoped =
+    temporalInput === undefined
+      ? applyTimeScope(union.candidates, interval)
+      : applyPerspectiveScope(union.candidates, {
+        perspective: temporalInput.perspective,
+        interval,
+        questionDate: gathered.questionDate,
+        ...(gathered.asOf !== undefined && { asOf: gathered.asOf })
+      })
 
   const resolved = new Set(
     reaching.flatMap((arm) => arm.claims).flatMap((claim) => claim.anchors)
@@ -229,7 +305,33 @@ export const planFromArms = (gathered: PlanInput): Planned => {
       candidate.convergence >= threshold
   )
 
-  const rendered = renderMsPathsQuery(convergenceConfig(uid, terms, maxLen))
+  const timedOutArms = arms.filter((arm) => arm.timedOut).map((arm) => arm.label)
+  const slotMateCapped = slotMate.capped === true
+  const temporal: TemporalStatement | null =
+    temporalInput === undefined
+      ? null
+      : {
+        perspective: temporalInput.perspective,
+        snapshotId: temporalInput.snapshotId,
+        watermark: "COMMITTED",
+        coverage: temporalInput.coverage,
+        caps: {
+          topK: gathered.topK,
+          maxLen: gathered.maxLen,
+          unionCap: UNION_CAP,
+          armCap: ARM_CAP
+        },
+        stats: temporalInput.stats,
+        completeness: {
+          complete: timedOutArms.length === 0 && union.dropped.length === 0 && !slotMateCapped,
+          timedOutArms,
+          unionDropped: union.dropped.length,
+          slotMateCapped,
+          perspectiveFiltered: temporalInput.upstreamFiltered + scoped.outOfScope
+        }
+      }
+
+  const query1Plan: ExecutionPlanDiagnostic | null = gathered.query1Plan
   const receipt: Receipt = {
     question: gathered.question,
     uid,
@@ -243,8 +345,8 @@ export const planFromArms = (gathered: PlanInput): Planned => {
     timeRef: understood.timeRef,
     convergenceThreshold: threshold,
     totalClaims: gathered.total,
-    query1: convergence.query ?? rendered.query,
-    query1Params: rendered.parameters,
+    query1: convergence.query ?? query1Plan?.queryText ?? "",
+    query1Params: query1Plan === null ? {} : { ...query1Plan.parameters },
     query1Paths: convergence.paths,
     query2: slotMate.query,
     query2Paths: slotMate.paths,
@@ -256,7 +358,8 @@ export const planFromArms = (gathered: PlanInput): Planned => {
         convergence: claim.convergence,
         score: Number(claim.score.toFixed(4)),
         anchors: claim.anchors
-      }))
+      })),
+    temporal
   }
 
   const plan: Planned["plan"] = {
@@ -290,7 +393,8 @@ export const planFromArms = (gathered: PlanInput): Planned => {
       })
     ),
     unionSessions: [...new Set(union.candidates.map((candidate) => candidate.sid))].sort(),
-    ablations: gathered.ablations
+    ablations: gathered.ablations,
+    temporal
   }
 
   return { arms, union, interval, scoped, resolved, threshold, grounded, receipt, plan }
@@ -303,9 +407,9 @@ export const selectionRow = (
   applied: SelectionReport,
   reasons: Readonly<Record<string, string>>
 ): RetrievalPlan["selection"] => ({
-  kept: applied.kept.map((candidate) => shortId(candidate.ckey)),
+  kept: applied.kept.map((candidate) => candidateId(candidate)),
   dropped: applied.dropped.map((drop) => ({
-    id: shortId(drop.candidate.ckey),
+    id: candidateId(drop.candidate),
     reason: drop.reason
   })),
   reasons,

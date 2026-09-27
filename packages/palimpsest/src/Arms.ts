@@ -1,9 +1,9 @@
 import {
-  HydraClient,
-  renderMsPathsQuery,
+  HydraMemory,
+  type DiscoveryInput,
+  type ExecutionPlanDiagnostic,
   type HydraError,
-  type HydraPath,
-  type MsPathsConfig
+  type MemoryPath
 } from "@palimpsest/hydra"
 import { Effect } from "effect"
 import { claimKind, slotKey, tokenKey } from "./Keys.js"
@@ -109,7 +109,7 @@ export const convergenceConfig = (
   uid: string,
   terms: ReadonlyArray<string>,
   maxLen: number
-): MsPathsConfig => ({
+): DiscoveryInput => ({
   sourceLabel: "Token",
   sourceProperty: "tkey",
   sourceValues: terms.map((stem) => tokenKey(uid, stem)),
@@ -128,7 +128,7 @@ export const SLOT_CLAIMS_WALK = {
   relDirection: "incoming"
 } as const
 
-export const slotClaimsConfig = (uid: string, skeys: ReadonlyArray<string>): MsPathsConfig => ({
+export const slotClaimsConfig = (uid: string, skeys: ReadonlyArray<string>): DiscoveryInput => ({
   ...SLOT_CLAIMS_WALK,
   sourceValues: skeys,
   targetLabel: "Claim",
@@ -137,7 +137,7 @@ export const slotClaimsConfig = (uid: string, skeys: ReadonlyArray<string>): MsP
   maxLen: 1
 })
 
-const candidateSlotsConfig = (ckeys: ReadonlyArray<string>): MsPathsConfig => ({
+const candidateSlotsConfig = (ckeys: ReadonlyArray<string>): DiscoveryInput => ({
   sourceLabel: "Claim",
   sourceProperty: "ckey",
   sourceValues: ckeys,
@@ -149,8 +149,9 @@ const candidateSlotsConfig = (ckeys: ReadonlyArray<string>): MsPathsConfig => ({
 /** One arm's read, with the query it ran for the receipt. `rawPaths` never leaves memory. */
 export interface LiveArm extends ArmResult {
   readonly query: string | null
+  readonly plan: ExecutionPlanDiagnostic | null
   readonly paths: number
-  readonly rawPaths: ReadonlyArray<HydraPath>
+  readonly rawPaths: ReadonlyArray<MemoryPath>
   /** The arm exceeded its read ceiling and was reported empty rather than thrown. */
   readonly timedOut: boolean
 }
@@ -160,6 +161,7 @@ export const emptyArm = (kind: ArmKind, label: string, timedOut = false): LiveAr
   label,
   claims: [],
   query: null,
+  plan: null,
   paths: 0,
   rawPaths: [],
   timedOut
@@ -174,36 +176,40 @@ export const withoutConvergence = (claim: ReachedClaim): ReachedClaim => ({
 })
 
 export const walkArm = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   kind: ArmKind,
   label: string,
-  config: MsPathsConfig,
+  config: DiscoveryInput,
   total: number,
   score: (claim: ReachedClaim) => ReachedClaim = (claim) => claim
 ): Effect.Effect<LiveArm, HydraError> =>
-  Effect.map(hydra.msPaths(config), (paths) => ({
-    kind,
-    label,
-    claims: scoreReached(reachedRows(paths), total).map(score),
-    query: renderMsPathsQuery(config).query,
-    paths: paths.length,
-    rawPaths: paths,
-    timedOut: false
-  }))
+  Effect.map(hydra.discoverPaths(config), ({ paths, plan }) => {
+    const diagnostic = hydra.describeExecutionPlan(plan)
+    return {
+      kind,
+      label,
+      claims: scoreReached(reachedRows(paths), total).map(score),
+      query: diagnostic.queryText,
+      plan: diagnostic,
+      paths: paths.length,
+      rawPaths: paths,
+      timedOut: false
+    }
+  })
 
 export const convergenceArm = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   terms: ReadonlyArray<string>,
   total: number,
   maxLen: number
 ): Effect.Effect<LiveArm, HydraError> =>
-  terms.length === 0
-    ? Effect.succeed(emptyArm("convergence", "convergence"))
-    : walkArm(hydra, "convergence", "convergence", convergenceConfig(uid, terms, maxLen), total)
+  // Always walks: empty terms short-circuit inside the adapter, which still
+  // returns the receipt plan the query never ran.
+  walkArm(hydra, "convergence", "convergence", convergenceConfig(uid, terms, maxLen), total)
 
 export const subQuestionArm = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   sub: SubQuestion,
   index: number,
@@ -217,7 +223,7 @@ export const subQuestionArm = (
 export const probeLabel = (probe: Probe): string => `probe:${probe.entityCanon}|${probe.attr}`
 
 export const probeArm = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   probe: Probe,
   total: number
@@ -235,7 +241,7 @@ export const MAX_DISCOVERY_SEEDS = 20
 
 /** Terms the question did not supply, ranked by rarity within the top candidates. */
 export const discoverySeeds = (
-  paths: ReadonlyArray<HydraPath>,
+  paths: ReadonlyArray<MemoryPath>,
   top: ReadonlyArray<ReachedClaim>,
   alreadyAnchors: ReadonlySet<string>
 ): ReadonlyArray<string> => {
@@ -265,7 +271,7 @@ export const discoverySeeds = (
 }
 
 export const discoveryArm = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   seeds: ReadonlyArray<string>,
   total: number,
@@ -304,6 +310,8 @@ export const groupSlotMates = (
 export interface SlotMateArm extends LiveArm {
   /** Which Slot each claim fills: every candidate the `FILLS` walk resolved, plus every slot-mate read. */
   readonly slotOf: ReadonlyMap<string, string>
+  /** True when slot-mate caps dropped eligible mates; set by the snapshot lane only. */
+  readonly capped?: boolean
 }
 
 /** Wraps one stage's read: the caller's timing and read ceiling. */
@@ -314,7 +322,7 @@ export type StageGuard = <A>(
 
 /** Two reads (`slotKeys`, `slotClaims`); a `HydraLimitError` in either degrades to an empty arm marked `timedOut`. */
 export const slotMateArm = (
-  hydra: HydraClient,
+  hydra: HydraMemory,
   uid: string,
   candidates: ReadonlyArray<ReachedClaim>,
   alreadyReached: ReadonlySet<string>,
@@ -329,8 +337,8 @@ export const slotMateArm = (
           candidates.length === 0
             ? Effect.succeed([])
             : Effect.map(
-                hydra.msPaths(candidateSlotsConfig(candidates.map((claim) => claim.ckey))),
-                slotFills
+                hydra.discoverPaths(candidateSlotsConfig(candidates.map((claim) => claim.ckey))),
+                ({ paths }) => slotFills(paths)
               )
         )
         const skeys = [...new Set(fills.map((fill) => fill.skey))].sort()
@@ -338,10 +346,8 @@ export const slotMateArm = (
           fills.filter((fill) => fill.ckey !== "").map((fill) => [fill.ckey, fill.skey] as const)
         )
         const config = slotClaimsConfig(uid, skeys)
-        const paths = yield* guard(
-          "slotClaims",
-          skeys.length === 0 ? Effect.succeed([]) : hydra.msPaths(config)
-        )
+        const slotClaims = yield* guard("slotClaims", hydra.discoverPaths(config))
+        const paths = slotClaims.paths
         const slotOf = new Map(
           slotFills(paths)
             .filter((fill) => fill.ckey !== "")
@@ -351,7 +357,8 @@ export const slotMateArm = (
           kind: "slotMate",
           label: "slotMate",
           claims: scoreReached(reachedRows(paths), total).map(withoutConvergence),
-          query: skeys.length === 0 ? null : renderMsPathsQuery(config).query,
+          query: skeys.length === 0 ? null : hydra.describeExecutionPlan(slotClaims.plan).queryText,
+          plan: skeys.length === 0 ? null : hydra.describeExecutionPlan(slotClaims.plan),
           paths: paths.length,
           rawPaths: [],
           timedOut: false

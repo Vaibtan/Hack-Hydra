@@ -4,7 +4,7 @@ import { memoryScopeFromRevision } from "../MemoryScope.js"
 import { integer, nullableBoolean, nullableText, revisionKey, text } from "./Rows.js"
 
 /** Current SQLite manifest schema (`PRAGMA user_version`); recorded inside every snapshot descriptor. */
-export const MANIFEST_SCHEMA_VERSION = 11
+export const MANIFEST_SCHEMA_VERSION = 13
 
 class UnsupportedManifestSchemaVersion extends Error {
   readonly _tag = "UnsupportedManifestSchemaVersion" as const
@@ -43,6 +43,12 @@ const TABLES = `
     failure_retryable INTEGER CHECK (failure_retryable IN (0, 1)),
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
+    received_at_ms INTEGER,
+    source_durable_at_ms INTEGER,
+    indexed_at_ms INTEGER,
+    enriched_at_ms INTEGER,
+    consolidated_at_ms INTEGER,
+    committed_at_ms INTEGER,
     ${V2_REVISION_IDENTITY}
   ) STRICT;
 
@@ -164,6 +170,15 @@ const TABLES = `
     FOREIGN KEY (commit_id) REFERENCES source_revisions (commit_id)
   ) STRICT;
 
+  CREATE TABLE IF NOT EXISTS supersession_chain_decisions (
+    commit_id TEXT NOT NULL,
+    chain_id TEXT NOT NULL,
+    canonical_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (commit_id, chain_id),
+    FOREIGN KEY (commit_id) REFERENCES source_revisions (commit_id)
+  ) STRICT;
+
   CREATE TABLE IF NOT EXISTS user_index_snapshots (
     snapshot_id TEXT PRIMARY KEY,
     tenant TEXT NOT NULL,
@@ -277,6 +292,34 @@ const migrateRevisionKeysV3 = (database: DatabaseSync): void => {
   }
 }
 
+const WATERMARK_COLUMNS = [
+  "received_at_ms",
+  "source_durable_at_ms",
+  "indexed_at_ms",
+  "enriched_at_ms",
+  "consolidated_at_ms",
+  "committed_at_ms"
+] as const
+
+/**
+ * v13: first-reached ms per lifecycle watermark. Pre-v13 rows backfill what is
+ * certain — receipt equals acceptance, and a COMMITTED row's last write was
+ * its commit — and leave earlier watermarks NULL (unknown, never invented).
+ */
+const migrateWatermarkColumnsV13 = (database: DatabaseSync): void => {
+  const names = new Set<string>()
+  for (const column of database.prepare("PRAGMA table_info(source_revisions)").all()) {
+    names.add(text(column, "name"))
+  }
+  for (const column of WATERMARK_COLUMNS) {
+    if (!names.has(column)) database.exec(`ALTER TABLE source_revisions ADD COLUMN ${column} INTEGER`)
+  }
+  database.exec("UPDATE source_revisions SET received_at_ms = created_at_ms WHERE received_at_ms IS NULL")
+  database.exec(
+    "UPDATE source_revisions SET committed_at_ms = updated_at_ms WHERE state = 'COMMITTED' AND committed_at_ms IS NULL"
+  )
+}
+
 export const createDatabase = (path: string): DatabaseSync => {
   const database = new DatabaseSync(path, {
     enableForeignKeyConstraints: true,
@@ -311,6 +354,7 @@ export const createDatabase = (path: string): DatabaseSync => {
     database.exec(TABLES)
     if (oldIdentity) migrateRevisionsV1(database)
     migrateRevisionKeysV3(database)
+    migrateWatermarkColumnsV13(database)
     database.exec(`
       CREATE INDEX IF NOT EXISTS source_revisions_logical_session
         ON source_revisions (tenant, uid, logical_session_id, extraction_generation, created_at_ms);

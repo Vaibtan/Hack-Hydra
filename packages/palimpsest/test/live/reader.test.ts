@@ -1,24 +1,22 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer, Option } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { answerV2 } from "../../src/Answer.js"
-import { Reader } from "../../src/Reader.js"
-import { Retrieve } from "../../src/Retrieve.js"
+import { LegacyG3Adapter } from "../../src/LegacyG3Adapter.js"
 import { NOT_IN_MEMORY } from "../../src/Routes.js"
 import { Supersede } from "../../src/Supersede.js"
 import { Transcript } from "../../src/Transcript.js"
 
 const hasDataset = existsSync(datasetPath("s"))
 
-const AppLive = Retrieve.layer.pipe(
-  Layer.provideMerge(Reader.layer),
+const AppLive = LegacyG3Adapter.layer.pipe(
   Layer.provideMerge(Supersede.layer),
   Layer.provideMerge(Transcript.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -34,15 +32,13 @@ describe.skipIf(!hasDataset)("reader", () => {
   it("answers from verbatim transcript text, not from claim summaries", async () => {
     const outcome = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        const reader = yield* Reader
-        const transcript = yield* Transcript
-        const answered = yield* answerV2(retrieve, reader, UID, QUESTION, DATE)
+        const legacy = yield* LegacyG3Adapter
+        const answered = yield* answerV2(legacy.retrieve, legacy.reader, UID, QUESTION, DATE)
         const result = answered.ask
         const answer = answered.read!
 
         const span = answer.spans[0]!
-        const turn = yield* transcript.readTurn(UID, span.sid, span.turnIdx)
+        const turn = yield* legacy.readTurn(UID, span.sid, span.turnIdx)
         return { result, answer, span, turn }
       })
     )
@@ -64,9 +60,8 @@ describe.skipIf(!hasDataset)("reader", () => {
   it("answers the earlier value when asked as of an earlier session", async () => {
     const answer = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        const reader = yield* Reader
-        const answered = yield* answerV2(retrieve, reader, UID, QUESTION, DATE, { asOf: 4 })
+        const legacy = yield* LegacyG3Adapter
+        const answered = yield* answerV2(legacy.retrieve, legacy.reader, UID, QUESTION, DATE, { asOf: 4 })
         return answered.read!
       })
     )
@@ -77,10 +72,9 @@ describe.skipIf(!hasDataset)("reader", () => {
   it("says NOT_IN_MEMORY rather than guessing when the spans do not hold the answer", async () => {
     const answer = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        const reader = yield* Reader
+        const legacy = yield* LegacyG3Adapter
         const question = "What is the registration number of my sailing boat?"
-        const answered = yield* answerV2(retrieve, reader, UID, question, DATE)
+        const answered = yield* answerV2(legacy.retrieve, legacy.reader, UID, question, DATE)
         if (answered.read === null) {
           return { notInMemory: true, structural: true, answer: NOT_IN_MEMORY }
         }
@@ -97,10 +91,10 @@ describe.skipIf(!hasDataset)("reader", () => {
   it("gives an identical evidence hash on 20 consecutive runs", async () => {
     const hashes = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
+        const legacy = yield* LegacyG3Adapter
         return yield* Effect.forEach(
           Array.from({ length: 20 }, (_, i) => i),
-          () => retrieve.ask(UID, QUESTION).pipe(Effect.map((result) => result.hash)),
+          () => legacy.retrieve.ask(UID, QUESTION).pipe(Effect.map((result) => result.hash)),
           { concurrency: 4 }
         )
       })

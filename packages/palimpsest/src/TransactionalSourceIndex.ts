@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, type HydraError } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError } from "@palimpsest/hydra"
 import { Data, Effect } from "effect"
 import type { InvalidEntityCanonicalView } from "./EntityCanonicalView.js"
 import { createEntityCanonicalView } from "./EntityCanonicalView.js"
@@ -105,7 +105,7 @@ export interface RunTransactionalSourceIndex<Error, Requirements> {
 
 export interface RunTransactionalSourceCommit<Error, Requirements>
   extends RunTransactionalSourceIndex<Error, Requirements> {
-  /** Decides replacement pairs inside one contested slot chain; provider work behind this port is persisted per revision, never replayed. */
+  /** Decides replacement pairs inside one contested slot chain; completed calls are checkpointed by chain before the next call. */
   readonly decideSupersession: (
     chain: SupersessionChain
   ) => Effect.Effect<ReadonlyArray<SupersessionIndexPair>, Error, Requirements>
@@ -158,7 +158,7 @@ const indexStages = <Error, Requirements>(
   manifest: IngestManifestService,
   sourceTranscript: SourceTranscript,
   indexGraph: IndexGraph,
-  hydra: HydraClient
+  hydra: HydraMemory
 ): Pick<
   TransactionalIngestStages<SourceIndexStageError<Error>, Requirements | IngestManifest>,
   "SOURCE_DURABLE" | "INDEXED"
@@ -222,7 +222,7 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
   | IngestStageFailed
   | IngestRetryBlocked
   | IngestCommitLockUnavailable,
-  Requirements | SourceTranscript | IndexGraph | IngestManifest | IngestCommitLock | HydraClient
+  Requirements | SourceTranscript | IndexGraph | IngestManifest | IngestCommitLock | HydraMemory
 > =>
   Effect.gen(function* () {
     yield* checkGeneration(input)
@@ -231,7 +231,7 @@ export const runTransactionalSourceIndex = <Error, Requirements>(
     yield* manifest.storeIndexGeneration({ generation: input.indexGeneration })
     const sourceTranscript = yield* SourceTranscript
     const indexGraph = yield* IndexGraph
-    const hydra = yield* HydraClient
+    const hydra = yield* HydraMemory
     const stages: TransactionalIngestStages<SourceIndexStageError<Error>, Requirements | IngestManifest> = {
       ...indexStages(input, manifest, sourceTranscript, indexGraph, hydra),
       ENRICHED: () => targetExceeded("ENRICHED"),
@@ -314,12 +314,7 @@ const consolidateScope = (
     })
     if (view._tag === "Failure") return yield* Effect.fail(view.failure)
     yield* manifest.storeEntityCanonicalView({ ...scopeInput(scope), view: view.success })
-    yield* manifest.activateEntityCanonicalView({ ...scopeInput(scope), viewId: view.success.id })
     yield* manifest.storeIndexGeneration({ generation: indexGeneration })
-    yield* manifest.activateIndexGeneration({
-      ...scopeInput(scope),
-      generationId: indexGeneration.id
-    })
 
     const coveredCommitIds = covered.map((revision) => revision.commitId)
     const snapshot = createUserIndexSnapshot({
@@ -441,7 +436,7 @@ export const runTransactionalSourceCommit = <Error, Requirements>(
   | SnapshotGraph
   | IngestManifest
   | IngestCommitLock
-  | HydraClient
+  | HydraMemory
 > =>
   Effect.gen(function* () {
     yield* checkGeneration(input)
@@ -454,7 +449,7 @@ export const runTransactionalSourceCommit = <Error, Requirements>(
     const sourceTranscript = yield* SourceTranscript
     const indexGraph = yield* IndexGraph
     const snapshotGraph = yield* SnapshotGraph
-    const hydra = yield* HydraClient
+    const hydra = yield* HydraMemory
 
     const stages: TransactionalIngestStages<
       SourceIndexStageError<Error>,
@@ -494,14 +489,21 @@ export const runTransactionalSourceCommit = <Error, Requirements>(
             chainSources.push({ revision: candidate, artifact: candidateArtifact })
           }
           const chains = collectSupersessionChains(chainSources, revision.commitId)
-          const decided = yield* Effect.forEach(
-            chains,
-            (chain) =>
-              input
-                .decideSupersession(chain)
-                .pipe(Effect.map((pairs) => pairsToDecisionLinks(chain, pairs))),
-            { concurrency: "unbounded" }
-          )
+          const decided: Array<ReadonlyArray<SnapshotCausalLink>> = []
+          for (const chain of chains) {
+            const stored = yield* manifest.readSupersessionChainDecisions(revision, chain.id)
+            if (stored !== null) {
+              decided.push(stored.links)
+              continue
+            }
+            const pairs = yield* input.decideSupersession(chain)
+            const chainDecisions = yield* manifest.storeSupersessionChainDecisions({
+              revision,
+              chainId: chain.id,
+              links: pairsToDecisionLinks(chain, pairs)
+            })
+            decided.push(chainDecisions.links)
+          }
           yield* manifest.storeSupersessionDecisions({ revision, links: decided.flat() })
         }),
       CONSOLIDATED: (revision) =>

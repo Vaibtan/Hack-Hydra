@@ -1,8 +1,8 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, parseDatasetName } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
-import { ClaimGraph, Retrieve, Supersede } from "@palimpsest/palimpsest"
+import { ClaimGraph, LegacyG3Adapter, Supersede, Transcript } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
 import { benchmarkSlice, gateByType, gateReport, scoreQuestion } from "../src/index.js"
 
@@ -28,16 +28,17 @@ const uidFor = (questionId: string): string =>
 const pct = (value: number | null): string =>
   value === null ? "   n/a" : `${(value * 100).toFixed(1)} %`
 
-const AppLive = Retrieve.layer.pipe(
+const AppLive = LegacyG3Adapter.layer.pipe(
   Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(Transcript.layer),
   Layer.provideMerge(ClaimGraph.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const program = Effect.gen(function* () {
-  const retrieve = yield* Retrieve
+  const legacy = yield* LegacyG3Adapter
   const claimGraph = yield* ClaimGraph
   const llm = yield* Llm
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
@@ -70,7 +71,7 @@ const program = Effect.gen(function* () {
     (question) =>
       Effect.gen(function* () {
         const t0 = Date.now()
-        const result = yield* retrieve.ask(uidFor(question.questionId), question.question, {
+        const result = yield* legacy.retrieve.ask(uidFor(question.questionId), question.question, {
           questionDate: question.questionDate.raw,
           maxLen,
           topK

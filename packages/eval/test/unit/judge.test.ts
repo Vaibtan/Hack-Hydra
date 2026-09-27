@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { judgeLabel, judgePrompt, judgeTemplate } from "../../src/index.js"
+import { JUDGE_PROTOCOL, judgeLabel, judgePrompt, judgeTemplate } from "../../src/index.js"
 
 const question = (type: string, abs = false) => ({
   questionType: type,
@@ -65,5 +65,17 @@ describe("judgeLabel", () => {
     expect(judgeLabel("No")).toBe(false)
     expect(judgeLabel("no, the response is wrong")).toBe(false)
     expect(judgeLabel("I would not say yes to this")).toBe(true)
+  })
+})
+
+describe("upstream scoring protocol", () => {
+  it("pins the exact LongMemEval request contract", () => {
+    expect(JUDGE_PROTOCOL).toEqual({
+      endpoint: "chat-completions",
+      model: "gpt-4o-2024-08-06",
+      temperature: 0,
+      maxTokens: 10,
+      n: 1
+    })
   })
 })

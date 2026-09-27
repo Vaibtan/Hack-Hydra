@@ -1,5 +1,5 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient, type HydraPath } from "@palimpsest/hydra"
+import { HydraMemoryLive, type MemoryPath } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
@@ -37,7 +37,7 @@ const layerWith = (
 ) =>
   Supersede.layer.pipe(
     Layer.provide(stubLlm(replacements, calls)),
-    Layer.provideMerge(HydraClient.layer),
+    Layer.provideMerge(HydraMemoryLive),
     Layer.provide(NodeHttpClient.layerUndici)
   )
 
@@ -113,13 +113,13 @@ describe("Supersede.detect", () => {
 })
 
 describe("foldSupersessionEdges", () => {
-  const edge = (older: string, newer: string, atSession: number): HydraPath => ({
+  const edge = (older: string, newer: string, atSession: number): MemoryPath => ({
     nodes: [
-      { id: 1, labels: ["Claim"], properties: { ckey: older } },
-      { id: 2, labels: ["Claim"], properties: { ckey: newer } }
+      { id: 1, key: older, labels: ["Claim"], properties: { ckey: older } },
+      { id: 2, key: newer, labels: ["Claim"], properties: { ckey: newer } }
     ],
     relationships: [
-      { id: 3, type: "SUPERSEDED_BY", src: 1, dst: 2, properties: { at_session: atSession } }
+      { id: 3, key: `${older}|SUPERSEDED_BY|${newer}`, type: "SUPERSEDED_BY", src: 1, dst: 2, properties: { at_session: atSession } }
     ]
   })
 

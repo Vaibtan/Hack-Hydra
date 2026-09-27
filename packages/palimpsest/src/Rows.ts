@@ -1,6 +1,6 @@
-import type { HydraPath } from "@palimpsest/hydra"
+import type { MemoryPath } from "@palimpsest/hydra"
 
-type PathNode = HydraPath["nodes"][number]
+type PathNode = MemoryPath["nodes"][number]
 
 const str = (node: PathNode | undefined, key: string): string =>
   node === undefined ? "" : String(node.properties[key] ?? "")
@@ -8,8 +8,8 @@ const str = (node: PathNode | undefined, key: string): string =>
 const num = (node: PathNode | undefined, key: string): number =>
   node === undefined ? 0 : Number(node.properties[key] ?? 0)
 
-const first = (path: HydraPath): PathNode | undefined => path.nodes[0]
-const last = (path: HydraPath): PathNode | undefined => path.nodes[path.nodes.length - 1]
+const first = (path: MemoryPath): PathNode | undefined => path.nodes[0]
+const last = (path: MemoryPath): PathNode | undefined => path.nodes[path.nodes.length - 1]
 
 export interface ClaimFields {
   readonly ckey: string
@@ -18,6 +18,8 @@ export interface ClaimFields {
   readonly ctype: string
   readonly sessionOrd: number
   readonly sessionDate: number
+  /** Present on snapshot claims; legacy graph claims have no transaction-time field. */
+  readonly acceptedAtMs?: number
   readonly tEvent: number
   readonly tPrec: string
   readonly sid: string
@@ -51,7 +53,7 @@ export interface ReachedRow {
   readonly claim: ClaimFields
 }
 
-export const reachedRows = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<ReachedRow> =>
+export const reachedRows = (paths: ReadonlyArray<MemoryPath>): ReadonlyArray<ReachedRow> =>
   paths.flatMap((path) => {
     const source = first(path)
     const target = last(path)
@@ -74,7 +76,7 @@ export interface SlotFill {
   readonly ckey: string
 }
 
-export const slotFills = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<SlotFill> =>
+export const slotFills = (paths: ReadonlyArray<MemoryPath>): ReadonlyArray<SlotFill> =>
   paths.flatMap((path) => {
     const head = first(path)
     const tail = last(path)
@@ -83,10 +85,10 @@ export const slotFills = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<SlotFi
     return [{ skey, ckey: str(head, "ckey") || str(tail, "ckey") }]
   })
 
-export const middleEntityNames = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<string> =>
+export const middleEntityNames = (paths: ReadonlyArray<MemoryPath>): ReadonlyArray<string> =>
   paths.flatMap((path) => {
     if (path.nodes.length !== 3) return []
-    const name = str(path.nodes[1], "name")
+    const name = str(path.nodes[1], "name") || str(path.nodes[1], "canon")
     return name === "" ? [] : [name]
   })
 
@@ -97,7 +99,7 @@ export interface TurnText {
   readonly role: string
 }
 
-export const sessionTurns = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<TurnText> =>
+export const sessionTurns = (paths: ReadonlyArray<MemoryPath>): ReadonlyArray<TurnText> =>
   paths.flatMap((path) => {
     const node = first(path)
     const key = str(node, "turn")
@@ -112,7 +114,7 @@ export interface EvidenceTurn {
   readonly chunks: number
 }
 
-export const evidenceTurns = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<EvidenceTurn> =>
+export const evidenceTurns = (paths: ReadonlyArray<MemoryPath>): ReadonlyArray<EvidenceTurn> =>
   paths.flatMap((path) => {
     const claim = first(path)
     const turn = last(path)
@@ -133,7 +135,7 @@ const chunkRow = (key: string, chunk: PathNode): ChunkRow => ({
 })
 
 /** `Claim -EVIDENCE-> Turn -HAS_CHUNK-> Chunk`, keyed by `ckey`. */
-export const claimChunks = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<ChunkRow> =>
+export const claimChunks = (paths: ReadonlyArray<MemoryPath>): ReadonlyArray<ChunkRow> =>
   paths.flatMap((path) => {
     if (path.relationships.length !== 2) return []
     const chunk = path.nodes[2]
@@ -142,7 +144,7 @@ export const claimChunks = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<Chun
   })
 
 /** `Turn -HAS_CHUNK-> Chunk`, keyed by the Turn key. */
-export const turnChunks = (paths: ReadonlyArray<HydraPath>): ReadonlyArray<ChunkRow> =>
+export const turnChunks = (paths: ReadonlyArray<MemoryPath>): ReadonlyArray<ChunkRow> =>
   paths.flatMap((path) => {
     if (path.relationships.length !== 1) return []
     const key = str(first(path), "turn")

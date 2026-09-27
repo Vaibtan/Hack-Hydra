@@ -343,3 +343,112 @@ export const applyTimeScope = <A extends TimeScopable>(
     applied: true
   }
 }
+
+/**
+ * D7 temporal perspective: which time axis a snapshot read filters on.
+ * Recorded time is when the manifest accepted the source (`acceptedAtMs`);
+ * valid time is when the fact held (`tEvent`/`tPrec`). `sessionOrd` remains
+ * the explicit compatibility cut used by `asOf`.
+ */
+export type TemporalPerspective = "recorded-time" | "valid-time" | "bitemporal"
+
+/** The unambiguous default when a request names no perspective. */
+export const DEFAULT_TEMPORAL_PERSPECTIVE: TemporalPerspective = "recorded-time"
+
+const PERSPECTIVES: ReadonlyArray<TemporalPerspective> = ["recorded-time", "valid-time", "bitemporal"]
+
+/** Parse an explicit perspective; unknown values fail closed to `null`, never to a silent default. */
+export const parseTemporalPerspective = (raw: string): TemporalPerspective | null => {
+  for (const perspective of PERSPECTIVES) {
+    if (perspective === raw) return perspective
+  }
+  return null
+}
+
+/** Valid-time uncertainty, derived explicitly from extraction precision. */
+export type ValidUncertainty = "unknown" | "year" | "month" | "week" | "day"
+
+export const validUncertainty = (tPrec: string, tEvent: number): ValidUncertainty => {
+  if (tEvent === 0 || tPrec === "none") return "unknown"
+  if (tPrec === "year") return "year"
+  if (tPrec === "month") return "month"
+  if (tPrec === "week") return "week"
+  return "day"
+}
+
+export interface PerspectiveScopable extends TimeScopable {
+  readonly sessionOrd: number
+  /** Manifest source-acceptance time. Absent only on the legacy lane. */
+  readonly acceptedAtMs?: number
+}
+
+/**
+ * One perspective cut. `asOf` is the exact recorded cut — the maximum visible
+ * session ordinal — and applies identically under every perspective.
+ * `questionDate` is `YYYYMMDD`, or 0 when the question is undated.
+ */
+export interface PerspectiveCut {
+  readonly perspective: TemporalPerspective
+  readonly interval: DayInterval | null
+  readonly questionDate: number
+  readonly asOf?: number
+}
+
+const recordedDateInt = (claim: PerspectiveScopable): number | null => {
+  if (claim.acceptedAtMs === undefined || !Number.isFinite(claim.acceptedAtMs) || claim.acceptedAtMs <= 0) {
+    return null
+  }
+  const accepted = new Date(claim.acceptedAtMs)
+  return accepted.getUTCFullYear() * 10_000 + (accepted.getUTCMonth() + 1) * 100 + accepted.getUTCDate()
+}
+
+const recordedInInterval = (recordedDate: number, interval: DayInterval): boolean =>
+  recordedDate >= interval.start && recordedDate < interval.end
+
+/**
+ * Whether one claim survives a perspective cut. Recorded time isolates future
+ * sessions even without a phrase; valid time matches the event span and never
+ * cuts on recording date; bitemporal requires both axes.
+ */
+export const inPerspective = (claim: PerspectiveScopable, cut: PerspectiveCut): boolean => {
+  if (cut.asOf !== undefined && claim.sessionOrd > cut.asOf) return false
+  switch (cut.perspective) {
+    case "recorded-time": {
+      const recordedDate = recordedDateInt(claim)
+      if (recordedDate === null) return false
+      if (cut.questionDate > 0 && recordedDate > cut.questionDate) return false
+      if (cut.interval === null) return true
+      return recordedInInterval(recordedDate, cut.interval)
+    }
+    case "valid-time": {
+      if (cut.interval === null) return true
+      return inScope(claim, cut.interval)
+    }
+    case "bitemporal": {
+      const recordedDate = recordedDateInt(claim)
+      if (recordedDate === null) return false
+      if (cut.questionDate > 0 && recordedDate > cut.questionDate) return false
+      if (cut.interval === null) return true
+      return recordedInInterval(recordedDate, cut.interval) && inScope(claim, cut.interval)
+    }
+  }
+}
+
+/**
+ * The snapshot lane's hard perspective filter: unlike the legacy recall
+ * fallback, out-of-cut claims are dropped and counted, never silently kept.
+ */
+export const applyPerspectiveScope = <A extends PerspectiveScopable>(
+  claims: ReadonlyArray<A>,
+  cut: PerspectiveCut
+): TimeScopeReport<A> => {
+  const within: Array<A> = []
+  const outside: Array<A> = []
+  for (const claim of claims) (inPerspective(claim, cut) ? within : outside).push(claim)
+  return {
+    claims: within,
+    inScope: within.length,
+    outOfScope: outside.length,
+    applied: true
+  }
+}

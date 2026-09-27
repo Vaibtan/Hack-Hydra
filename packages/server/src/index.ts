@@ -32,5 +32,5 @@ export {
   users
 } from "./Api.js"
 export { projectPlan } from "./ReceiptProjection.js"
-export { UsersLive } from "./Handlers.js"
+export { UsersLive, snapshotFailure, toPublicEvidence } from "./Handlers.js"
 export { ApiLive, ServerLive, serve } from "./Server.js"

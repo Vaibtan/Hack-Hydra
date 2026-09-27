@@ -3,7 +3,16 @@ export type { QuestionRecall, RecallSummary, TurnCoverage } from "./ExtractionRe
 export { benchmarkSlice, evalSlice, stratifiedSlice } from "./Slice.js"
 export { gateByType, gateReport, scoreQuestion } from "./RetrievalMetrics.js"
 export type { GateReport, QuestionRetrieval, RetrievalScoreResult } from "./RetrievalMetrics.js"
-export { JUDGE_MODEL, judge, judgeLabel, judgePrompt, judgeTemplate } from "./Judge.js"
+export {
+  JUDGE_MODEL,
+  JUDGE_PROTOCOL,
+  LEGACY_JUDGE_MODEL,
+  judge,
+  judgeLabel,
+  judgePrompt,
+  judgeTemplate,
+  legacyJudge
+} from "./Judge.js"
 export type { Judgement, JudgeTemplate } from "./Judge.js"
 export { B, BM25_TOP_K, K1, buildIndex, fullContextSpans, score, topSpans } from "./Bm25.js"
 export type { Bm25Index, FullContext } from "./Bm25.js"
@@ -23,7 +32,9 @@ export {
   resultsStem,
   variantTokens,
   writeAtomic,
-  writeEnvelopeAtomic
+  writeEnvelopeAtomic,
+  writeEnvelopeExclusive,
+  writeExclusive
 } from "./Envelope.js"
 export type { SystemName } from "./Envelope.js"
 export {
@@ -83,6 +94,7 @@ export {
   membershipFailures,
   membershipOf,
   observedSplits,
+  parsePopulationRecord,
   parseReconcileWitness,
   populationGateFailures,
   reconcileWitnessFailures,
@@ -127,6 +139,7 @@ export { mergeBatches } from "./Batches.js"
 export type { BatchEnvelope, BatchPart, MergedBatches } from "./Batches.js"
 export {
   absentResponse,
+  evidenceBytesSha256,
   graphMsOf,
   responseOf,
   rowFromBaseline,
@@ -176,3 +189,52 @@ export type {
 } from "./RuntimeConfig.js"
 export { ReaderAbArm, ReaderAbFile, ReaderAbRow, disagreements, renderReaderAb, summariseReaderAb } from "./ReaderAb.js"
 export type { ReaderAbSummary } from "./ReaderAb.js"
+export { canonicalJson } from "./JsonValue.js"
+export type { JsonObject, JsonValue } from "./JsonValue.js"
+export {
+  ArtifactPin,
+  EvaluationFreeze,
+  FREEZE_BLOCKER_KINDS,
+  FREEZE_FILE,
+  FREEZE_FINDING_CODES,
+  FreezeBlocker,
+  FreezeClaim,
+  FreezeSignOff,
+  ReadArm,
+  buildFreezeDraft,
+  eligibleFromWitness,
+  fileSha256,
+  freezeFindings,
+  freezeStatus,
+  observeFreeze,
+  parseEvaluationFreeze,
+  pinnedArtifacts,
+  readEvaluationFreeze
+} from "./Freeze.js"
+export type {
+  EligibleMembership,
+  FreezeDraftInput,
+  FreezeFinding,
+  FreezeFindingCode,
+  FreezeObservation,
+  FrozenRunContract,
+  FreezePurpose
+} from "./Freeze.js"
+export { ELIGIBLE_VIEW_DIR, EligibleView, deriveEligibleView, joinEligible, renderEligibleView } from "./EligibleView.js"
+export type {
+  EligibleViewOutcome,
+  EligibleViewSource,
+  JoinArm,
+  JoinOutcome,
+  JoinedQuestion,
+  SplitPopulation
+} from "./EligibleView.js"
+export {
+  ENVELOPE_SUBJECT,
+  MEASUREMENT_ROW_FIELDS,
+  REPLAY_PROOF_ROW_FIELDS,
+  REPLAY_IDENTITY_FIELDS,
+  compareReplay,
+  parseReplayRun
+} from "./Replay.js"
+export type { ReplayComparison, ReplayDifference, ReplayRun } from "./Replay.js"

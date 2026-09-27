@@ -1,7 +1,9 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { Effect, Layer, Option } from "effect"
 import { beforeAll, describe, expect, it } from "vitest"
-import { HydraClient, HydraParseError, vertexId } from "../../src/index.js"
+import { HydraClient } from "../../src/Client.js"
+import { HydraParseError } from "../../src/Errors.js"
+import { vertexId } from "../../src/Ids.js"
 
 const UID = "probe-hydra-1"
 const k = (suffix: string) => `${UID}|${suffix}`

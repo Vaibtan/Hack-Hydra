@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
 import { emptyArm, type LiveArm, type SlotMateArm } from "../../src/Arms.js"
-import { abstentionReason, planFromArms, questionDateInt, type PlanInput } from "../../src/Plan.js"
+import {
+  abstentionReason,
+  planFromArms,
+  questionDateInt,
+  type PlanInput,
+  type TemporalPlanInput
+} from "../../src/Plan.js"
 import type { ReachedClaim } from "../../src/Scoring.js"
 import type { Understood } from "../../src/Understand.js"
 
@@ -10,6 +16,7 @@ const claim = (over: Partial<ReachedClaim> & { ckey: string }): ReachedClaim => 
   ctype: "state",
   sessionOrd: 1,
   sessionDate: 20230101,
+  acceptedAtMs: Date.UTC(2023, 0, 1),
   tEvent: 0,
   sid: "s1",
   sessionKey: "s1",
@@ -50,6 +57,7 @@ const noSlotMates: SlotMateArm = { ...emptyArm("slotMate", "slotMate"), slotOf: 
 
 const input = (over: Partial<PlanInput> = {}): PlanInput => ({
   uid: "u",
+  query1Plan: null,
   question: "q",
   understood: understood(),
   terms: ["mortgag", "wells"],
@@ -166,5 +174,113 @@ describe("questionDateInt", () => {
     expect(questionDateInt("2023-4-1")).toBe(20230401)
     expect(questionDateInt("unknown")).toBe(0)
     expect(questionDateInt(undefined)).toBe(0)
+  })
+})
+
+describe("temporal statements", () => {
+  const temporalInput = (over: Partial<TemporalPlanInput> = {}): TemporalPlanInput => ({
+    perspective: "recorded-time",
+    snapshotId: "snapshot-a",
+    coverage: { revisionsCovered: 1, scopeRevisions: 1, uncommitted: 0 },
+    stats: { snapshotId: "snapshot-a", totalClaims: 100 },
+    upstreamFiltered: 0,
+    ...over
+  })
+
+  it("leaves the temporal statement null on the legacy lane", () => {
+    const planned = planFromArms(input())
+
+    expect(planned.plan.temporal).toBeNull()
+    expect(planned.receipt.temporal).toBeNull()
+  })
+
+  it("keeps the legacy recall fallback when no temporal input is present", () => {
+    const january = { start: 20230101, end: 20230201, precision: "month" as const, phrase: "in january" }
+    const claims = [
+      claim({ ckey: "u|c|in", tEvent: 20230115, tPrec: "day" }),
+      claim({ ckey: "u|c|out", tEvent: 20230601, tPrec: "day" })
+    ]
+    const planned = planFromArms(
+      input({
+        understood: understood({ timeRef: "in january", timeInterval: january }),
+        reaching: [live(emptyArm("convergence", "convergence"), claims)]
+      })
+    )
+
+    expect(planned.scoped.claims).toHaveLength(2)
+    expect(planned.plan.temporal).toBeNull()
+  })
+
+  it("cuts pre-union claims by perspective and states the cut", () => {
+    const claims = [
+      claim({
+        ckey: "u|c|in",
+        tEvent: 20230115,
+        tPrec: "day",
+        sessionDate: 20230620,
+        acceptedAtMs: Date.UTC(2023, 0, 20),
+        sessionOrd: 3
+      }),
+      claim({
+        ckey: "u|c|future",
+        tEvent: 20230115,
+        tPrec: "day",
+        sessionDate: 20230101,
+        acceptedAtMs: Date.UTC(2023, 5, 1),
+        sessionOrd: 9
+      })
+    ]
+    const planned = planFromArms(
+      input({
+        reaching: [live(emptyArm("convergence", "convergence"), claims)],
+        temporal: temporalInput({ upstreamFiltered: 2 })
+      })
+    )
+
+    expect(planned.scoped.claims.map((candidate) => candidate.ckey)).toEqual(["u|c|in"])
+    expect(planned.plan.temporal).toMatchObject({
+      perspective: "recorded-time",
+      snapshotId: "snapshot-a",
+      watermark: "COMMITTED",
+      coverage: { revisionsCovered: 1, scopeRevisions: 1, uncommitted: 0 },
+      caps: { topK: 25, maxLen: 2, unionCap: 120, armCap: 60 },
+      stats: { snapshotId: "snapshot-a", totalClaims: 100 },
+      completeness: {
+        complete: true,
+        timedOutArms: [],
+        unionDropped: 0,
+        slotMateCapped: false,
+        perspectiveFiltered: 3
+      }
+    })
+    expect(planned.receipt.temporal).toEqual(planned.plan.temporal)
+  })
+
+  it("marks the search incomplete on timeouts, union drops, and capped slot expansion", () => {
+    const timedOut: SlotMateArm = { ...emptyArm("slotMate", "slotMate", true), slotOf: new Map() }
+    const timedOutPlanned = planFromArms(input({ slotMate: timedOut, temporal: temporalInput() }))
+    expect(timedOutPlanned.plan.temporal?.completeness).toMatchObject({
+      complete: false,
+      timedOutArms: ["slotMate"]
+    })
+
+    const probes = Array.from(
+      { length: 121 },
+      (_, index) => claim({ ckey: `u|c|p${index}`, sessionDate: 20230101 })
+    )
+    const dropped = planFromArms(
+      input({
+        reaching: [live(emptyArm("probe", "probe"), probes)],
+        temporal: temporalInput()
+      })
+    )
+    expect(dropped.plan.temporal?.completeness).toMatchObject({ complete: false, unionDropped: 1 })
+
+    const capped: SlotMateArm = { ...noSlotMates, capped: true }
+    const cappedPlanned = planFromArms(input({ slotMate: capped, temporal: temporalInput() }))
+    expect(cappedPlanned.plan.temporal?.completeness).toMatchObject({
+      complete: false,
+      slotMateCapped: true
+    })
   })
 })

@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError, type PropertyValue } from "@palimpsest/hydra"
 import { createHash } from "node:crypto"
 import { Context, Data, Effect, Layer, Result } from "effect"
 import { claimDigest } from "./ClaimGraph.js"
@@ -77,7 +77,7 @@ export class IndexGraphWriteRejected extends Data.TaggedError("IndexGraphWriteRe
 
 export interface IndexGraphVertex {
   readonly key: string
-  readonly properties: Readonly<Record<string, Scalar>>
+  readonly properties: Readonly<Record<string, PropertyValue>>
 }
 
 export interface IndexGraphRelation {
@@ -86,7 +86,7 @@ export interface IndexGraphRelation {
   readonly srcKey: string
   readonly dstLabel: "IndexClaim" | "IndexEntity" | "IndexSlot" | "SourceTurn"
   readonly dstKey: string
-  readonly properties: Readonly<Record<string, Scalar>>
+  readonly properties: Readonly<Record<string, PropertyValue>>
 }
 
 export interface IndexGraphWritePlan {
@@ -371,7 +371,7 @@ export const planIndexGraphWrite = (
 }
 
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
 
   const write = (
     input: PlanIndexGraphWrite
@@ -379,14 +379,15 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const plan = planIndexGraphWrite(input)
       if (plan._tag === "Failure") return yield* Effect.fail(plan.failure)
-      yield* hydra.batchMerge("IndexEntity", plan.success.entities)
-      yield* hydra.batchMerge("IndexClaim", plan.success.claims)
-      yield* hydra.batchMerge("IndexSlot", plan.success.slots)
-      yield* hydra.batchMerge("IndexToken", plan.success.tokens)
-      for (const type of ["INDEX_EVIDENCE", "INDEX_MENTIONS", "INDEX_FILLS", "INDEX_HITS", "INDEX_NAMES"] as const) {
-        const relations = plan.success.relations.filter((relation) => relation.type === type)
-        if (relations.length > 0) yield* hydra.batchRel(type, relations)
-      }
+      yield* hydra.commitWrites({
+        vertices: [
+          ...plan.success.entities.map((vertex) => ({ label: "IndexEntity", ...vertex })),
+          ...plan.success.claims.map((vertex) => ({ label: "IndexClaim", ...vertex })),
+          ...plan.success.slots.map((vertex) => ({ label: "IndexSlot", ...vertex })),
+          ...plan.success.tokens.map((vertex) => ({ label: "IndexToken", ...vertex }))
+        ],
+        edges: plan.success.relations
+      })
       return {
         generationId: plan.success.generationId,
         sourceDigest: plan.success.sourceDigest,

@@ -1,6 +1,13 @@
 export { LlmLive } from "./Layers.js"
-export { Llm } from "./Llm.js"
-export type { Generated, GenerateOptions, GenerateTextOptions, Usage } from "./Llm.js"
+export { Llm, LlmCacheOnlyMiss, LlmChatCompletionError } from "./Llm.js"
+export type {
+  Generated,
+  GenerateOptions,
+  GenerateTextOptions,
+  LlmCacheMode,
+  LlmCallTrace,
+  Usage
+} from "./Llm.js"
 export { loadDotEnv } from "./Env.js"
 export {
   UnknownModelError,

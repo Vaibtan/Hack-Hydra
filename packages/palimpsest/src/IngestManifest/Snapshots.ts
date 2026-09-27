@@ -6,6 +6,7 @@ import { InvalidUserIndexSnapshot, parseUserIndexSnapshot } from "../UserIndexSn
 import {
   integer,
   nullableText,
+  readTransaction,
   selectRevisionByCommitId,
   text,
   transaction,
@@ -29,6 +30,7 @@ import {
   UserIndexSnapshotNotFound,
   type ActivateIndexSnapshot,
   type ActiveIndexSnapshot,
+  type ActiveQuerySnapshotBinding,
   type CommitAndActivateIndexSnapshot,
   type FailUserIndexSnapshot,
   type RegisterUserIndexSnapshot,
@@ -92,6 +94,13 @@ export interface SnapshotOperations {
   readonly readActiveIndexSnapshot: (
     scope: UserIndexSnapshotScope
   ) => Effect.Effect<ActiveIndexSnapshot | null, InvalidMemoryScope | IngestManifestUnavailable>
+  /**
+   * Resolve the active pointer, manifest version, and coverage counters from
+   * one SQLite read transaction for request-scoped query binding.
+   */
+  readonly readActiveQuerySnapshotBinding: (
+    scope: UserIndexSnapshotScope
+  ) => Effect.Effect<ActiveQuerySnapshotBinding, InvalidMemoryScope | IngestManifestUnavailable>
   /**
    * One SQLite transaction that validates a VERIFIED (or previously
    * SUPERSEDED) snapshot — scope match, every listed revision COMMITTED, and
@@ -495,6 +504,33 @@ const selectPointer = (database: DatabaseSync, scope: UserIndexSnapshotScope): D
     )
     .get(scope.tenant, scope.uid)
 
+/** Keep legacy companion pointers aligned with the snapshot authority in the same SQLite transaction. */
+const activateSnapshotBindings = (
+  database: DatabaseSync,
+  record: UserIndexSnapshotRecord,
+  activatedAtMs: number
+): void => {
+  const { snapshot } = record
+  database
+    .prepare(
+      `INSERT INTO active_index_generations (tenant, uid, generation_id, activated_at_ms)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(tenant,uid) DO UPDATE SET
+         generation_id = excluded.generation_id,
+         activated_at_ms = excluded.activated_at_ms`
+    )
+    .run(snapshot.scope.tenantId, snapshot.scope.uid, snapshot.indexGenerationId, activatedAtMs)
+  database
+    .prepare(
+      `INSERT INTO active_entity_canonical_views (tenant, uid, view_id, activated_at_ms)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(tenant,uid) DO UPDATE SET
+         view_id = excluded.view_id,
+         activated_at_ms = excluded.activated_at_ms`
+    )
+    .run(snapshot.scope.tenantId, snapshot.scope.uid, snapshot.canonicalViewId, activatedAtMs)
+}
+
 const activate = (database: DatabaseSync, input: ActivateIndexSnapshot): ActiveIndexSnapshot => {
   const scope = scopeFor(input)
   if (!Number.isSafeInteger(input.expectedManifestVersion) || input.expectedManifestVersion < 0) {
@@ -531,10 +567,12 @@ const activate = (database: DatabaseSync, input: ActivateIndexSnapshot): ActiveI
     if (record.state !== "ACTIVE") {
       throw new Error("active snapshot pointer named a snapshot that was not ACTIVE")
     }
+    const activatedAtMs = integer(pointer, "activated_at_ms")
+    activateSnapshotBindings(database, record, activatedAtMs)
     return {
       record,
       manifestVersion: integer(pointer, "manifest_version"),
-      activatedAtMs: integer(pointer, "activated_at_ms")
+      activatedAtMs
     }
   }
   if (record.state !== "VERIFIED" && record.state !== "SUPERSEDED") {
@@ -619,6 +657,7 @@ const activate = (database: DatabaseSync, input: ActivateIndexSnapshot): ActiveI
          activated_at_ms = excluded.activated_at_ms`
     )
     .run(input.tenant, input.uid, input.snapshotId, actualManifestVersion, now)
+  activateSnapshotBindings(database, record, now)
   const activated = selectSnapshotRecord(database, input.snapshotId)
   if (activated === undefined) throw new Error("activated user index snapshot was not readable")
   return { record: activated, manifestVersion: actualManifestVersion, activatedAtMs: now }
@@ -684,10 +723,12 @@ const commitAndActivate = (
     if (record.state !== "ACTIVE") {
       throw new Error("active snapshot pointer named a snapshot that was not ACTIVE")
     }
+    const activatedAtMs = integer(pointer, "activated_at_ms")
+    activateSnapshotBindings(database, record, activatedAtMs)
     return {
       record,
       manifestVersion: integer(pointer, "manifest_version"),
-      activatedAtMs: integer(pointer, "activated_at_ms")
+      activatedAtMs
     }
   }
   if (record.state !== "VERIFIED") {
@@ -780,6 +821,7 @@ const commitAndActivate = (
          activated_at_ms = excluded.activated_at_ms`
     )
     .run(input.tenant, input.uid, input.snapshotId, postCommitVersion, now)
+  activateSnapshotBindings(database, record, now)
   const activated = selectSnapshotRecord(database, input.snapshotId)
   if (activated === undefined) throw new Error("activated user index snapshot was not readable")
   return { record: activated, manifestVersion: postCommitVersion, activatedAtMs: now }
@@ -801,6 +843,35 @@ const readActive = (
     record,
     manifestVersion: integer(pointer, "manifest_version"),
     activatedAtMs: integer(pointer, "activated_at_ms")
+  }
+}
+
+const readActiveQuerySnapshotBinding = (
+  database: DatabaseSync,
+  input: UserIndexSnapshotScope
+): ActiveQuerySnapshotBinding => {
+  const scope = scopeFor(input)
+  const active = readActive(database, input)
+  const revisionCounts = database
+    .prepare(
+      `SELECT count(*) AS total,
+              count(CASE WHEN state <> 'COMMITTED' THEN 1 END) AS uncommitted
+         FROM source_revisions WHERE tenant = ? AND uid = ?`
+    )
+    .get(scope.tenantId, scope.uid)
+  const snapshotCounts = database
+    .prepare(`SELECT count(*) AS total FROM user_index_snapshots WHERE tenant = ? AND uid = ?`)
+    .get(scope.tenantId, scope.uid)
+  const manifest = database
+    .prepare(`SELECT manifest_version FROM user_manifests WHERE tenant = ? AND uid = ?`)
+    .get(scope.tenantId, scope.uid)
+  return {
+    active,
+    manifestVersion: manifest === undefined ? 0 : integer(manifest, "manifest_version"),
+    scopeRevisions: revisionCounts === undefined ? 0 : integer(revisionCounts, "total"),
+    uncommittedRevisions:
+      revisionCounts === undefined ? 0 : integer(revisionCounts, "uncommitted"),
+    snapshots: snapshotCounts === undefined ? 0 : integer(snapshotCounts, "total")
   }
 }
 
@@ -873,6 +944,15 @@ export const createSnapshotOperations = (database: DatabaseSync): SnapshotOperat
         cause instanceof InvalidMemoryScope
           ? cause
           : new IngestManifestUnavailable({ operation: "readActiveIndexSnapshot", cause })
+    }),
+
+  readActiveQuerySnapshotBinding: (scope) =>
+    Effect.try({
+      try: () => readTransaction(database, () => readActiveQuerySnapshotBinding(database, scope)),
+      catch: (cause) =>
+        cause instanceof InvalidMemoryScope
+          ? cause
+          : new IngestManifestUnavailable({ operation: "readActiveQuerySnapshotBinding", cause })
     }),
 
   activateIndexSnapshot: (input) =>

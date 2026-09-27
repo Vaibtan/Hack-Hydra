@@ -1,4 +1,5 @@
-import { Effect, Schema } from "effect"
+import { createHash } from "node:crypto"
+import { Data, Effect, Schema } from "effect"
 import { Llm } from "@palimpsest/llm"
 import { claimDigest } from "./ClaimGraph.js"
 import { matchKeys } from "./Canon.js"
@@ -6,6 +7,7 @@ import type { ExtractedEntity } from "./Extract.js"
 import type { ExtractionArtifact } from "./ExtractionArtifact.js"
 import { indexEntityIdentityId } from "./IndexGraph.js"
 import type { SourceRevision, SupersessionDecisionLink } from "./IngestManifest/Types.js"
+import { canonicalJson, type CanonicalJson } from "./SourceIdentity.js"
 
 /**
  * One claim inside a contested slot chain, addressed by the revision and digest
@@ -24,10 +26,23 @@ export interface SupersessionChainEntry {
 
 /** All claims known to fill one canonical entity's attribute, oldest first. */
 export interface SupersessionChain {
+  /** Content-addressed identity for independently durable provider work. */
+  readonly id: string
   /** Lowest canon in the deterministic match-key group; display label only. */
   readonly entityCanon: string
   readonly attr: string
   readonly claims: ReadonlyArray<SupersessionChainEntry>
+}
+
+/** A provider-backed supersession decision could not be produced. Safe to retry. */
+export class SupersessionDecisionUnavailable extends Data.TaggedError(
+  "SupersessionDecisionUnavailable"
+)<{
+  readonly cause: unknown
+}> {
+  override get message(): string {
+    return "Supersession decision provider is unavailable"
+  }
 }
 
 /** 0-based indices into `SupersessionChain.claims`. */
@@ -197,17 +212,38 @@ export const collectSupersessionChains = (
   return [...chains.entries()]
     .map(([key, chain]) => ({ key, chain }))
     .sort((left, right) => left.key.localeCompare(right.key))
-    .map(({ chain }) => ({
-      entityCanon: chain.entityCanon,
-      attr: chain.attr,
-      claims: chain.claims.sort(
+    .map(({ chain }) => {
+      const claims = chain.claims.sort(
         (left, right) =>
           left.sessionOrd - right.sessionOrd ||
           left.turnIdx - right.turnIdx ||
           left.cs - right.cs ||
           left.claimDigest.localeCompare(right.claimDigest)
       )
-    }))
+      const identity: CanonicalJson = {
+        attr: chain.attr,
+        claims: claims.map(
+          (claim): CanonicalJson => ({
+            claim_digest: claim.claimDigest,
+            commit_id: claim.commitId,
+            cs: claim.cs,
+            session_ord: claim.sessionOrd,
+            speaker: claim.speaker,
+            t_event: claim.tEvent,
+            text: claim.text,
+            turn_idx: claim.turnIdx
+          })
+        ),
+        entity_canon: chain.entityCanon,
+        format: "palimpsest.supersession-chain.v1"
+      }
+      return {
+        id: `supersession-chain-v1-${createHash("sha256").update(canonicalJson(identity), "utf8").digest("hex")}`,
+        entityCanon: chain.entityCanon,
+        attr: chain.attr,
+        claims
+      }
+    })
     .filter(
       (chain) =>
         chain.claims.length >= 2 && chain.claims.some((claim) => claim.commitId === targetCommitId)
@@ -293,7 +329,7 @@ const renderPrompt = (chain: SupersessionChain): string =>
  */
 export const decideSlotSupersession = (
   chain: SupersessionChain
-): Effect.Effect<ReadonlyArray<SupersessionIndexPair>, never, Llm> =>
+): Effect.Effect<ReadonlyArray<SupersessionIndexPair>, SupersessionDecisionUnavailable, Llm> =>
   Effect.gen(function* () {
     if (chain.claims.length < 2) return []
     const llm = yield* Llm
@@ -305,7 +341,7 @@ export const decideSlotSupersession = (
         schema: Replacements,
         objectName: "replacements"
       })
-      .pipe(Effect.orDie)
+      .pipe(Effect.mapError((cause) => new SupersessionDecisionUnavailable({ cause })))
     const pairs: Array<SupersessionIndexPair> = []
     for (const pair of generated.value.replacements) {
       const older = pair.older - 1

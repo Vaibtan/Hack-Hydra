@@ -63,6 +63,15 @@ export interface RevisionOperations {
   ) => Effect.Effect<number, InvalidSourceRevision | IngestManifestUnavailable>
 }
 
+const WATERMARK_COLUMN: Readonly<Record<IngestState, string>> = {
+  RECEIVED: "received_at_ms",
+  SOURCE_DURABLE: "source_durable_at_ms",
+  INDEXED: "indexed_at_ms",
+  ENRICHED: "enriched_at_ms",
+  CONSOLIDATED: "consolidated_at_ms",
+  COMMITTED: "committed_at_ms"
+}
+
 const NEXT_STATE: Readonly<Record<IngestState, IngestState | null>> = {
   RECEIVED: "SOURCE_DURABLE",
   SOURCE_DURABLE: "INDEXED",
@@ -219,8 +228,8 @@ const insertRevision = (database: DatabaseSync, parsed: BeginSourceRevision): Be
       `INSERT INTO source_revisions (
         revision_key, tenant, uid, logical_session_id, source_digest, source_bytes,
         extraction_generation, session_ordinal, commit_id, state, manifest_version,
-        created_at_ms, updated_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?, ?)`
+        created_at_ms, updated_at_ms, received_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?, ?, ?)`
     )
     .run(
       key,
@@ -233,6 +242,7 @@ const insertRevision = (database: DatabaseSync, parsed: BeginSourceRevision): Be
       sessionOrdinal,
       commitIdFor(key),
       manifestVersion,
+      now,
       now,
       now
     )
@@ -277,10 +287,10 @@ const advanceRevision = (database: DatabaseSync, input: AdvanceIngestState): Adv
     .prepare(
       `UPDATE source_revisions
           SET state = ?, manifest_version = ?, failure_code = NULL, failure_retryable = NULL,
-              updated_at_ms = ?
+              updated_at_ms = ?, ${WATERMARK_COLUMN[input.to]} = ?
         WHERE revision_key = ?`
     )
-    .run(input.to, manifestVersion, now, key)
+    .run(input.to, manifestVersion, now, now, key)
   const advanced = selectRevision(database, key)
   if (advanced === undefined) throw new Error("advanced source revision was not readable")
   return { _tag: "success", revision: advanced }

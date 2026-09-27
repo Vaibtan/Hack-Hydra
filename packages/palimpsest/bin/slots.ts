@@ -1,10 +1,11 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { prepareDerivedIndexAssertions, sourceLinkedChainEvidence } from "../src/DerivedAssertion.js"
-import { Reader } from "../src/Reader.js"
+import { LegacyG3Adapter } from "../src/LegacyG3Adapter.js"
 import { Supersede } from "../src/Supersede.js"
+import { Transcript } from "../src/Transcript.js"
 
 /** `slots --uid <question_id> [--skey <slot key>] [--as-of <k>] [--all]` */
 loadDotEnv()
@@ -20,32 +21,32 @@ const asOfRaw = arg("as-of", "")
 const asOf = asOfRaw === "" ? undefined : Number(asOfRaw)
 const showAll = process.argv.includes("--all")
 
-const AppLive = Supersede.layer.pipe(
-  Layer.provideMerge(Reader.layer),
-  Layer.provideMerge(HydraClient.layer),
+const AppLive = LegacyG3Adapter.layer.pipe(
+  Layer.provideMerge(Supersede.layer),
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const program = Effect.gen(function* () {
   yield* verifyModelsOrExit({ quiet: true })
-  const supersede = yield* Supersede
-  const reader = yield* Reader
+  const legacy = yield* LegacyG3Adapter
   const slots =
     only === ""
-      ? yield* supersede.contestedSlots(uid)
+      ? yield* legacy.contestedSlots(uid)
       : [{ skey: only, entityName: only.split("|")[3] ?? "", attr: only.split("|")[4] ?? "" }]
 
   console.log(`uid            ${uid}`)
   console.log(`slots >= 2     ${slots.length}${asOf === undefined ? "" : `   (as of session ${asOf})`}`)
   console.log("")
 
-  const allChains = yield* supersede.chains(uid, slots.map((slot) => slot.skey), asOf)
+  const allChains = yield* legacy.slotChains(uid, slots.map((slot) => slot.skey), asOf)
 
   let chains = 0
   for (const slot of slots) {
     const chain = allChains.get(slot.skey) ?? []
-    const sourceSpans = yield* reader.hydrate(sourceLinkedChainEvidence(chain))
+    const sourceSpans = yield* legacy.reader.hydrate(sourceLinkedChainEvidence(chain))
     const assertions = prepareDerivedIndexAssertions(chain, sourceSpans)
     if (assertions._tag === "Failure") return yield* Effect.fail(assertions.failure)
     const superseded = assertions.success.filter((assertion) => assertion.supersededBy !== null).length

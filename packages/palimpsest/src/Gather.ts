@@ -1,4 +1,4 @@
-import { HydraClient, HydraLimitError, type HydraError } from "@palimpsest/hydra"
+import { HydraLimitError, HydraMemory, type ExecutionPlanDiagnostic, type HydraError } from "@palimpsest/hydra"
 import { Llm, readPathModels, type ReadPathModels } from "@palimpsest/llm"
 import { Duration, Effect, Fiber } from "effect"
 import {
@@ -72,6 +72,8 @@ export const stopwatch = (): Stopwatch => {
 
 export interface Gathered {
   readonly uid: string
+  /** The convergence walk the receipt renders; each lane supplies its own graph shape. */
+  readonly query1Plan: ExecutionPlanDiagnostic | null
   readonly question: string
   readonly understood: Understood
   /** The convergence arm's sources: the understood terms widened by `extraTerms`. */
@@ -96,14 +98,14 @@ export interface Gathered {
   readonly clock: Stopwatch
 }
 
-export const gather = (
-  hydra: HydraClient,
+export const gather = <E>(
+  hydra: HydraMemory,
   supersede: Supersede,
-  totalClaims: (uid: string) => Effect.Effect<number, HydraError>,
+  totalClaims: (uid: string) => Effect.Effect<number, HydraError | E>,
   uid: string,
   question: string,
   options: AskOptions
-): Effect.Effect<Gathered, HydraError, Llm> =>
+): Effect.Effect<Gathered, HydraError | E, Llm> =>
   Effect.gen(function* () {
     const askStarted = Date.now()
     const models = readPathModels((yield* Llm).model)
@@ -195,6 +197,7 @@ export const gather = (
 
     return {
       uid,
+      query1Plan: convergence.plan,
       question,
       understood,
       terms,

@@ -34,7 +34,16 @@ const revision: SourceRevision = {
   state: "SOURCE_DURABLE",
   manifestVersion: 1,
   failureCode: null,
-  failureRetryable: null
+  failureRetryable: null,
+  acceptedAtMs: 1700000000000,
+  reachedAtMs: {
+    RECEIVED: 1700000000000,
+    SOURCE_DURABLE: 1700000001000,
+    INDEXED: null,
+    ENRICHED: null,
+    CONSOLIDATED: null,
+    COMMITTED: null
+  }
 }
 
 const generation = createIndexGeneration({

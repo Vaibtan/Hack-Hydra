@@ -71,6 +71,15 @@ export const PopulationRecord = Schema.Struct({
 /** Parsed canonical population audit artifact. */
 export type PopulationRecord = typeof PopulationRecord.Type
 
+const assertPopulationRecord: (input: unknown) => asserts input is PopulationRecord = (input) =>
+  Schema.asserts(PopulationRecord, input)
+
+/** Parse an untrusted population audit artifact before it can support an evaluation freeze. */
+export const parsePopulationRecord = (input: JsonObject): PopulationRecord => {
+  assertPopulationRecord(input)
+  return input
+}
+
 /** The canonical witness produced by the read-only reconciliation; never written without one. */
 export const RECONCILE_FILE = "data/splits/retrieval-v2.reconcile.json"
 

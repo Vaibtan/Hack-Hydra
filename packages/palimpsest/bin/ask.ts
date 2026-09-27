@@ -1,11 +1,14 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { answerV2, unreadAnswer } from "../src/Answer.js"
+import { answerInSnapshot, unreadAnswer } from "../src/Answer.js"
+import { IngestManifestLive } from "../src/IngestManifest.js"
+import { layerStaticQueryPrincipal, QueryPrincipalProvider } from "../src/QueryContext.js"
 import { Reader } from "../src/Reader.js"
 import { Retrieve } from "../src/Retrieve.js"
-import { Supersede } from "../src/Supersede.js"
+import { SnapshotSearch } from "../src/SnapshotArms.js"
+import { parseTemporalPerspective } from "../src/TimeScope.js"
 
 loadDotEnv()
 
@@ -14,6 +17,7 @@ const arg = (name: string, fallback: string): string => {
   return index === -1 ? fallback : (process.argv[index + 1] ?? fallback)
 }
 
+const tenant = arg("tenant", "")
 const uid = arg("uid", "")
 const question = arg("question", "")
 const asOfRaw = arg("as-of", "")
@@ -26,12 +30,25 @@ if (profileArg !== "full" && profileArg !== "fast") {
   console.error(`--profile must be full or fast, not ${JSON.stringify(profileArg)}`)
   process.exit(2)
 }
+const perspectiveArg = arg("perspective", "")
+const parsedPerspective = perspectiveArg === "" ? undefined : parseTemporalPerspective(perspectiveArg)
+if (parsedPerspective === null) {
+  console.error("--perspective must be recorded-time, valid-time, or bitemporal")
+  process.exit(2)
+}
+const perspective = parsedPerspective
+if (tenant === "") {
+  console.error("usage: ask --tenant <tenant> --uid <uid> --question <q> [--as-of k] [--date d]")
+  process.exit(2)
+}
 const profile: "full" | "fast" = profileArg
 
 const AppLive = Retrieve.layer.pipe(
+  Layer.provideMerge(SnapshotSearch.layer),
   Layer.provideMerge(Reader.layer),
-  Layer.provideMerge(Supersede.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(layerStaticQueryPrincipal(tenant, "ask-bin")),
+  Layer.provideMerge(IngestManifestLive),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -40,11 +57,18 @@ const program = Effect.gen(function* () {
   yield* verifyModelsOrExit({ quiet: true })
   const retrieve = yield* Retrieve
   const reader = yield* Reader
+  const principals = yield* QueryPrincipalProvider
+  const principal = yield* principals.currentPrincipal.pipe(Effect.orDie)
   const started = Date.now()
-  const answerOptions = { maxLen, profile, ...(asOfRaw !== "" && { asOf: Number(asOfRaw) }) }
+  const answerOptions = {
+    maxLen,
+    profile,
+    ...(asOfRaw !== "" && { asOf: Number(asOfRaw) }),
+    ...(perspective !== undefined && { perspective })
+  }
   const answered = noRead
-    ? unreadAnswer(yield* retrieve.ask(uid, question, answerOptions))
-    : yield* answerV2(retrieve, reader, uid, question, questionDate, answerOptions)
+    ? unreadAnswer(yield* retrieve.ask(principal, uid, question, answerOptions))
+    : yield* answerInSnapshot(retrieve, reader, principal, uid, question, questionDate, answerOptions)
   const result = answered.ask
   const answer = answered.read
   const sourceSpans = answer === null ? [] : answer.spans
@@ -56,14 +80,24 @@ const program = Effect.gen(function* () {
   console.log(`uid            ${uid}${r.asOf === null ? "" : `   as of session ${r.asOf}`}`)
   console.log("")
   const source =
-    answer === null
-      ? `ABSENT  structural: ${answered.reason}`
-      : answered.verdict === "ABSENT"
-        ? `ABSENT  ${answered.reason}`
-        : answer.notInMemory
-          ? "ABSENT  reader: NOT_IN_MEMORY"
-          : "ANSWER"
+    answered.verdict === "INCOMPLETE"
+      ? `INCOMPLETE  ${answered.reason}`
+      : answer === null
+        ? `ABSENT  structural: ${answered.reason}`
+        : answered.verdict === "ABSENT"
+          ? `ABSENT  ${answered.reason}`
+          : answer.notInMemory
+            ? "ABSENT  reader: NOT_IN_MEMORY"
+            : "ANSWER"
   console.log(`VERDICT        ${source}`)
+  const temporal = answered.ask.plan.temporal
+  if (temporal !== null) {
+    console.log(
+      `temporal       ${temporal.perspective}  snapshot ${temporal.snapshotId.slice(0, 12)}  ` +
+        `watermark ${temporal.watermark}  coverage ${temporal.coverage.revisionsCovered}/${temporal.coverage.scopeRevisions}  ` +
+        `complete ${temporal.completeness.complete}`
+    )
+  }
   if (answer !== null && answered.verdict === "ANSWER" && !answer.notInMemory) {
     console.log(`ANSWER         ${answer.answer}`)
     if (answer.reasoning.trim() !== "") console.log(`reasoning      ${answer.reasoning}`)
@@ -80,7 +114,7 @@ const program = Effect.gen(function* () {
   console.log("")
   console.log("RECEIPT")
   console.log(`  threshold    convergence >= ${r.convergenceThreshold}`)
-  console.log(`  claims       ${r.totalClaims} in this user's graph`)
+  console.log(`  claims       ${r.totalClaims} in this snapshot`)
   console.log(`  historical   ${r.historical}   wants_count ${r.wantsCount}   time_ref ${r.timeRef ?? "-"}`)
   console.log(`  anchors      ${r.anchorTerms.length} asked, ${r.anchorsReachingClaims.length} reached a claim`)
   console.log(`    reached    ${r.anchorsReachingClaims.join(" ")}`)

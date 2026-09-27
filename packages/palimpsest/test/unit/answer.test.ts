@@ -42,6 +42,7 @@ const plan = (over: Partial<RetrievalPlan> = {}): RetrievalPlan => ({
   protectedKeys: [],
   unionSessions: ["s1"],
   ablations: {},
+  temporal: null,
   ...over
 })
 
@@ -69,7 +70,8 @@ const ask = (over: Partial<AskResult> = {}): AskResult =>
       query2: null,
       query2Paths: 0,
       models: { reader: "stub", select: "stub", sufficiency: "stub" },
-      convergence: []
+      convergence: [],
+      temporal: null
     },
     hash: "hash",
     timings: { askMs: 1, graphMs: 1, stages: {} },

@@ -1,7 +1,6 @@
-import { HydraClient, type HydraError } from "@palimpsest/hydra"
+import { HydraMemory } from "@palimpsest/hydra"
 import { Llm } from "@palimpsest/llm"
-import { Context, Effect, Layer, Schema } from "effect"
-import { turnKey } from "./Keys.js"
+import { Context, Effect, Layer, Option, Result, Schema } from "effect"
 import {
   adjudicate,
   applyBudget,
@@ -10,18 +9,30 @@ import {
   type BudgetReport,
   type PackLabel
 } from "./Pack.js"
-import { NOT_IN_MEMORY, RoutePolicy, granularityFor, type Granularity } from "./Routes.js"
 import {
-  chunksByKey,
-  claimChunks,
-  evidenceTurns,
-  reassemble,
-  sessionTurns,
-  turnChunks
-} from "./Rows.js"
+  NOT_IN_MEMORY,
+  RoutePolicy,
+  granularityFor,
+  type Granularity
+} from "./Routes.js"
+import { reassemble } from "./Rows.js"
 import type { AsOfLabelled } from "./Scoring.js"
-import { shortId } from "./Select.js"
+import { candidateId } from "./Select.js"
 import type { Route } from "./Understand.js"
+import {
+  SnapshotGraphMismatch,
+  type QueryContext,
+  type SpanProvenance
+} from "./QueryContext.js"
+import { snapshotEvidenceConfig, type SnapshotReadError } from "./SnapshotArms.js"
+import {
+  parseSnapshotSourceTurn,
+  requireSnapshotProvenance,
+  snapshotEvidenceLocators,
+  type SnapshotEvidenceLocator,
+  type SnapshotSourceTurn
+} from "./SnapshotRows.js"
+import { sourceTurnChunkKey, sourceTurnKey } from "./SourceTranscript.js"
 
 export { NOT_IN_MEMORY, granularityFor, type Granularity } from "./Routes.js"
 
@@ -52,7 +63,7 @@ export const cutExcerpt = (
 
 export interface HydratedSpan {
   readonly ckey: string
-  /** Short, stable id the reader cites — the claim key's tail. */
+  /** Short, stable id the reader cites — the claim key's tail, or the lane's assigned id. */
   readonly id: string
   readonly sid: string
   readonly sessionKey: string
@@ -71,6 +82,8 @@ export interface HydratedSpan {
   readonly highlight: { readonly start: number; readonly end: number }
   /** The pack label; absent on the baselines, where `renderReaderPrompt` falls back to `status`. */
   readonly label?: PackLabel
+  /** Present on snapshot spans only; stripped from public evidence by the server projection. */
+  readonly provenance?: SpanProvenance
 }
 
 const Answer = Schema.Struct({
@@ -169,13 +182,13 @@ export interface ReadAnswer {
   readonly recited: boolean
 }
 
-interface TurnBody {
+export interface TurnBody {
   readonly text: string
   /** The preceding turn, rendered, at turn granularity; empty at span granularity. */
   readonly prefix: string
 }
 
-const toHydratedSpan = (
+export const toHydratedSpan = (
   claim: AsOfLabelled,
   body: TurnBody,
   granularity: Granularity
@@ -195,7 +208,7 @@ const toHydratedSpan = (
         })()
   return {
     ckey: claim.ckey,
-    id: shortId(claim.ckey),
+    id: candidateId(claim),
     sid: claim.sid,
     sessionKey: claim.sessionKey,
     turnIdx: claim.turnIdx,
@@ -212,240 +225,335 @@ const toHydratedSpan = (
   }
 }
 
-const uidOf = (ckey: string): string => {
-  const at = ckey.indexOf("|c|")
-  return at === -1 ? "" : ckey.slice(0, at)
+export interface GeneratedAnswer {
+  readonly value: { readonly answer: string; readonly reasoning: string }
+  readonly cached: boolean
+  readonly inputTokens: number
+  readonly outputTokens: number
 }
 
+/** Shared by both lanes: the legacy adapter answers from the spans it hydrated. */
+export const answered = (
+  generated: GeneratedAnswer,
+  spans: ReadonlyArray<HydratedSpan>,
+  cited: ReadonlyArray<string>,
+  recited: boolean,
+  readStarted: number,
+  granularity: Granularity
+): ReadAnswer => {
+  const answer = generated.value.answer.trim()
+  const uncited = recited && cited.length === 0
+  return {
+    answer: uncited ? NOT_IN_MEMORY : answer,
+    notInMemory: uncited || answer === NOT_IN_MEMORY || answer.startsWith(NOT_IN_MEMORY),
+    citedIds: cited,
+    reasoning: generated.value.reasoning,
+    spans,
+    cached: generated.cached,
+    inputTokens: generated.inputTokens,
+    outputTokens: generated.outputTokens,
+    hydrateMs: 0,
+    readMs: Date.now() - readStarted,
+    spanHash: spanHash(spans),
+    granularity,
+    pack: null,
+    recited
+  }
+}
+
+/** The span-reading core both lanes share: citations are validated against the spans in hand. */
+export const readSpansCore = (
+  llm: Llm,
+  question: string,
+  questionDate: string,
+  spans: ReadonlyArray<HydratedSpan>,
+  options: ReadSpansOptions = {}
+): Effect.Effect<ReadAnswer, never, Llm> =>
+  Effect.gen(function* () {
+    const readStarted = Date.now()
+    const granularity = options.granularity ?? "span"
+    if (spans.length === 0) {
+      return answered(
+        {
+          value: { answer: NOT_IN_MEMORY, reasoning: "no evidence to read" },
+          cached: true,
+          inputTokens: 0,
+          outputTokens: 0
+        },
+        spans,
+        [],
+        false,
+        readStarted,
+        granularity
+      )
+    }
+
+    const prompt = renderReaderPrompt(question, questionDate, spans)
+    const system = systemFor(options.route ?? null)
+    const first = yield* llm
+      .generateObject({ kind: "read", system, prompt, schema: Answer, objectName: "answer" })
+      .pipe(Effect.orDie)
+
+    const known = new Set(spans.map((span) => span.id))
+    const validOf = (ids: ReadonlyArray<string>): ReadonlyArray<string> =>
+      ids.filter((id) => known.has(id))
+
+    let generated = first
+    let cited = validOf(first.value.cited_ids)
+    let recited = false
+    const said = first.value.answer.trim()
+    if (cited.length === 0 && said !== NOT_IN_MEMORY && !said.startsWith(NOT_IN_MEMORY)) {
+      recited = true
+      generated = yield* llm
+        .generateObject({
+          kind: "read",
+          system,
+          prompt: `${prompt}\n\nYour previous answer cited no excerpt that exists. Answer again, and
+cite at least one id from this list exactly as written: ${[...known].join(", ")}.
+If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
+          schema: Answer,
+          objectName: "answer"
+        })
+        .pipe(Effect.orDie)
+      cited = validOf(generated.value.cited_ids)
+    }
+
+    return answered(generated, spans, cited, recited, readStarted, granularity)
+  })
+
+interface SnapshotHydration {
+  readonly bodies: ReadonlyMap<string, TurnBody>
+  readonly locators: ReadonlyMap<string, SnapshotEvidenceLocator>
+}
+
+/**
+ * Snapshot hydration: resolve each bound evidence claim to its stored source
+ * turn through the snapshot's evidence locators, then read the source turns
+ * (and predecessors) directly. Unreachable claims drop like the legacy lane;
+ * anything disagreeing with the bound snapshot fails the request.
+ */
+const snapshotHydrateText = (
+  hydra: HydraMemory,
+  query: QueryContext,
+  evidence: ReadonlyArray<AsOfLabelled>,
+  granularity: Granularity
+): Effect.Effect<SnapshotHydration, SnapshotReadError> =>
+  Effect.gen(function* () {
+    if (evidence.length === 0) return { bodies: new Map(), locators: new Map() }
+    const bound = requireSnapshotProvenance(evidence, query)
+    if (Result.isFailure(bound)) return yield* Effect.fail(bound.failure)
+
+    const { paths } = yield* hydra.discoverPaths(snapshotEvidenceConfig(evidence.map((claim) => claim.ckey)))
+    const parsed = snapshotEvidenceLocators(paths, query)
+    if (Result.isFailure(parsed)) return yield* Effect.fail(parsed.failure)
+    const locators = new Map(parsed.success.map((locator) => [locator.ckey, locator]))
+
+    const assigned: Array<{ readonly claim: AsOfLabelled; readonly locator: SnapshotEvidenceLocator }> = []
+    for (const claim of bound.success) {
+      const locator = locators.get(claim.ckey)
+      if (locator === undefined) continue
+      const provenance = claim.provenance
+      if (
+        provenance === undefined ||
+        provenance.commitId !== locator.commitId ||
+        provenance.sourceDigest !== locator.sourceDigest ||
+        provenance.logicalSessionId !== locator.logicalSessionId ||
+        claim.turnIdx !== locator.turnIdx ||
+        locator.sourceTurnKey !==
+          sourceTurnKey(query.scope, locator.logicalSessionId, locator.sourceDigest, locator.turnIdx)
+      ) {
+        return yield* Effect.fail(
+          new SnapshotGraphMismatch({
+            snapshotId: query.snapshot.id,
+            reason: "evidenceMismatch",
+            detail: claim.ckey
+          })
+        )
+      }
+      assigned.push({ claim, locator })
+    }
+
+    const readTurn = (
+      locator: SnapshotEvidenceLocator,
+      turnIdx: number,
+      turnKey: string
+    ): Effect.Effect<SnapshotSourceTurn | undefined, SnapshotReadError> =>
+      Effect.gen(function* () {
+        const found = yield* hydra.resolveNode({
+          label: "SourceTurn",
+          key: turnKey,
+          properties: ["tenant", "uid", "logical_session_id", "source_digest", "turn_idx", "role", "text", "chunks"]
+        })
+        if (Option.isNone(found)) return undefined
+        const parsedTurn = parseSnapshotSourceTurn(turnKey, found.value, query, {
+          logicalSessionId: locator.logicalSessionId,
+          sourceDigest: locator.sourceDigest
+        })
+        if (Result.isFailure(parsedTurn)) return yield* Effect.fail(parsedTurn.failure)
+        const turn = parsedTurn.success
+        if (turn.turnIdx !== turnIdx) {
+          return yield* Effect.fail(
+            new SnapshotGraphMismatch({
+              snapshotId: query.snapshot.id,
+              reason: "sourceTurnMismatch",
+              detail: `${turnKey}: turn_idx`
+            })
+          )
+        }
+        return turn
+      })
+
+    const readFullTurn = (
+      locator: SnapshotEvidenceLocator,
+      turnIdx: number,
+      turnKey: string
+    ): Effect.Effect<{ readonly text: string; readonly role: string } | undefined, SnapshotReadError> =>
+      Effect.gen(function* () {
+        const found = yield* hydra.resolveNode({
+          label: "SourceTurn",
+          key: turnKey,
+          properties: ["tenant", "uid", "logical_session_id", "source_digest", "turn_idx", "role", "text", "chunks"]
+        })
+        if (Option.isNone(found)) return undefined
+        const parsedTurn = parseSnapshotSourceTurn(turnKey, found.value, query, {
+          logicalSessionId: locator.logicalSessionId,
+          sourceDigest: locator.sourceDigest
+        })
+        if (Result.isFailure(parsedTurn)) return yield* Effect.fail(parsedTurn.failure)
+        const turn = parsedTurn.success
+        if (turn.turnIdx !== turnIdx) {
+          return yield* Effect.fail(
+            new SnapshotGraphMismatch({
+              snapshotId: query.snapshot.id,
+              reason: "sourceTurnMismatch",
+              detail: `${turnKey}: turn_idx`
+            })
+          )
+        }
+        if (turn.chunks <= 1) return { text: turn.text, role: turn.role }
+        const chunks = yield* Effect.forEach(
+          Array.from({ length: turn.chunks - 1 }, (_, index) => index + 1),
+          (chunkIdx) =>
+            hydra.resolveNode({
+              label: "SourceTurnChunk",
+              key: sourceTurnChunkKey(
+                query.scope,
+                locator.logicalSessionId,
+                locator.sourceDigest,
+                turnIdx,
+                chunkIdx
+              ),
+              properties: ["chunk_idx", "text"]
+            }),
+          { concurrency: 4 }
+        )
+        return {
+          text: reassemble(
+            turn.text,
+            chunks.flatMap((chunk, position) =>
+              Option.isNone(chunk)
+                ? []
+                : [{ key: turnKey, idx: Number(chunk.value.properties["chunk_idx"] ?? position + 1), text: String(chunk.value.properties["text"] ?? "") }]
+            )
+          ),
+          role: turn.role
+        }
+      })
+
+    const bodies = new Map<string, TurnBody>()
+    yield* Effect.forEach(
+      assigned,
+      ({ claim, locator }) =>
+        Effect.gen(function* () {
+          const stored = yield* readTurn(locator, locator.turnIdx, locator.sourceTurnKey)
+          if (stored === undefined) return
+          let text = stored.text
+          if ((granularity === "turn" || claim.ce > text.length) && stored.chunks > 1) {
+            const full = yield* readFullTurn(locator, locator.turnIdx, locator.sourceTurnKey)
+            if (full !== undefined) text = full.text
+          }
+          let prefix = ""
+          if (granularity === "turn" && locator.turnIdx > 0) {
+            const before = yield* readFullTurn(
+              locator,
+              locator.turnIdx - 1,
+              sourceTurnKey(
+                query.scope,
+                locator.logicalSessionId,
+                locator.sourceDigest,
+                locator.turnIdx - 1
+              )
+            )
+            if (before !== undefined) prefix = `(${before.role} said) ${before.text}\n\n`
+          }
+          bodies.set(claim.ckey, { text, prefix })
+        }),
+      { concurrency: 4 }
+    )
+    return { bodies, locators }
+  })
+
+const toSnapshotHydratedSpan = (
+  claim: AsOfLabelled,
+  body: TurnBody,
+  granularity: Granularity,
+  locator: SnapshotEvidenceLocator,
+  query: QueryContext
+): HydratedSpan => ({
+  ...toHydratedSpan(claim, body, granularity),
+  provenance: {
+    snapshotId: query.snapshot.id,
+    commitId: locator.commitId,
+    sourceDigest: locator.sourceDigest,
+    logicalSessionId: locator.logicalSessionId,
+    sourceTurnKey: locator.sourceTurnKey
+  }
+})
+
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
   const llm = yield* Llm
 
-  const evidenceText = (
-    evidence: ReadonlyArray<AsOfLabelled>
-  ): Effect.Effect<ReadonlyMap<string, TurnBody>, HydraError> =>
-    Effect.gen(function* () {
-      const paths = yield* hydra.msPaths({
-        sourceLabel: "Claim",
-        sourceProperty: "ckey",
-        sourceValues: evidence.map((claim) => claim.ckey),
-        relTypes: ["EVIDENCE"],
-        relDirection: "outgoing",
-        maxLen: 1
-      })
-      const turns = new Map<string, { text: string; chunks: number }>()
-      for (const turn of evidenceTurns(paths)) {
-        turns.set(turn.ckey, { text: turn.text, chunks: turn.chunks })
-      }
-
-      const needsChunks = evidence.filter((claim) => {
-        const turn = turns.get(claim.ckey)
-        return turn !== undefined && turn.chunks > 1 && claim.ce > turn.text.length
-      })
-      if (needsChunks.length > 0) {
-        const chunkPaths = yield* hydra.msPaths({
-          sourceLabel: "Claim",
-          sourceProperty: "ckey",
-          sourceValues: needsChunks.map((claim) => claim.ckey),
-          relTypes: ["EVIDENCE", "HAS_CHUNK"],
-          relDirection: "outgoing",
-          maxLen: 2
-        })
-        for (const [ckey, chunks] of chunksByKey(claimChunks(chunkPaths))) {
-          const base = turns.get(ckey)
-          if (base === undefined) continue
-          turns.set(ckey, { ...base, text: reassemble(base.text, chunks) })
-        }
-      }
-
-      return new Map([...turns].map(([ckey, turn]) => [ckey, { text: turn.text, prefix: "" }]))
-    })
-
-  const turnText = (
-    evidence: ReadonlyArray<AsOfLabelled>
-  ): Effect.Effect<ReadonlyMap<string, TurnBody>, HydraError> =>
-    Effect.gen(function* () {
-      const uid = uidOf(evidence[0]!.ckey)
-      const keyOf = (claim: AsOfLabelled, offset = 0): string =>
-        turnKey(uid, claim.sessionKey, claim.turnIdx + offset)
-
-      const wanted = new Set<string>()
-      for (const claim of evidence) {
-        wanted.add(keyOf(claim))
-        if (claim.turnIdx > 0) wanted.add(keyOf(claim, -1))
-      }
-
-      const paths = yield* hydra.msPaths({
-        sourceLabel: "Turn",
-        sourceProperty: "turn",
-        sourceValues: [...wanted].sort(),
-        relTypes: ["HAS_TURN"],
-        relDirection: "incoming",
-        maxLen: 1
-      })
-      const turns = new Map<string, { text: string; chunks: number; role: string }>()
-      for (const turn of sessionTurns(paths)) {
-        turns.set(turn.key, { text: turn.text, chunks: turn.chunks, role: turn.role })
-      }
-
-      const spilled = [...turns].filter(([, turn]) => turn.chunks > 1).map(([key]) => key)
-      if (spilled.length > 0) {
-        const chunkPaths = yield* hydra.msPaths({
-          sourceLabel: "Turn",
-          sourceProperty: "turn",
-          sourceValues: spilled.sort(),
-          relTypes: ["HAS_CHUNK"],
-          relDirection: "outgoing",
-          maxLen: 1
-        })
-        for (const [key, chunks] of chunksByKey(turnChunks(chunkPaths))) {
-          const base = turns.get(key)
-          if (base === undefined) continue
-          turns.set(key, { ...base, text: reassemble(base.text, chunks) })
-        }
-      }
-
-      const bodies = new Map<string, TurnBody>()
-      for (const claim of evidence) {
-        const turn = turns.get(keyOf(claim))
-        if (turn === undefined) continue
-        const before = claim.turnIdx > 0 ? turns.get(keyOf(claim, -1)) : undefined
-        bodies.set(claim.ckey, {
-          text: turn.text,
-          prefix: before === undefined ? "" : `(${before.role} said) ${before.text}\n\n`
-        })
-      }
-      return bodies
-    })
-
-  const hydrateText = (
-    evidence: ReadonlyArray<AsOfLabelled>,
-    granularity: Granularity
-  ): Effect.Effect<ReadonlyMap<string, TurnBody>, HydraError> =>
-    evidence.length === 0
-      ? Effect.succeed(new Map())
-      : granularity === "turn"
-        ? turnText(evidence)
-        : evidenceText(evidence)
-
   const hydrateAt = (
+    query: QueryContext,
     evidence: ReadonlyArray<AsOfLabelled>,
     granularity: Granularity
-  ): Effect.Effect<ReadonlyArray<HydratedSpan>, HydraError> =>
-    Effect.map(hydrateText(evidence, granularity), (bodies) =>
+  ): Effect.Effect<ReadonlyArray<HydratedSpan>, SnapshotReadError> =>
+    Effect.map(snapshotHydrateText(hydra, query, evidence, granularity), ({ bodies, locators }) =>
       evidence.flatMap((claim) => {
         const body = bodies.get(claim.ckey)
-        return body === undefined ? [] : [toHydratedSpan(claim, body, granularity)]
-      })
-    )
+        const locator = locators.get(claim.ckey)
+        return body === undefined || locator === undefined
+          ? []
+          : [toSnapshotHydratedSpan(claim, body, granularity, locator, query)]
+      }))
 
   const hydrate = (
+    query: QueryContext,
     evidence: ReadonlyArray<AsOfLabelled>
-  ): Effect.Effect<ReadonlyArray<HydratedSpan>, HydraError> => hydrateAt(evidence, "span")
-
-  const answered = (
-    generated: {
-      readonly value: { readonly answer: string; readonly reasoning: string }
-      readonly cached: boolean
-      readonly inputTokens: number
-      readonly outputTokens: number
-    },
-    spans: ReadonlyArray<HydratedSpan>,
-    cited: ReadonlyArray<string>,
-    recited: boolean,
-    readStarted: number,
-    granularity: Granularity
-  ): ReadAnswer => {
-    const answer = generated.value.answer.trim()
-    const uncited = recited && cited.length === 0
-    return {
-      answer: uncited ? NOT_IN_MEMORY : answer,
-      notInMemory: uncited || answer === NOT_IN_MEMORY || answer.startsWith(NOT_IN_MEMORY),
-      citedIds: cited,
-      reasoning: generated.value.reasoning,
-      spans,
-      cached: generated.cached,
-      inputTokens: generated.inputTokens,
-      outputTokens: generated.outputTokens,
-      hydrateMs: 0,
-      readMs: Date.now() - readStarted,
-      spanHash: spanHash(spans),
-      granularity,
-      pack: null,
-      recited
-    }
-  }
+  ): Effect.Effect<ReadonlyArray<HydratedSpan>, SnapshotReadError> =>
+    hydrateAt(query, evidence, "span")
 
   const readSpans = (
     question: string,
     questionDate: string,
     spans: ReadonlyArray<HydratedSpan>,
     options: ReadSpansOptions = {}
-  ): Effect.Effect<ReadAnswer, never, Llm> =>
-    Effect.gen(function* () {
-      const readStarted = Date.now()
-      const granularity = options.granularity ?? "span"
-      if (spans.length === 0) {
-        return answered(
-          {
-            value: { answer: NOT_IN_MEMORY, reasoning: "no evidence to read" },
-            cached: true,
-            inputTokens: 0,
-            outputTokens: 0
-          },
-          spans,
-          [],
-          false,
-          readStarted,
-          granularity
-        )
-      }
-
-      const prompt = renderReaderPrompt(question, questionDate, spans)
-      const system = systemFor(options.route ?? null)
-      const first = yield* llm
-        .generateObject({ kind: "read", system, prompt, schema: Answer, objectName: "answer" })
-        .pipe(Effect.orDie)
-
-      const known = new Set(spans.map((span) => span.id))
-      const validOf = (ids: ReadonlyArray<string>): ReadonlyArray<string> =>
-        ids.filter((id) => known.has(id))
-
-      let generated = first
-      let cited = validOf(first.value.cited_ids)
-      let recited = false
-      const said = first.value.answer.trim()
-      if (cited.length === 0 && said !== NOT_IN_MEMORY && !said.startsWith(NOT_IN_MEMORY)) {
-        recited = true
-        generated = yield* llm
-          .generateObject({
-            kind: "read",
-            system,
-            prompt: `${prompt}\n\nYour previous answer cited no excerpt that exists. Answer again, and
-cite at least one id from this list exactly as written: ${[...known].join(", ")}.
-If none of them supports an answer, reply ${NOT_IN_MEMORY}.`,
-            schema: Answer,
-            objectName: "answer"
-          })
-          .pipe(Effect.orDie)
-        cited = validOf(generated.value.cited_ids)
-      }
-
-      return answered(generated, spans, cited, recited, readStarted, granularity)
-    })
+  ): Effect.Effect<ReadAnswer, never, Llm> => readSpansCore(llm, question, questionDate, spans, options)
 
   const read = (
+    query: QueryContext,
     question: string,
     questionDate: string,
     evidence: ReadonlyArray<AsOfLabelled>,
     options: ReadOptions
-  ): Effect.Effect<ReadAnswer, HydraError, Llm> =>
+  ): Effect.Effect<ReadAnswer, SnapshotReadError, Llm> =>
     Effect.gen(function* () {
       const packRoute = options.packRoute ?? options.route
       const granularity = granularityFor(packRoute, options.granularity)
 
       const hydrateStarted = Date.now()
-      const hydrated = yield* hydrateAt(evidence, granularity)
+      const hydrated = yield* hydrateAt(query, evidence, granularity)
       const hydrateMs = Date.now() - hydrateStarted
 
       const labelled = adjudicate(dedupeByTurn(hydrated), options.slotOf ?? new Map(), packRoute)

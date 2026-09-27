@@ -25,6 +25,7 @@ type Complete<Union, Listed> = [Exclude<Union, Listed>] extends [never] ? true :
 export const ABSTENTION_REASONS = [
   "A1_no_anchors",
   "A2_no_convergence",
+  "INCOMPLETE_MEMORY",
   "INSUFFICIENT_EVIDENCE",
   "CONTRADICTED_PREMISE"
 ] as const satisfies ReadonlyArray<AbstentionReason>
@@ -55,7 +56,7 @@ export const EvalRow = Schema.Struct({
   questionId: Schema.String,
   questionType: Schema.String,
   isAbstention: Schema.Boolean,
-  verdict: Schema.Literals(["ANSWER", "ABSENT"]),
+  verdict: Schema.Literals(["ANSWER", "ABSENT", "INCOMPLETE"]),
   reason: Schema.NullOr(Schema.Literals([...ABSTENTION_REASONS])),
   answer: Schema.String,
   notInMemory: Schema.Boolean,
@@ -65,6 +66,10 @@ export const EvalRow = Schema.Struct({
   judgeTemplate: Schema.Literals([...JUDGE_TEMPLATES]),
   judgeReply: Schema.String,
   judgeModel: Schema.String,
+  /** Provider-returned model identity; absent on historical rows that did not retain it. */
+  judgeResolvedModel: opt(Schema.NullOr(Schema.String)),
+  /** Exact ordered hydrated evidence bytes and metadata seen by the reader. */
+  evidenceBytesSha256: opt(Schema.String),
   evidenceSessions: Strings,
   answerSessions: Strings,
   sessionHit: Schema.Boolean,
@@ -106,6 +111,18 @@ export const BatchRecord = Schema.Struct({
   population: Strings
 })
 
+export const EvalLlmCallTrace = Schema.Struct({
+  kind: Schema.String,
+  cacheKey: Schema.String,
+  cache: Schema.Literals(["hit", "live"]),
+  requestedModel: Schema.String,
+  resolvedModel: Schema.NullOr(Schema.String),
+  protocol: Schema.Literals(["responses", "chat-completions"]),
+  promptSha256: Schema.String,
+  schemaSha256: Schema.String,
+  outputSha256: Schema.String
+})
+
 export const EvalEnvelope = Schema.Struct({
   system: Schema.Literals([...SYSTEM_NAMES]),
   dataset: Schema.String,
@@ -129,6 +146,23 @@ export const EvalEnvelope = Schema.Struct({
   ablations: opt(Strings),
   granularity: opt(Schema.NullOr(Schema.Literals(["span", "turn"]))),
   fullCtxChars: opt(Schema.NullOr(Schema.Number)),
+  /** Audit proof emitted by frozen runs; historical envelopes legitimately lack it. */
+  llmTrace: opt(Schema.Array(EvalLlmCallTrace)),
+  freezeManifestSha256: opt(Schema.String),
+  codeIdentity: opt(Schema.String),
+  lockfileSha256: opt(Schema.String),
+  /** Present only on immutable rescored views; answer-bearing fields remain source-derived. */
+  scoreSource: opt(Schema.Struct({ path: Schema.String, sha256: Schema.String })),
+  scoringProtocol: opt(
+    Schema.Struct({
+      endpoint: Schema.Literal("chat-completions"),
+      model: Schema.Literal("gpt-4o-2024-08-06"),
+      temperature: Schema.Literal(0),
+      maxTokens: Schema.Literal(10),
+      n: Schema.Literal(1),
+      parser: Schema.Literal("case-insensitive-yes-substring")
+    })
+  ),
   rows: Schema.Array(EvalRow)
 })
 export type EvalEnvelope = typeof EvalEnvelope.Type
@@ -205,6 +239,15 @@ export const writeAtomic = (path: string, text: string): void => {
   writeFileSync(`${path}.tmp`, text, "utf8")
   renameSync(`${path}.tmp`, path)
 }
+
+/** Create a result artifact exactly once. Unlike `writeAtomic`, this never replaces evidence. */
+export const writeExclusive = (path: string, text: string): void => {
+  writeFileSync(path, text, { encoding: "utf8", flag: "wx" })
+}
+
+/** Write a results envelope exactly once; an existing target is a hard refusal. */
+export const writeEnvelopeExclusive = (path: string, envelope: EvalEnvelope): void =>
+  writeExclusive(path, `${JSON.stringify(envelope, null, 2)}\n`)
 
 export const writeEnvelopeAtomic = (path: string, envelope: EvalEnvelope): void =>
   writeAtomic(path, `${JSON.stringify(envelope, null, 2)}

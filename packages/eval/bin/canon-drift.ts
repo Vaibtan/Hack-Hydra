@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadQuestion, parseDatasetName } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, extractSession, slotKey } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
@@ -16,7 +16,7 @@ const arg = (name: string, fallback: string): string => {
 const uid = arg("uid", "")
 
 const AppLive = ClaimGraph.layer.pipe(
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )

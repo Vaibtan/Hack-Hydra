@@ -1,10 +1,8 @@
 import { NodeHttpClient } from "@effect/platform-node"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive, loadDotEnv, verifyModelsOrExit } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
-import { answerV2 } from "../src/Answer.js"
-import { Reader } from "../src/Reader.js"
-import { Retrieve } from "../src/Retrieve.js"
+import { LegacyG3Adapter } from "../src/LegacyG3Adapter.js"
 import { Supersede } from "../src/Supersede.js"
 import { Transcript } from "../src/Transcript.js"
 
@@ -23,22 +21,19 @@ const from = Number(arg("from", "1"))
 const step = Number(arg("step", "1"))
 const concurrency = Number(arg("concurrency", "4"))
 
-const AppLive = Retrieve.layer.pipe(
-  Layer.provideMerge(Reader.layer),
+const AppLive = LegacyG3Adapter.layer.pipe(
   Layer.provideMerge(Supersede.layer),
   Layer.provideMerge(Transcript.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
 const program = Effect.gen(function* () {
   yield* verifyModelsOrExit({ quiet: true })
-  const retrieve = yield* Retrieve
-  const reader = yield* Reader
-  const transcript = yield* Transcript
+  const legacy = yield* LegacyG3Adapter
 
-  const sessions = yield* transcript.readSessions(uid)
+  const sessions = yield* legacy.readSessions(uid)
   const last = sessions.length
   const points: Array<number> = []
   for (let k = from; k <= last; k += step) points.push(k)
@@ -52,7 +47,7 @@ const program = Effect.gen(function* () {
     points,
     (k) =>
       Effect.gen(function* () {
-        const answered = yield* answerV2(retrieve, reader, uid, question, questionDate, { asOf: k })
+        const answered = yield* legacy.answer(uid, question, questionDate, { asOf: k })
         const evidence = answered.ask.evidence.length
         if (answered.read === null || answered.verdict === "ABSENT") {
           return { k, label: `ABSENT (${answered.reason})`, evidence, hash: answered.hash }

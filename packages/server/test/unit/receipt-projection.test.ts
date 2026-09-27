@@ -24,7 +24,8 @@ const receipt = (): RetrievalReceipt => ({
   models: { reader: "gpt-5.6-luna", select: "gpt-5.6-luna", sufficiency: "gpt-5.6-luna" },
   convergence: [
     { ckey: "user-a|c|one", convergence: 1, score: 1.2, anchors: ["move"] }
-  ]
+  ],
+  temporal: null
 })
 
 describe("Receipt schema", () => {
@@ -39,5 +40,28 @@ describe("Receipt schema", () => {
     const { query1Params: _query1Params, ...withoutParameters } = receipt()
 
     expect(Schema.decodeUnknownResult(Receipt)(withoutParameters)._tag).toBe("Failure")
+  })
+
+  it("accepts a snapshot receipt carrying the D7 temporal statement", () => {
+    const snapshot = {
+      ...receipt(),
+      temporal: {
+        perspective: "recorded-time",
+        snapshotId: "snapshot-a",
+        watermark: "COMMITTED",
+        coverage: { revisionsCovered: 1, scopeRevisions: 1, uncommitted: 0 },
+        caps: { topK: 25, maxLen: 2, unionCap: 120, armCap: 60 },
+        stats: { snapshotId: "snapshot-a", totalClaims: 4 },
+        completeness: {
+          complete: true,
+          timedOutArms: [],
+          unionDropped: 0,
+          slotMateCapped: false,
+          perspectiveFiltered: 0
+        }
+      }
+    }
+
+    expect(Schema.decodeUnknownResult(Receipt)(snapshot)).toMatchObject({ _tag: "Success" })
   })
 })

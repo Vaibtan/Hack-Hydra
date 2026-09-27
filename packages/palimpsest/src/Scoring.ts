@@ -1,4 +1,5 @@
 import type { ClaimFields, ReachedRow } from "./Rows.js"
+import type { ClaimProvenance } from "./QueryContext.js"
 
 export interface ReachedClaim extends ClaimFields {
   readonly anchors: ReadonlyArray<string>
@@ -7,6 +8,14 @@ export interface ReachedClaim extends ClaimFields {
   readonly score: number
   /** Shortest path length that reached it: 1 direct, 2 through an Entity. */
   readonly hops: number
+  /**
+   * Stable citation id. Legacy candidates omit it and fall back to the claim
+   * key's tail; snapshot candidates always carry one because snapshot keys
+   * share digest tails across commits.
+   */
+  readonly id?: string
+  /** Present on snapshot candidates only; validated at every snapshot boundary. */
+  readonly provenance?: ClaimProvenance
 }
 
 export const idf = (df: number, totalClaims: number): number =>
@@ -50,10 +59,11 @@ export const beforeAsOf = <A extends { readonly sessionOrd: number }>(
 ): ReadonlyArray<A> =>
   asOf === undefined ? claims : claims.filter((claim) => claim.sessionOrd <= asOf)
 
-/** `A1`/`A2` are structural; the other two are the pack's. The reader's `NOT_IN_MEMORY` is an answer, not a verdict. */
+/** `A1`/`A2` are structural; `INCOMPLETE_MEMORY` is a degraded search that must never read as an absence; the other two are the pack's. The reader's `NOT_IN_MEMORY` is an answer, not a verdict. */
 export type AbstentionReason =
   | "A1_no_anchors"
   | "A2_no_convergence"
+  | "INCOMPLETE_MEMORY"
   | "INSUFFICIENT_EVIDENCE"
   | "CONTRADICTED_PREMISE"
 

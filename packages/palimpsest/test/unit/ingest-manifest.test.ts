@@ -548,3 +548,74 @@ describe("IngestManifest", () => {
     }
   })
 })
+
+describe("revision watermark timestamps", () => {
+  const STAGES = [
+    ["RECEIVED", "SOURCE_DURABLE"],
+    ["SOURCE_DURABLE", "INDEXED"],
+    ["INDEXED", "ENRICHED"],
+    ["ENRICHED", "CONSOLIDATED"],
+    ["CONSOLIDATED", "COMMITTED"]
+  ] as const
+
+  it("exposes source acceptance time on every revision", async () => {
+    const before = Date.now()
+    const result = await run(
+      Effect.gen(function* () {
+        const manifest = yield* IngestManifest
+        return yield* manifest.begin(baseRevision)
+      })
+    )
+
+    expect(result.revision.acceptedAtMs).toBeGreaterThanOrEqual(before)
+    expect(result.revision.acceptedAtMs).toBeLessThanOrEqual(Date.now())
+    expect(result.revision.reachedAtMs.RECEIVED).toBe(result.revision.acceptedAtMs)
+  })
+
+  it("stamps each lifecycle watermark exactly once as the revision advances", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const manifest = yield* IngestManifest
+        let revision = (yield* manifest.begin(baseRevision)).revision
+        const afterDurable = yield* manifest.advance({ revision, from: "RECEIVED", to: "SOURCE_DURABLE" })
+        revision = afterDurable
+        for (const [from, to] of STAGES.slice(1)) {
+          revision = yield* manifest.advance({ revision, from, to })
+        }
+        const reread = yield* manifest.begin(baseRevision)
+        return { afterDurable, committed: revision, reread: reread.revision }
+      })
+    )
+
+    expect(result.afterDurable.reachedAtMs.SOURCE_DURABLE).toBeGreaterThanOrEqual(
+      result.afterDurable.reachedAtMs.RECEIVED!
+    )
+    expect(result.afterDurable.reachedAtMs.INDEXED).toBeNull()
+    const stamps = result.committed.reachedAtMs
+    const ordered = [stamps.RECEIVED, stamps.SOURCE_DURABLE, stamps.INDEXED, stamps.ENRICHED, stamps.CONSOLIDATED, stamps.COMMITTED]
+    expect(ordered.every((stamp) => stamp !== null)).toBe(true)
+    expect([...ordered].sort((a, b) => a! - b!)).toEqual(ordered)
+    expect(result.reread.reachedAtMs).toEqual(stamps)
+  })
+
+  it("measures freshness from source acceptance through each watermark", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const manifest = yield* IngestManifest
+        let revision = (yield* manifest.begin(baseRevision)).revision
+        for (const [from, to] of STAGES) {
+          revision = yield* manifest.advance({ revision, from, to })
+        }
+        return revision
+      })
+    )
+
+    const accepted = result.acceptedAtMs
+    const stages = ["RECEIVED", "SOURCE_DURABLE", "INDEXED", "ENRICHED", "CONSOLIDATED", "COMMITTED"] as const
+    const lags = stages.map((stage) => result.reachedAtMs[stage]! - accepted)
+    expect(lags.every((lag) => lag >= 0)).toBe(true)
+    expect(result.reachedAtMs.COMMITTED! - accepted).toBeGreaterThanOrEqual(
+      result.reachedAtMs.SOURCE_DURABLE! - accepted
+    )
+  })
+})

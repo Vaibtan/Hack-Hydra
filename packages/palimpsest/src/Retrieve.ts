@@ -1,7 +1,6 @@
-import { HydraClient, type HydraError } from "@palimpsest/hydra"
 import type { Llm } from "@palimpsest/llm"
 import { Context, Effect, Layer } from "effect"
-import { gather } from "./Gather.js"
+import { IngestManifest, type IngestManifestError } from "./IngestManifest.js"
 import {
   abstentionReason,
   determinismHash,
@@ -11,52 +10,63 @@ import {
   type AskOptions,
   type AskResult
 } from "./Plan.js"
-import { applySelection, enforceSelection, select, shortId } from "./Select.js"
+import {
+  resolveQueryContext,
+  type ActiveSnapshotCorrupt,
+  type MemoryScopeNotFound,
+  type NoActiveSnapshot,
+  type QueryContext,
+  type QueryPrincipal
+} from "./QueryContext.js"
 import { applyAsOf, orderEvidence } from "./Scoring.js"
-import { Supersede } from "./Supersede.js"
-import { readUserStats } from "./User.js"
+import { applySelection, candidateId, enforceSelection, select } from "./Select.js"
+import { SnapshotSearch, type SnapshotReadError } from "./SnapshotArms.js"
+
+/** An ask result bound to the snapshot that produced it; the reader reuses the binding. */
+export interface SnapshotAskResult extends AskResult {
+  readonly query: QueryContext
+}
+
+export type SnapshotAskError =
+  | SnapshotReadError
+  | NoActiveSnapshot
+  | MemoryScopeNotFound
+  | ActiveSnapshotCorrupt
+  | IngestManifestError
 
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
-  const supersede = yield* Supersede
+  const manifest = yield* IngestManifest
+  const search = yield* SnapshotSearch
 
-  /** The idf denominator, memoised per uid; `forgetUser` drops it after a live ingest. */
-  const claimTotals = new Map<string, number>()
-
-  const totalClaims = (uid: string): Effect.Effect<number, HydraError> => {
-    const memoised = claimTotals.get(uid)
-    if (memoised !== undefined) return Effect.succeed(memoised)
-    return readUserStats(hydra, uid).pipe(
-      Effect.flatMap((stats) =>
-        stats._tag === "Some"
-          ? Effect.sync(() => {
-              claimTotals.set(uid, stats.value.claims)
-              return stats.value.claims
-            })
-          : Effect.die(
-              new Error(
-                `user ${uid} has no User vertex — ingest it, or run ` +
-                  `\`pnpm backfill-user\` if it was ingested before the vertex existed`
-              )
-            )
-      )
-    )
-  }
-
-  const forgetUser = (uid: string): Effect.Effect<void> =>
-    Effect.sync(() => {
-      claimTotals.delete(uid)
-    })
-
-  /** Understand, gather the arms, plan, select, label as-of. */
+  /** Bind one request to its snapshot, then understand, gather, plan, select, label as-of. */
   const ask = (
-    uid: string,
+    principal: QueryPrincipal,
+    requestedUid: string,
     question: string,
     options: AskOptions = {}
-  ): Effect.Effect<AskResult, HydraError, Llm> =>
+  ): Effect.Effect<SnapshotAskResult, SnapshotAskError, Llm> =>
     Effect.gen(function* () {
-      const gathered = yield* gather(hydra, supersede, totalClaims, uid, question, options)
-      const planned = planFromArms(gathered)
+      const query = yield* Effect.provideService(
+        resolveQueryContext({
+          principal,
+          requestedUid,
+          ...(options.perspective !== undefined && { perspective: options.perspective }),
+          ...(options.asOf !== undefined && { asOf: options.asOf })
+        }),
+        IngestManifest,
+        manifest
+      )
+      const gathered = yield* search.gather(query, question, options)
+      const planned = planFromArms({
+        ...gathered,
+        temporal: {
+          perspective: query.perspective,
+          snapshotId: query.snapshot.id,
+          coverage: query.coverage,
+          stats: gathered.stats,
+          upstreamFiltered: gathered.perspectiveFiltered
+        }
+      })
       const timings = () => ({
         askMs: Date.now() - gathered.askStarted,
         graphMs: gathered.graphMs,
@@ -64,14 +74,17 @@ const make = Effect.gen(function* () {
       })
 
       if (planned.grounded.length === 0) {
+        const incomplete =
+          planned.plan.temporal !== null && !planned.plan.temporal.completeness.complete
         return {
-          verdict: "ABSENT" as const,
-          reason: abstentionReason(planned),
+          verdict: incomplete ? ("INCOMPLETE" as const) : ("ABSENT" as const),
+          reason: incomplete ? ("INCOMPLETE_MEMORY" as const) : abstentionReason(planned),
           evidence: [],
           receipt: planned.receipt,
           hash: determinismHash([]),
           timings: timings(),
-          plan: { ...planned.plan, protectedKeys: [], selection: emptySelection }
+          plan: { ...planned.plan, protectedKeys: [], selection: emptySelection },
+          query
         }
       }
 
@@ -79,10 +92,7 @@ const make = Effect.gen(function* () {
       const selection =
         gathered.ablations.noSelect === true
           ? {
-              ...enforceSelection(
-                candidates,
-                new Set(candidates.map((candidate) => shortId(candidate.ckey)))
-              ),
+              ...enforceSelection(candidates, new Set(candidates.map(candidateId))),
               reasons: {},
               cached: true
             }
@@ -97,7 +107,7 @@ const make = Effect.gen(function* () {
             )
       const applied = applySelection(candidates, selection)
       const evidence = orderEvidence(
-        applyAsOf(applied.kept, gathered.edges, options.asOf),
+        applyAsOf(applied.kept, gathered.edges, gathered.asOf),
         gathered.historical
       )
 
@@ -114,11 +124,12 @@ const make = Effect.gen(function* () {
             .filter((candidate) => candidate.kind === "probe")
             .map((candidate) => candidate.ckey),
           selection: selectionRow(applied, selection.reasons)
-        }
+        },
+        query
       }
     })
 
-  return { ask, totalClaims, forgetUser } as const
+  return { ask } as const
 })
 
 export type Retrieve = Effect.Success<typeof make>

@@ -1,7 +1,8 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { Effect, Layer } from "effect"
 import { beforeAll, describe, expect, it } from "vitest"
-import { HydraClient, vertexId } from "../../src/index.js"
+import { HydraClient } from "../../src/Client.js"
+import { vertexId } from "../../src/Ids.js"
 
 const UID = "probe-byid"
 const ROWS = 50_000

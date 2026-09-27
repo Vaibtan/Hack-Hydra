@@ -1,24 +1,29 @@
 import type { DatasetSession } from "@palimpsest/dataset"
 import {
-  CurrentHydraBookmark,
   edgeId,
-  FULL_KEY_PROPERTY,
-  HydraClient,
   vertexId,
-  type HydraPath,
-  type MsPathsConfig,
-  type RelRow,
-  type Row,
-  type Scalar,
-  type VertexRow
+  type DiscoveryInput,
+  type EdgeWrite,
+  type HydraMemory as HydraMemoryService,
+  type MemoryNode,
+  type MemoryPath,
+  type PropertyValue,
+  type VertexWrite
 } from "@palimpsest/hydra"
+import {
+  CurrentHydraBookmark,
+  describeExecutionPlan,
+  makeExecutionPlan,
+  renderMsPathsQuery,
+  type Scalar
+} from "@palimpsest/hydra/testing"
 import { Effect, Option, Result } from "effect"
 import { behaviorFake } from "./BehaviorFake.js"
 import { planSourceTranscriptWrite } from "../src/SourceTranscript.js"
 import type { SourceRevision } from "../src/IngestManifest.js"
 
 // ---------------------------------------------------------------------------
-// In-memory Hydra double honoring the client's merge semantics.
+// In-memory Hydra double honoring the memory service's commit semantics.
 // ---------------------------------------------------------------------------
 
 export interface StoredVertex {
@@ -39,8 +44,8 @@ export const relIdentity = (srcKey: string, type: string, dstKey: string): strin
 export const makeHydraMemory = () => {
   const vertices = new Map<string, StoredVertex>()
   const relations = new Map<string, StoredRelation>()
-  const calls = { batchMerge: 0, batchRel: 0 }
-  /** Tamper hook fired inside msPaths — verification's first read after writes. */
+  const calls = { commitWrites: 0 }
+  /** Tamper hook fired inside discoverPaths — verification's first read after writes. */
   let onRead: (() => void) | undefined
 
   const merge = (label: string, key: string, properties: Readonly<Record<string, Scalar>>): void => {
@@ -48,43 +53,60 @@ export const makeHydraMemory = () => {
     vertices.set(key, { label, properties: { ...existing?.properties, ...properties } })
   }
 
-  const node = (key: string) => {
+  const node = (key: string): MemoryNode | undefined => {
     const vertex = vertices.get(key)
     if (vertex === undefined) return undefined
     return {
       id: vertexId(key),
+      key,
       labels: [vertex.label],
-      properties: { ...vertex.properties, [FULL_KEY_PROPERTY]: key }
+      properties: { ...vertex.properties }
     }
   }
 
-  const client = behaviorFake<HydraClient>({
-    batchMerge: (label: string, rows: ReadonlyArray<VertexRow>) =>
+  const commitVertices = (rows: ReadonlyArray<VertexWrite>): void => {
+    for (const row of rows) merge(row.label, row.key, row.properties)
+  }
+
+  const commitEdges = (rows: ReadonlyArray<EdgeWrite>): void => {
+    for (const row of rows) {
+      relations.set(relIdentity(row.srcKey, row.type, row.dstKey), {
+        type: row.type,
+        srcKey: row.srcKey,
+        dstKey: row.dstKey,
+        properties: { ...row.properties }
+      })
+    }
+  }
+
+  const client = behaviorFake<HydraMemoryService>({
+    commitWrites: (input: {
+      readonly vertices?: ReadonlyArray<VertexWrite>
+      readonly edges?: ReadonlyArray<EdgeWrite>
+    }) =>
       Effect.sync(() => {
-        calls.batchMerge++
-        for (const row of rows) merge(label, row.key, row.properties)
-        return rows.length
-      }),
-    batchRel: (type: string, rows: ReadonlyArray<RelRow>) =>
-      Effect.sync(() => {
-        calls.batchRel++
-        for (const row of rows) {
-          relations.set(relIdentity(row.srcKey, type, row.dstKey), {
-            type,
-            srcKey: row.srcKey,
-            dstKey: row.dstKey,
-            properties: { ...row.properties }
-          })
+        calls.commitWrites++
+        commitVertices(input.vertices ?? [])
+        commitEdges(input.edges ?? [])
+        return {
+          vertices: input.vertices?.length ?? 0,
+          edges: input.edges?.length ?? 0
         }
-        return rows.length
       }),
-    getById: (label: string, key: string, properties: ReadonlyArray<string>) =>
+    resolveNode: (lookup: { readonly label: string; readonly key: string; readonly properties: ReadonlyArray<string> }) =>
       Effect.sync(() => {
-        const vertex = vertices.get(key)
-        if (vertex === undefined || vertex.label !== label) return Option.none<Row>()
-        const row: Row = { [FULL_KEY_PROPERTY]: key }
-        for (const property of properties) row[property] = vertex.properties[property] ?? null
-        return Option.some(row)
+        const vertex = vertices.get(lookup.key)
+        if (vertex === undefined || vertex.label !== lookup.label) return Option.none<MemoryNode>()
+        const projected = lookup.properties.flatMap((property) => {
+          const value = vertex.properties[property]
+          return value === undefined ? [] : [[property, value] as const]
+        })
+        return Option.some({
+          id: vertexId(lookup.key),
+          key: lookup.key,
+          labels: [lookup.label],
+          properties: Object.fromEntries(projected)
+        })
       }),
     readGraphIdentities: (kind: "relationship" | "vertex", numericId: number) =>
       Effect.sync(() => {
@@ -95,26 +117,44 @@ export const makeHydraMemory = () => {
           .filter((relation) => edgeId(relation.srcKey, relation.type, relation.dstKey) === numericId)
           .map((relation) => relIdentity(relation.srcKey, relation.type, relation.dstKey))
       }),
-    msPaths: (config: MsPathsConfig) =>
+    scanKeys: (scan: {
+      readonly label: string
+      readonly keyProperty: string
+      readonly filterProperty: string
+      readonly filterValue: PropertyValue
+    }) =>
       Effect.sync(() => {
+        const keys: Array<string> = []
+        for (const vertex of vertices.values()) {
+          if (vertex.label !== scan.label) continue
+          if (vertex.properties[scan.filterProperty] !== scan.filterValue) continue
+          keys.push(String(vertex.properties[scan.keyProperty] ?? ""))
+        }
+        return keys
+      }),
+    discoverPaths: (input: DiscoveryInput) =>
+      Effect.sync(() => {
+        const rendered = renderMsPathsQuery(input)
+        const plan = makeExecutionPlan({ queryText: rendered.query, parameters: rendered.parameters })
+        if (input.sourceValues.length === 0) return { paths: [], plan }
         onRead?.()
-        const paths: Array<HydraPath> = []
-        for (const sourceValue of config.sourceValues) {
+        const paths: Array<MemoryPath> = []
+        for (const sourceValue of input.sourceValues) {
           const entry = [...vertices.entries()].find(
             ([, vertex]) =>
-              vertex.label === config.sourceLabel &&
-              vertex.properties[config.sourceProperty] === sourceValue
+              vertex.label === input.sourceLabel &&
+              vertex.properties[input.sourceProperty] === sourceValue
           )
           if (entry === undefined) continue
           const [sourceKey] = entry
           const sourceNode = node(sourceKey)
           if (sourceNode === undefined) continue
           for (const relation of relations.values()) {
-            if (!config.relTypes.includes(relation.type)) continue
+            if (!input.relTypes.includes(relation.type)) continue
             const outgoing = relation.srcKey === sourceKey
             const incoming = relation.dstKey === sourceKey
-            if (config.relDirection === "outgoing" && !outgoing) continue
-            if (config.relDirection === "incoming" && !incoming) continue
+            if (input.relDirection === "outgoing" && !outgoing) continue
+            if (input.relDirection === "incoming" && !incoming) continue
             if (!outgoing && !incoming) continue
             const otherKey = outgoing ? relation.dstKey : relation.srcKey
             const otherNode = node(otherKey)
@@ -125,24 +165,19 @@ export const makeHydraMemory = () => {
               relationships: [
                 {
                   id: edgeId(relation.srcKey, relation.type, relation.dstKey),
+                  key: relIdentity(relation.srcKey, relation.type, relation.dstKey),
                   type: relation.type,
                   src: vertexId(relation.srcKey),
                   dst: vertexId(relation.dstKey),
-                  properties: {
-                    ...relation.properties,
-                    [FULL_KEY_PROPERTY]: relIdentity(
-                      relation.srcKey,
-                      relation.type,
-                      relation.dstKey
-                    )
-                  }
+                  properties: { ...relation.properties }
                 }
               ]
             })
           }
         }
-        return paths
-      }),
+        return { paths, plan }
+    }),
+    describeExecutionPlan,
     lastBookmark: CurrentHydraBookmark,
     withCausalBookmark: <A, E, R>(
       _bookmark: string | undefined,
@@ -170,12 +205,12 @@ export const writeSourcePlane = (
   revision: SourceRevision,
   session: DatasetSession
 ): void => {
-  const plan = Result.getOrThrow(planSourceTranscriptWrite(revision, session))
-  memory.merge("MemoryScope", plan.scope.key, plan.scope.properties)
-  memory.merge("SourceSession", plan.session.key, plan.session.properties)
-  for (const turn of plan.turns) memory.merge("SourceTurn", turn.key, turn.properties)
-  for (const chunk of plan.chunks) memory.merge("SourceTurnChunk", chunk.key, chunk.properties)
-  for (const relation of plan.relations) {
+  const write = Result.getOrThrow(planSourceTranscriptWrite(revision, session))
+  memory.merge("MemoryScope", write.scope.key, write.scope.properties)
+  memory.merge("SourceSession", write.session.key, write.session.properties)
+  for (const turn of write.turns) memory.merge("SourceTurn", turn.key, turn.properties)
+  for (const chunk of write.chunks) memory.merge("SourceTurnChunk", chunk.key, chunk.properties)
+  for (const relation of write.relations) {
     memory.relations.set(relIdentity(relation.srcKey, relation.type, relation.dstKey), {
       type: relation.type,
       srcKey: relation.srcKey,

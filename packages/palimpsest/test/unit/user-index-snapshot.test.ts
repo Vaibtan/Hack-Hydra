@@ -743,6 +743,8 @@ describe("user index snapshot manifest", () => {
         DROP TABLE active_index_snapshots;
         DROP TABLE user_index_snapshot_revisions;
         DROP TABLE user_index_snapshots;
+        DROP TABLE supersession_chain_decisions;
+        DROP TABLE supersession_decisions;
         PRAGMA user_version = 9;
       `)
       downgraded.close()
@@ -775,6 +777,93 @@ describe("user index snapshot manifest", () => {
         expect(outcome.active.record.state).toBe("ACTIVE")
         const versionRow = migrated.prepare("PRAGMA user_version").get()
         expect(versionRow).toMatchObject({ user_version: MANIFEST_SCHEMA_VERSION })
+        expect(
+          migrated
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'supersession_chain_decisions'"
+            )
+            .get()
+        ).toMatchObject({ name: "supersession_chain_decisions" })
+      } finally {
+        migrated.close()
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("migrates a version-11 manifest by adding durable per-chain decisions", () => {
+    const directory = mkdtempSync(join(tmpdir(), "palimpsest-chain-migration-"))
+    const path = join(directory, "manifest.sqlite")
+    try {
+      const created = createDatabase(path)
+      created.close()
+      const downgraded = new DatabaseSync(path)
+      downgraded.exec(`
+        DROP TABLE supersession_chain_decisions;
+        PRAGMA user_version = 11;
+      `)
+      downgraded.close()
+
+      const migrated = createDatabase(path)
+      try {
+        expect(migrated.prepare("PRAGMA user_version").get()).toMatchObject({
+          user_version: MANIFEST_SCHEMA_VERSION
+        })
+        expect(
+          migrated
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'supersession_chain_decisions'"
+            )
+            .get()
+        ).toMatchObject({ name: "supersession_chain_decisions" })
+      } finally {
+        migrated.close()
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("migrates a version-12 manifest by adding watermark columns with backfill", () => {
+    const directory = mkdtempSync(join(tmpdir(), "palimpsest-watermark-migration-"))
+    const path = join(directory, "manifest.sqlite")
+    try {
+      const created = createDatabase(path)
+      created.close()
+      const downgraded = new DatabaseSync(path)
+      downgraded.exec(`
+        INSERT INTO source_revisions (
+          revision_key, tenant, uid, logical_session_id, source_digest, source_bytes,
+          extraction_generation, session_ordinal, commit_id, state, manifest_version,
+          created_at_ms, updated_at_ms
+        ) VALUES (
+          'rk-1', 'tenant-a', 'user-a', 'session-a', '${"a".repeat(64)}', 100,
+          'gen-1', 1, 'commit-1', 'COMMITTED', 1,
+          1700000000000, 1700000060000
+        );
+        ALTER TABLE source_revisions DROP COLUMN received_at_ms;
+        ALTER TABLE source_revisions DROP COLUMN source_durable_at_ms;
+        ALTER TABLE source_revisions DROP COLUMN indexed_at_ms;
+        ALTER TABLE source_revisions DROP COLUMN enriched_at_ms;
+        ALTER TABLE source_revisions DROP COLUMN consolidated_at_ms;
+        ALTER TABLE source_revisions DROP COLUMN committed_at_ms;
+        PRAGMA user_version = 12;
+      `)
+      downgraded.close()
+
+      const migrated = createDatabase(path)
+      try {
+        expect(migrated.prepare("PRAGMA user_version").get()).toMatchObject({
+          user_version: MANIFEST_SCHEMA_VERSION
+        })
+        expect(
+          migrated.prepare(
+            `SELECT received_at_ms, source_durable_at_ms, indexed_at_ms, enriched_at_ms,
+                    consolidated_at_ms, committed_at_ms
+               FROM source_revisions WHERE commit_id = 'commit-1'`
+          ).get()
+        ).toMatchObject({ received_at_ms: 1700000000000, committed_at_ms: 1700000060000 })
       } finally {
         migrated.close()
       }

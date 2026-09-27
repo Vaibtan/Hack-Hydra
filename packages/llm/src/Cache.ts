@@ -6,6 +6,7 @@ import { Result, Schema } from "effect"
 
 const CachedCallSchema = Schema.Struct({
   model: Schema.String,
+  resolvedModel: Schema.optionalKey(Schema.String),
   value: Schema.Unknown,
   inputTokens: Schema.Number,
   outputTokens: Schema.Number,
@@ -47,7 +48,10 @@ export const defaultCacheDir = (): string => {
 }
 
 export interface CachedCall {
+  /** Requested provider model identifier used in the cache key. */
   readonly model: string
+  /** Provider-returned model identifier, absent on historical entries that did not record it. */
+  readonly resolvedModel?: string
   /** The encoded (wire) form of the structured output, so decoding stays honest. */
   readonly value: unknown
   readonly inputTokens: number

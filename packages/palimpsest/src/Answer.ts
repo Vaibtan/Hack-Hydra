@@ -11,8 +11,9 @@ import type {
   RetrievalPlan
 } from "./Plan.js"
 import type { Granularity, ReadAnswer, ReadOptions, Reader } from "./Reader.js"
-import type { Retrieve } from "./Retrieve.js"
-import type { AbstentionReason } from "./Scoring.js"
+import type { QueryPrincipal } from "./QueryContext.js"
+import type { Retrieve, SnapshotAskError } from "./Retrieve.js"
+import type { AbstentionReason, AsOfLabelled } from "./Scoring.js"
 import {
   abstains,
   judgeSufficiency,
@@ -29,9 +30,9 @@ export interface AnsweredAsk extends AskResult {
 
 export interface V2Answer {
   readonly ask: AnsweredAsk
-  /** The final read; `null` when the verdict was `ABSENT` before reading. */
+  /** The final read; `null` when the verdict was `ABSENT` or `INCOMPLETE` before reading. */
   readonly read: ReadAnswer | null
-  readonly verdict: "ANSWER" | "ABSENT"
+  readonly verdict: "ANSWER" | "ABSENT" | "INCOMPLETE"
   readonly reason: AbstentionReason | null
   readonly sufficiency: SufficiencyReport
   readonly secondPass: boolean
@@ -48,8 +49,27 @@ export interface AnswerOptions extends AskOptions {
   readonly noReaderRoute?: boolean
 }
 
-export type AnswerRetrieve = Pick<Retrieve, "ask">
-export type AnswerReader = Pick<Reader, "read">
+/** Legacy lane retrieve shape: the frozen benchmark lane and migration adapter. */
+export interface AnswerRetrieve<E = HydraError> {
+  readonly ask: (
+    uid: string,
+    question: string,
+    options?: AskOptions
+  ) => Effect.Effect<AskResult, E, Llm>
+}
+/** Legacy lane reader shape: the frozen benchmark lane and migration adapter. */
+export interface AnswerReader {
+  readonly read: (
+    question: string,
+    questionDate: string,
+    evidence: ReadonlyArray<AsOfLabelled>,
+    options: ReadOptions
+  ) => Effect.Effect<ReadAnswer, HydraError, Llm>
+}
+
+/** Production snapshot lane shapes, bound to the services. */
+export type SnapshotAnswerRetrieve = Pick<Retrieve, "ask">
+export type SnapshotAnswerReader = Pick<Reader, "read">
 
 const readOptionsFor = (
   route: Route,
@@ -103,7 +123,7 @@ interface Outcome {
   readonly read: ReadAnswer | null
   readonly report: SufficiencyReport
   readonly secondPass: boolean
-  readonly verdict: "ANSWER" | "ABSENT"
+  readonly verdict: "ANSWER" | "ABSENT" | "INCOMPLETE"
   readonly reason: AbstentionReason | null
 }
 
@@ -135,14 +155,99 @@ export const unreadAnswer = (ask: AskResult): V2Answer =>
     reason: ask.reason
   })
 
-export const answerV2 = (
-  retrieve: AnswerRetrieve,
+/**
+ * Production answer loop: each pass binds its own snapshot at ask time and
+ * hydrates strictly through it. A mid-request activation can move the second
+ * pass to the successor; it can never mix snapshots within a pass.
+ */
+export const answerInSnapshot = (
+  retrieve: SnapshotAnswerRetrieve,
+  reader: SnapshotAnswerReader,
+  principal: QueryPrincipal,
+  requestedUid: string,
+  question: string,
+  questionDate: string,
+  options: AnswerOptions = {}
+): Effect.Effect<V2Answer, SnapshotAskError, Llm> =>
+  Effect.gen(function* () {
+    const profile = options.profile ?? "full"
+    const askOptions = { ...options, questionDate }
+
+    const first = yield* retrieve.ask(principal, requestedUid, question, askOptions)
+    if (first.verdict !== "ANSWER") return unreadAnswer(first)
+
+    const route = first.plan.route
+    const firstRead = yield* reader.read(
+      first.query,
+      question,
+      questionDate,
+      first.evidence,
+      readOptionsFor(route, first.plan, options)
+    )
+    const answer = (
+      ask: AskResult,
+      read: ReadAnswer,
+      report: SufficiencyReport,
+      secondPass: boolean
+    ): V2Answer =>
+      assemble({ ask, read, report, secondPass, verdict: "ANSWER", reason: null })
+    const contradicted = (
+      ask: AskResult,
+      read: ReadAnswer,
+      report: SufficiencyReport,
+      secondPass: boolean
+    ): V2Answer =>
+      assemble({ ask, read, report, secondPass, verdict: "ABSENT", reason: "CONTRADICTED_PREMISE" })
+
+    if (options.noSufficiency === true || !runsOn(route, firstRead.spans, profile)) {
+      return answer(first, firstRead, skipped(), false)
+    }
+
+    const judged = yield* judgeSufficiency(question, questionDate, route, firstRead.spans)
+    if (premiseContradiction(judged, firstRead.spans) !== null) {
+      return contradicted(first, firstRead, judged, false)
+    }
+    if (judged.tier !== "PARTIAL" || judged.missingTerms.length === 0) {
+      return answer(first, firstRead, judged, false)
+    }
+
+    const second = yield* retrieve.ask(principal, requestedUid, question, {
+      ...askOptions,
+      extraTerms: judged.missingTerms
+    })
+    // A degraded refinement hunt is abandoned like an empty one: the grounded
+    // first answer stands, and no absence is reported from the failed hunt.
+    if (second.verdict !== "ANSWER") return answer(first, firstRead, judged, true)
+
+    const secondRead = yield* reader.read(
+      second.query,
+      question,
+      questionDate,
+      second.evidence,
+      readOptionsFor(route, second.plan, options)
+    )
+    const rejudged = yield* judgeSufficiency(question, questionDate, route, secondRead.spans)
+    if (premiseContradiction(rejudged, secondRead.spans) !== null) {
+      return contradicted(second, secondRead, rejudged, true)
+    }
+    return assemble({
+      ask: second,
+      read: secondRead,
+      report: rejudged,
+      secondPass: true,
+      verdict: abstains(rejudged) ? "ABSENT" : "ANSWER",
+      reason: abstains(rejudged) ? "INSUFFICIENT_EVIDENCE" : null
+    })
+  })
+
+export const answerV2 = <E>(
+  retrieve: AnswerRetrieve<E>,
   reader: AnswerReader,
   uid: string,
   question: string,
   questionDate: string,
   options: AnswerOptions = {}
-): Effect.Effect<V2Answer, HydraError, Llm> =>
+): Effect.Effect<V2Answer, HydraError | E, Llm> =>
   Effect.gen(function* () {
     const profile = options.profile ?? "full"
     const askOptions = { ...options, questionDate }

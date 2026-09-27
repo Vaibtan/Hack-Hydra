@@ -1,7 +1,9 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { Effect, Layer, Result, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { HydraClient, vertexId, type JsonObject } from "../../src/index.js"
+import { HydraClient } from "../../src/Client.js"
+import { vertexId } from "../../src/Ids.js"
+import type { JsonObject } from "../../src/JsonValue.js"
 
 const UID = "probe-idem"
 const baseUrl = process.env.HYDRA_URL ?? "http://127.0.0.1:8443"

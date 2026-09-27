@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { loadDataset, parseDatasetName } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import { Llm, LlmLive, loadDotEnv } from "@palimpsest/llm"
 import { ClaimGraph, Ingest, Supersede, Transcript, readUserStats } from "@palimpsest/palimpsest"
 import { Effect, Layer, Option, Schema } from "effect"
@@ -44,7 +44,7 @@ const AppLive = Ingest.layer.pipe(
   Layer.provideMerge(Transcript.layer),
   Layer.provideMerge(ClaimGraph.layer),
   Layer.provideMerge(Supersede.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -52,7 +52,7 @@ const AppLive = Ingest.layer.pipe(
 const program = Effect.gen(function* () {
   const ingest = yield* Ingest
   const llm = yield* Llm
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const population = benchmarkSlice(questions, sliceSize)
   let slice = population

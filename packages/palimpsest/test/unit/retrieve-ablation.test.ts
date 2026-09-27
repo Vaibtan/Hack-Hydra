@@ -1,25 +1,29 @@
-import { HydraClient, type HydraPath, type MsPathsConfig } from "@palimpsest/hydra"
+import { HydraMemory, type DiscoveryInput, type MemoryPath, type NodeLookup } from "@palimpsest/hydra"
+import { describeExecutionPlan, makeExecutionPlan } from "@palimpsest/hydra/testing"
 import { Llm } from "@palimpsest/llm"
 import { Effect, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import { claimKind, slotKey, userKey } from "../../src/Keys.js"
-import { Retrieve } from "../../src/Retrieve.js"
+import { LegacyG3Adapter } from "../../src/LegacyG3Adapter.js"
 import { shortId } from "../../src/Select.js"
 import { Supersede } from "../../src/Supersede.js"
+import { Transcript } from "../../src/Transcript.js"
 import { behaviorFake, runWithBehaviorFakes } from "../BehaviorFake.js"
 
-type Node = HydraPath["nodes"][number]
+type Node = MemoryPath["nodes"][number]
 
 const node = (id: number, label: string, properties: Node["properties"]): Node => ({
   id,
+  key: `${label}:${id}`,
   labels: [label],
   properties
 })
 
-const pathOf = (nodes: ReadonlyArray<Node>, types: ReadonlyArray<string>): HydraPath => ({
+const pathOf = (nodes: ReadonlyArray<Node>, types: ReadonlyArray<string>): MemoryPath => ({
   nodes,
   relationships: types.map((type, i) => ({
     id: 100 + i,
+    key: `${nodes[i]?.key ?? ""}|${type}|${nodes[i + 1]?.key ?? ""}`,
     type,
     src: nodes[i]?.id ?? 0,
     dst: nodes[i + 1]?.id ?? 0,
@@ -48,7 +52,7 @@ const claimNode = (id: number, ckey: string, turnIdx: number): Node =>
   })
 
 /** Two anchors both reach c1 and c2; a probe on `me|residence` reaches p1, which no anchor does. */
-const graph = (config: MsPathsConfig): ReadonlyArray<HydraPath> => {
+const graph = (config: DiscoveryInput): ReadonlyArray<MemoryPath> => {
   if (config.sourceLabel === "Token") {
     return config.sourceValues.flatMap((tkey, i) => {
       const stem = tkey.slice(tkey.lastIndexOf("|") + 1)
@@ -96,10 +100,17 @@ const ask = async (ablations: { readonly noSelect?: boolean }) => {
     usage: Effect.succeed({ inputTokens: 0, outputTokens: 0, calls: 0, cacheHits: 0 }),
     resetUsage: Effect.void
   }))
-  const hydra = Layer.succeed(HydraClient, behaviorFake<HydraClient>({
-    msPaths: (config: MsPathsConfig) => Effect.sync(() => graph(config)),
-    getById: (_label: string, key: string) =>
-      Effect.succeed(key === userKey(UID) ? Option.some({ n_claims: 100 }) : Option.none())
+  const plan = makeExecutionPlan({ queryText: "", parameters: {} })
+  const hydra = Layer.succeed(HydraMemory, behaviorFake<HydraMemory>({
+    discoverPaths: (config: DiscoveryInput) =>
+      Effect.sync(() => ({ paths: graph(config), plan })),
+    describeExecutionPlan,
+    resolveNode: (lookup: NodeLookup) =>
+      Effect.succeed(
+        lookup.key === userKey(UID)
+          ? Option.some({ id: 1, labels: ["User"], properties: { n_claims: 100 } })
+          : Option.none()
+      )
   }))
   const supersede = Layer.succeed(Supersede, behaviorFake<Supersede>({
     readEdges: () => Effect.succeed(new Map())
@@ -108,13 +119,18 @@ const ask = async (ablations: { readonly noSelect?: boolean }) => {
   const result = await runWithBehaviorFakes(
     Effect.provide(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        return yield* retrieve.ask(UID, "Where do I live?", {
+        const legacy = yield* LegacyG3Adapter
+        return yield* legacy.retrieve.ask(UID, "Where do I live?", {
           questionDate: "2023/05/01 (Mon) 10:00",
           ablations
         })
       }),
-      Retrieve.layer.pipe(Layer.provideMerge(hydra), Layer.provideMerge(supersede), Layer.provideMerge(llm))
+      LegacyG3Adapter.layer.pipe(
+        Layer.provideMerge(hydra),
+        Layer.provideMerge(supersede),
+        Layer.provideMerge(Layer.succeed(Transcript, behaviorFake<Transcript>({}))),
+        Layer.provideMerge(llm)
+      )
     )
   )
   return { result, kinds }

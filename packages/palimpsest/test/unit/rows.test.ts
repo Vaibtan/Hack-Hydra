@@ -1,4 +1,4 @@
-import type { HydraPath } from "@palimpsest/hydra"
+import type { MemoryPath } from "@palimpsest/hydra"
 import { describe, expect, it } from "vitest"
 import {
   chunksByKey,
@@ -12,19 +12,21 @@ import {
   turnChunks
 } from "../../src/Rows.js"
 
-type Node = HydraPath["nodes"][number]
+type Node = MemoryPath["nodes"][number]
 type Properties = Node["properties"]
 
 const node = (id: number, label: string, properties: Properties): Node => ({
   id,
+  key: `${label}:${id}`,
   labels: [label],
   properties
 })
 
-const pathOf = (nodes: ReadonlyArray<Node>, types: ReadonlyArray<string>): HydraPath => ({
+const pathOf = (nodes: ReadonlyArray<Node>, types: ReadonlyArray<string>): MemoryPath => ({
   nodes,
   relationships: types.map((type, i) => ({
     id: 100 + i,
+    key: `${nodes[i]?.key ?? ""}|${type}|${nodes[i + 1]?.key ?? ""}`,
     type,
     src: nodes[i]?.id ?? 0,
     dst: nodes[i + 1]?.id ?? 0,
@@ -101,7 +103,7 @@ describe("reachedRows", () => {
   it.each([
     ["a path that ends where it starts", pathOf([token], [])],
     ["a target with no claim key", pathOf([token, node(3, "Claim", { text: "x" })], ["HITS"])],
-    ["an empty node list", { nodes: [], relationships: [] } satisfies HydraPath]
+    ["an empty node list", { nodes: [], relationships: [] } satisfies MemoryPath]
   ])("skips %s", (_, path) => {
     expect(reachedRows([path])).toEqual([])
   })

@@ -1,21 +1,21 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer } from "effect"
 import { existsSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { answerV2 } from "../../src/Answer.js"
-import { Reader } from "../../src/Reader.js"
-import { Retrieve } from "../../src/Retrieve.js"
+import { LegacyG3Adapter } from "../../src/LegacyG3Adapter.js"
 import { Supersede } from "../../src/Supersede.js"
+import { Transcript } from "../../src/Transcript.js"
 
 const hasDataset = existsSync(datasetPath("s"))
 
-const AppLive = Retrieve.layer.pipe(
-  Layer.provideMerge(Reader.layer),
+const AppLive = LegacyG3Adapter.layer.pipe(
   Layer.provideMerge(Supersede.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(Transcript.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -31,13 +31,12 @@ describe.skipIf(!hasDataset)("as-of trajectory", () => {
   it("replays what the memory believed before, between and after the change", async () => {
     const answers = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        const reader = yield* Reader
+        const legacy = yield* LegacyG3Adapter
         return yield* Effect.forEach(
           [1, 10, 38],
           (asOf) =>
             Effect.gen(function* () {
-              const answered = yield* answerV2(retrieve, reader, UID, QUESTION, DATE, { asOf })
+              const answered = yield* answerV2(legacy.retrieve, legacy.reader, UID, QUESTION, DATE, { asOf })
               if (answered.read === null || answered.verdict === "ABSENT") {
                 return { asOf, answer: "ABSENT", evidence: answered.ask.evidence.length }
               }
@@ -69,8 +68,8 @@ describe.skipIf(!hasDataset)("as-of trajectory", () => {
   it("never shows a claim from a later session in an earlier reading", async () => {
     const evidence = await run(
       Effect.gen(function* () {
-        const retrieve = yield* Retrieve
-        const result = yield* retrieve.ask(UID, QUESTION, { asOf: 10 })
+        const legacy = yield* LegacyG3Adapter
+        const result = yield* legacy.retrieve.ask(UID, QUESTION, { asOf: 10 })
         return result.evidence
       })
     )

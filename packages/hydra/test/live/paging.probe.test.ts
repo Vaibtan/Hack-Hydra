@@ -1,7 +1,7 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { Effect, Layer } from "effect"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { HydraClient } from "../../src/index.js"
+import { HydraClient } from "../../src/Client.js"
 
 const UID = "probe-paging"
 const ROWS = 2_600

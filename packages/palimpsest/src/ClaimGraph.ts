@@ -1,5 +1,5 @@
 import type { DatasetSession } from "@palimpsest/dataset"
-import { HydraClient, type HydraError, type Scalar } from "@palimpsest/hydra"
+import { HydraMemory, type HydraError, type PropertyValue } from "@palimpsest/hydra"
 import { Context, Effect, Layer, Schema } from "effect"
 import { createHash } from "node:crypto"
 import { reconcile, type Reconciled } from "./Canon.js"
@@ -39,7 +39,7 @@ export interface SessionWrite {
 export type { UserStats } from "./User.js"
 
 const make = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
 
   const readEntities = (uid: string): Effect.Effect<ReadonlyArray<ExtractedEntity>, HydraError> =>
     readUserVertices(hydra, uid, "HAS_ENTITY").pipe(
@@ -78,19 +78,17 @@ const make = Effect.gen(function* () {
       )
       const entities = reconciled.entities.filter((entity) => mentioned.has(entity.canon))
 
-      yield* hydra.batchMerge(
-        "Entity",
-        entities.map((entity) => ({
-          key: entityKey(uid, entity.canon),
-          properties: {
-            ekey: entityKey(uid, entity.canon),
-            uid,
-            name: entity.canon,
-            etype: entity.etype,
-            aliases: entity.aliases.join(ALIAS_SEPARATOR)
-          }
-        }))
-      )
+      const entityVertices = entities.map((entity) => ({
+        label: "Entity",
+        key: entityKey(uid, entity.canon),
+        properties: {
+          ekey: entityKey(uid, entity.canon),
+          uid,
+          name: entity.canon,
+          etype: entity.etype,
+          aliases: entity.aliases.join(ALIAS_SEPARATOR)
+        }
+      }))
 
       const written: Array<WrittenClaim> = []
       const claimRows = claims.map((claim) => {
@@ -103,31 +101,29 @@ const make = Effect.gen(function* () {
         return { claim, ckey, skey }
       })
 
-      yield* hydra.batchMerge(
-        "Claim",
-        claimRows.map(({ claim, ckey }) => ({
-          key: ckey,
-          properties: {
-            ckey,
-            kind: claimKind(uid),
-            uid,
-            text: claim.text,
-            speaker: claim.speaker,
-            ctype: claim.ctype,
-            session_ord: session.sessionOrd,
-            t_event: claim.tEvent,
-            t_prec: claim.tPrec,
-            sid: session.sid,
-            turn_idx: claim.span.turnIdx,
-            cs: claim.span.cs,
-            ce: claim.span.ce,
-            source_digest: source.sourceDigest,
-            source_session_id: session.key,
-            session_date: session.date.dateInt,
-            located: claim.located
-          } satisfies Record<string, Scalar>
-        }))
-      )
+      const claimVertices = claimRows.map(({ claim, ckey }) => ({
+        label: "Claim",
+        key: ckey,
+        properties: {
+          ckey,
+          kind: claimKind(uid),
+          uid,
+          text: claim.text,
+          speaker: claim.speaker,
+          ctype: claim.ctype,
+          session_ord: session.sessionOrd,
+          t_event: claim.tEvent,
+          t_prec: claim.tPrec,
+          sid: session.sid,
+          turn_idx: claim.span.turnIdx,
+          cs: claim.span.cs,
+          ce: claim.span.ce,
+          source_digest: source.sourceDigest,
+          source_session_id: session.key,
+          session_date: session.date.dateInt,
+          located: claim.located
+        } satisfies Record<string, PropertyValue>
+      }))
 
       const slots = new Map<string, { entityCanon: string; attr: string }>()
       for (const { claim, skey } of claimRows) {
@@ -135,19 +131,17 @@ const make = Effect.gen(function* () {
         slots.set(skey, { entityCanon: canonOf(claim.slot.entityCanon), attr: claim.slot.attr })
       }
 
-      yield* hydra.batchMerge(
-        "Slot",
-        [...slots.entries()].map(([skey, slot]) => ({
-          key: skey,
-          properties: {
-            skey,
-            uid,
-            entity_ekey: entityKey(uid, slot.entityCanon),
-            entity_name: slot.entityCanon,
-            attr: slot.attr
-          }
-        }))
-      )
+      const slotVertices = [...slots.entries()].map(([skey, slot]) => ({
+        label: "Slot",
+        key: skey,
+        properties: {
+          skey,
+          uid,
+          entity_ekey: entityKey(uid, slot.entityCanon),
+          entity_name: slot.entityCanon,
+          attr: slot.attr
+        }
+      }))
 
       const tokensByClaim = claimRows.map(({ claim, ckey }) => ({
         ckey,
@@ -170,82 +164,75 @@ const make = Effect.gen(function* () {
       for (const { tokens } of tokensByClaim) for (const token of tokens) allTokens.add(token)
       for (const { tokens } of entityTokens) for (const token of tokens) allTokens.add(token)
 
-      yield* hydra.batchMerge(
-        "Token",
-        [...allTokens].map((stem) => ({
-          key: tokenKey(uid, stem),
-          properties: { tkey: tokenKey(uid, stem), uid, stem, df: 0 }
-        }))
-      )
+      const tokenVertices = [...allTokens].map((stem) => ({
+        label: "Token",
+        key: tokenKey(uid, stem),
+        properties: { tkey: tokenKey(uid, stem), uid, stem, df: 0 }
+      }))
 
-      yield* hydra.batchRel(
-        "EVIDENCE",
-        claimRows.map(({ claim, ckey }) => ({
+      const evidenceEdges = claimRows.map(({ claim, ckey }) => ({
+        type: "EVIDENCE",
+        srcLabel: "Claim",
+        srcKey: ckey,
+        dstLabel: "Turn",
+        dstKey: turnKey(uid, session.key, claim.span.turnIdx),
+        properties: { cs: claim.span.cs, ce: claim.span.ce }
+      }))
+
+      const mentionsEdges = [
+        ...new Map(
+          claimRows.flatMap(({ claim, ckey }) =>
+            claim.entities.map((entity) => {
+              const canon = canonOf(entity.canon)
+              return [
+                `${canon} | ${ckey}`,
+                {
+                  type: "MENTIONS",
+                  srcLabel: "Entity",
+                  srcKey: entityKey(uid, canon),
+                  dstLabel: "Claim",
+                  dstKey: ckey
+                }
+              ] as const
+            })
+          )
+        ).values()
+      ]
+
+      const fillsEdges = claimRows
+        .filter(({ skey }) => skey !== null)
+        .map(({ ckey, skey }) => ({
+          type: "FILLS",
           srcLabel: "Claim",
           srcKey: ckey,
-          dstLabel: "Turn",
-          dstKey: turnKey(uid, session.key, claim.span.turnIdx),
-          properties: { cs: claim.span.cs, ce: claim.span.ce }
+          dstLabel: "Slot",
+          dstKey: skey!
+        }))
+
+      const hitsEdges = tokensByClaim.flatMap(({ ckey, tokens }) =>
+        tokens.map((stem) => ({
+          type: "HITS",
+          srcLabel: "Token",
+          srcKey: tokenKey(uid, stem),
+          dstLabel: "Claim",
+          dstKey: ckey
         }))
       )
 
-      yield* hydra.batchRel(
-        "MENTIONS",
-        [
-          ...new Map(
-            claimRows.flatMap(({ claim, ckey }) =>
-              claim.entities.map((entity) => {
-                const canon = canonOf(entity.canon)
-                return [
-                  `${canon} | ${ckey}`,
-                  {
-                    srcLabel: "Entity",
-                    srcKey: entityKey(uid, canon),
-                    dstLabel: "Claim",
-                    dstKey: ckey
-                  }
-                ] as const
-              })
-            )
-          ).values()
-        ]
+      const namesEdges = entityTokens.flatMap(({ canon, tokens }) =>
+        tokens.map((stem) => ({
+          type: "NAMES",
+          srcLabel: "Token",
+          srcKey: tokenKey(uid, stem),
+          dstLabel: "Entity",
+          dstKey: entityKey(uid, canon)
+        }))
       )
 
-      yield* hydra.batchRel(
-        "FILLS",
-        claimRows
-          .filter(({ skey }) => skey !== null)
-          .map(({ ckey, skey }) => ({
-            srcLabel: "Claim",
-            srcKey: ckey,
-            dstLabel: "Slot",
-            dstKey: skey!
-          }))
-      )
-
-      yield* hydra.batchRel(
-        "HITS",
-        tokensByClaim.flatMap(({ ckey, tokens }) =>
-          tokens.map((stem) => ({
-            srcLabel: "Token",
-            srcKey: tokenKey(uid, stem),
-            dstLabel: "Claim",
-            dstKey: ckey
-          }))
-        )
-      )
-
-      yield* hydra.batchRel(
-        "NAMES",
-        entityTokens.flatMap(({ canon, tokens }) =>
-          tokens.map((stem) => ({
-            srcLabel: "Token",
-            srcKey: tokenKey(uid, stem),
-            dstLabel: "Entity",
-            dstKey: entityKey(uid, canon)
-          }))
-        )
-      )
+      yield* hydra.commitWrites({
+        vertices: [...entityVertices, ...claimVertices, ...slotVertices, ...tokenVertices],
+        edges: [...evidenceEdges, ...mentionsEdges, ...fillsEdges, ...hitsEdges, ...namesEdges]
+      })
 
       yield* linkToUser(hydra, uid, "HAS_ENTITY", "Entity", entities.map((entity) => entityKey(uid, entity.canon)))
       yield* linkToUser(hydra, uid, "HAS_SLOT", "Slot", [...slots.keys()])
@@ -269,30 +256,30 @@ const make = Effect.gen(function* () {
     }
   ): Effect.Effect<void, HydraError> =>
     Effect.gen(function* () {
-      yield* hydra.batchMerge(
-        "Token",
-        [...counts.tokenDf].map(([stem, df]) => ({
-          key: tokenKey(uid, stem),
-          properties: { tkey: tokenKey(uid, stem), uid, stem, df }
-        }))
-      )
-      yield* hydra.batchMerge(
-        "Slot",
-        [...counts.slotClaims].map(([skey, n]) => {
-          const slot = counts.slotEntities.get(skey)
-          return {
-            key: skey,
-            properties: {
-              skey,
-              uid,
-              entity_ekey: entityKey(uid, slot?.entityCanon ?? ""),
-              entity_name: slot?.entityCanon ?? "",
-              attr: slot?.attr ?? "",
-              n_claims: n
+      yield* hydra.commitWrites({
+        vertices: [
+          ...[...counts.tokenDf].map(([stem, df]) => ({
+            label: "Token",
+            key: tokenKey(uid, stem),
+            properties: { tkey: tokenKey(uid, stem), uid, stem, df }
+          })),
+          ...[...counts.slotClaims].map(([skey, n]) => {
+            const slot = counts.slotEntities.get(skey)
+            return {
+              label: "Slot",
+              key: skey,
+              properties: {
+                skey,
+                uid,
+                entity_ekey: entityKey(uid, slot?.entityCanon ?? ""),
+                entity_name: slot?.entityCanon ?? "",
+                attr: slot?.attr ?? "",
+                n_claims: n
+              }
             }
-          }
-        })
-      )
+          })
+        ]
+      })
     })
 
   const readTokenDf = (
@@ -302,7 +289,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const df = new Map<string, number>()
       if (stems.length === 0) return df
-      const paths = yield* hydra.msPaths({
+      const { paths } = yield* hydra.discoverPaths({
         sourceLabel: "Token",
         sourceProperty: "tkey",
         sourceValues: stems.map((stem) => tokenKey(uid, stem)),
@@ -326,7 +313,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const counts = new Map<string, number>()
       if (skeys.length === 0) return counts
-      const paths = yield* hydra.msPaths({
+      const { paths } = yield* hydra.discoverPaths({
         sourceLabel: "Slot",
         sourceProperty: "skey",
         sourceValues: [...skeys],
@@ -360,7 +347,7 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<number, HydraError> =>
     Effect.gen(function* () {
       if (contestedSkeys.length === 0) return 0
-      const slotClaims = yield* hydra.msPaths({
+      const { paths: slotClaimPaths } = yield* hydra.discoverPaths({
         sourceLabel: "Slot",
         sourceProperty: "skey",
         sourceValues: [...contestedSkeys],
@@ -373,13 +360,13 @@ const make = Effect.gen(function* () {
       })
       const ckeys = [
         ...new Set(
-          slotClaims
+          slotClaimPaths
             .map((path) => String(path.nodes[path.nodes.length - 1]?.properties["ckey"] ?? ""))
             .filter((ckey) => ckey !== "")
         )
       ]
       if (ckeys.length === 0) return 0
-      const paths = yield* hydra.msPaths({
+      const { paths } = yield* hydra.discoverPaths({
         sourceLabel: "Claim",
         sourceProperty: "ckey",
         sourceValues: ckeys,
@@ -402,11 +389,9 @@ const make = Effect.gen(function* () {
         ["Slot", "skey"],
         ["Token", "tkey"]
       ] as const) {
-        const result = yield* hydra.query(
-          `MATCH (n:${label}) WHERE n.uid = $uid RETURN n.${property} AS key`,
-          { uid }
+        keys.push(
+          ...(yield* hydra.scanKeys({ label, keyProperty: property, filterProperty: "uid", filterValue: uid }))
         )
-        keys.push(...result.rows.map((row) => String(row["key"])))
       }
       yield* hydra.deleteByKeys(keys)
     })

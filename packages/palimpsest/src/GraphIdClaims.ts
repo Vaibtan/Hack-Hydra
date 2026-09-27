@@ -1,4 +1,4 @@
-import { edgeId, vertexId, type HydraClient, type HydraError } from "@palimpsest/hydra"
+import { edgeId, vertexId, type HydraError, type HydraMemory } from "@palimpsest/hydra"
 import { Effect } from "effect"
 import type { GraphClaimOperations } from "./IngestManifest/GraphClaims.js"
 import {
@@ -38,7 +38,7 @@ export type ClaimWriteIdentitiesError =
   | InvalidGraphIdClaim
   | IngestManifestUnavailable
 
-export type GraphIdentityReader = Pick<HydraClient, "readGraphIdentities">
+export type GraphIdentityReader = Pick<HydraMemory, "readGraphIdentities">
 
 const claimObservedThenRequested = (
   claims: GraphClaimOperations,

@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath, loadDataset, parseDatasetName, type DatasetQuestion } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import { loadDotEnv } from "@palimpsest/llm"
 import { readUserVertices, sessionKey } from "@palimpsest/palimpsest"
 import { Effect, Layer } from "effect"
@@ -65,7 +65,7 @@ const outPath = resolve(root, arg("out", SPLIT_FILE))
 const uidFor = (questionId: string): string =>
   prefix === "" ? questionId : `${prefix}-${questionId}`
 
-const AppLive = HydraClient.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
+const AppLive = HydraMemoryLive.pipe(Layer.provide(NodeHttpClient.layerUndici))
 
 const cachedIds = (): ReadonlyArray<string> => {
   const path = resolve(root, devFrom)
@@ -100,7 +100,7 @@ const readWitness = (): ReconcileWitness | null => {
 }
 
 const program = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
   const questions = yield* loadDataset(dataset).pipe(Effect.orDie)
   const population = benchmarkSlice(questions, sliceSize)
   const cached = cachedIds()

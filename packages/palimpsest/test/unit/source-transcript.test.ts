@@ -35,7 +35,16 @@ const revisionFor = (source: DatasetSession): SourceRevision => {
     state: "RECEIVED",
     manifestVersion: 0,
     failureCode: null,
-    failureRetryable: null
+    failureRetryable: null,
+    acceptedAtMs: 1700000000000,
+    reachedAtMs: {
+      RECEIVED: 1700000000000,
+      SOURCE_DURABLE: null,
+      INDEXED: null,
+      ENRICHED: null,
+      CONSOLIDATED: null,
+      COMMITTED: null
+    }
   }
 }
 

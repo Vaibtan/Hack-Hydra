@@ -1,6 +1,6 @@
 import { NodeHttpClient } from "@effect/platform-node"
 import { datasetPath, loadDataset } from "@palimpsest/dataset"
-import { HydraClient } from "@palimpsest/hydra"
+import { HydraMemory, HydraMemoryLive } from "@palimpsest/hydra"
 import { LlmLive } from "@palimpsest/llm"
 import { Effect, Layer, Schema } from "effect"
 import { existsSync, readFileSync } from "node:fs"
@@ -9,8 +9,8 @@ import { describe, expect, it } from "vitest"
 import { claimKind, slotKey, turnKey } from "../../src/Keys.js"
 import { readUserStats } from "../../src/User.js"
 import { probeArm, unionArms } from "../../src/Arms.js"
-import { Reader } from "../../src/Reader.js"
-import { Retrieve } from "../../src/Retrieve.js"
+import { LegacyG3Adapter } from "../../src/LegacyG3Adapter.js"
+import { Transcript } from "../../src/Transcript.js"
 import type { ReachedClaim } from "../../src/Scoring.js"
 import { Supersede } from "../../src/Supersede.js"
 
@@ -18,10 +18,10 @@ const hasDataset = existsSync(datasetPath("s"))
 const splitPath = resolve(import.meta.dirname, "../../../../data/splits/retrieval-v2.json")
 const hasSplit = existsSync(splitPath)
 
-const AppLive = Retrieve.layer.pipe(
-  Layer.provideMerge(Reader.layer),
+const AppLive = LegacyG3Adapter.layer.pipe(
+  Layer.provideMerge(Transcript.layer),
   Layer.provideMerge(Supersede.layer),
-  Layer.provideMerge(HydraClient.layer),
+  Layer.provideMerge(HydraMemoryLive),
   Layer.provideMerge(LlmLive()),
   Layer.provide(NodeHttpClient.layerUndici)
 )
@@ -40,7 +40,7 @@ const uidFor = (questionId: string): string =>
   split!.prefix === "" ? questionId : `${split!.prefix}-${questionId}`
 
 const firstIngestedDevUser = Effect.gen(function* () {
-  const hydra = yield* HydraClient
+  const hydra = yield* HydraMemory
   for (const questionId of split!.dev) {
     const uid = uidFor(questionId)
     const stats = yield* readUserStats(hydra, uid)
@@ -58,7 +58,7 @@ describe.runIf(hasDataset && split !== null)("the Slot probe arm", () => {
     const uid = subject!.uid
     const arm = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         const stats = yield* readUserStats(hydra, uid)
         expect(stats._tag).toBe("Some")
         return yield* probeArm(
@@ -81,9 +81,9 @@ describe.runIf(hasDataset && split !== null)("the Slot probe arm", () => {
 
     const measured = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         const total = subject!.claims
-        const paths = yield* hydra.msPaths({
+        const { paths } = yield* hydra.discoverPaths({
           sourceLabel: "Claim",
           sourceProperty: "kind",
           sourceValues: [claimKind(uid)],
@@ -130,8 +130,8 @@ describe.runIf(hasDataset && split !== null)("the Slot probe arm", () => {
     const uid = subject!.uid
     const skeys = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
-        const paths = yield* hydra.msPaths({
+        const hydra = yield* HydraMemory
+        const { paths } = yield* hydra.discoverPaths({
           sourceLabel: "Claim",
           sourceProperty: "kind",
           sourceValues: [claimKind(uid)],
@@ -174,8 +174,8 @@ describe.runIf(hasDataset && split !== null)("whole-turn hydration", () => {
 
     const turns = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
-        const paths = yield* hydra.msPaths({
+        const hydra = yield* HydraMemory
+        const { paths } = yield* hydra.discoverPaths({
           sourceLabel: "Turn",
           sourceProperty: "turn",
           sourceValues: keys,
@@ -212,13 +212,13 @@ describe.runIf(hasDataset && split !== null)("whole-turn hydration", () => {
 
     const found = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         for (const question of candidates) {
           const uid = uidFor(question.questionId)
           const stats = yield* readUserStats(hydra, uid)
           if (stats._tag !== "Some" || stats.value.claims === 0) continue
           const doubled = question.sessions.find((session) => session.key !== session.sid)!
-          const paths = yield* hydra.msPaths({
+          const { paths } = yield* hydra.discoverPaths({
             sourceLabel: "Turn",
             sourceProperty: "turn",
             sourceValues: [turnKey(uid, doubled.key, 0), turnKey(uid, doubled.sid, 0)],
@@ -256,7 +256,7 @@ describe.runIf(hasDataset && split !== null)("the union", () => {
     const uid = subject!.uid
     const report = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         const stats = yield* readUserStats(hydra, uid)
         const total = stats._tag === "Some" ? stats.value.claims : 1
         const probe = yield* probeArm(hydra, uid, { entityCanon: "me", attr: "residence" }, total)
@@ -293,7 +293,7 @@ describe.runIf(hasDataset && split !== null)("the two-fact comparison question",
 
     const outcome = await run(
       Effect.gen(function* () {
-        const hydra = yield* HydraClient
+        const hydra = yield* HydraMemory
         for (const question of candidates) {
           const uid = uidFor(question.questionId)
           const stats = yield* readUserStats(hydra, uid)
