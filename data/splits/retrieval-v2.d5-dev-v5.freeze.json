@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "lane": "retrieval-v2-legacy-g3",
+  "purpose": "fresh-dev-qualification",
+  "decision": {
+    "selected": "fresh-dev-qualification-without-tuning",
+    "supersedes": "data/splits/retrieval-v2.d5-dev-v4.freeze.json",
+    "reason": "The 3-user partition stayed within memory, but batch 2 proved that priming three users before replaying the first does not preserve warm state: the counted convergence stage exceeded 25 seconds. Existing measured runtime evidence states that only an immediate second ask is warm. This contract therefore pairs cold and warm passes per user across 60 one-row batches.",
+    "noTuning": "No retrieval, packing, prompt, model, threshold, or answer-selection change is permitted after this manifest is committed and before the qualification result is read."
+  },
+  "sourceFreeze": {
+    "path": "data/splits/retrieval-v2.freeze.json",
+    "sha256": "17b02705182064f66d48ca9fdc198e6cbffa49b2f3864d3e8b5b35278bf5ba41",
+    "commit": "e2ae440"
+  },
+  "contract": {
+    "codeIdentity": {
+      "baseCommit": "44930d5e44955e0ce59b31ef1297b9fd02bcbb41",
+      "harnessCommit": "ecdc98f552aa93f4152e1791cb64de6ba5a7bb5a",
+      "lockfileSha256": "fd8a47e1464fd453857edb4453cabdf9fdb9b1a2c3ed1a4e73fb579dc29bb33a"
+    },
+    "models": {
+      "reader": "gpt-5.6-luna",
+      "select": "gpt-5.6-luna",
+      "sufficiency": "gpt-5.6-luna"
+    },
+    "extractionGeneration": "extract-v1-fffef7bb23a92938adeba1bd1b781a016b019a7bfac75708368dc719fd4de6e4",
+    "profile": "full",
+    "variant": [],
+    "granularity": null,
+    "arm": {
+      "split": "dev",
+      "eligible": 60,
+      "batches": 60,
+      "batchSize": 1,
+      "concurrency": 1,
+      "priming": {
+        "pass": "cold",
+        "cacheMode": "read-write",
+        "outputRoot": "artifacts/retrieval-v2/d5-dev-qualification-v5/priming"
+      },
+      "counted": {
+        "pass": "warm",
+        "cacheMode": "cache-only",
+        "outputRoot": "artifacts/retrieval-v2/d5-dev-qualification-v5/counted"
+      }
+    },
+    "scoring": {
+      "model": "gpt-4o-2024-08-06",
+      "endpoint": "chat-completions",
+      "temperature": 0,
+      "maxTokens": 10,
+      "n": 1,
+      "parser": "case-insensitive-yes-substring"
+    },
+    "runtime": {
+      "configSha256": "c78cd4974795d00f9679b678aba5c69ead30f7f4d485e8bfe76fedef00376e49",
+      "imageId": "sha256:514349a17890bf2a35e5e5eb81b41c09b771b07e497fa3f51eb22e7727d66081",
+      "composeSha256": "c8e61606061e37254a4c2ac848133665647255d37928679ff10a17c40e3a3099"
+    },
+    "prices": {
+      "path": "data/splits/retrieval-v2.prices.json",
+      "sha256": "ee69f269e43d04aac031d1e7e912ce38a630cd7ac22c41de3a80b794bfad4b26",
+      "commit": "e2ae440"
+    }
+  },
+  "comparison": {
+    "baselineAnswer": {
+      "path": "results/palimpsest-dev.json",
+      "sha256": "ecf74de832ef524ade64b211812cb4051560d052d5c19b89f114af999277916e",
+      "commit": "72a2fe5"
+    },
+    "baselineRescore": "artifacts/retrieval-v2/d5-dev-qualification-v5/palimpsest-dev.upstream-score.json",
+    "candidateAnswer": "artifacts/retrieval-v2/d5-dev-qualification-v5/counted/palimpsest-v2-dev.json",
+    "candidateRescore": "artifacts/retrieval-v2/d5-dev-qualification-v5/palimpsest-v2-dev.upstream-score.json",
+    "gateResult": "artifacts/retrieval-v2/d5-dev-qualification-v5/gate.json"
+  },
+  "acceptanceThresholds": {
+    "minimumAnswerableCorrectGain": 3,
+    "maximumWorstTypeAccuracyRegressionPercentagePoints": 8,
+    "maximumFalseAbstentionPercent": 8,
+    "minimumAbstentionCorrect": 3,
+    "maximumWarmGraphP50Ms": 400,
+    "maximumReaderInputTokensP50": 1200
+  },
+  "invalidRunConditions": [
+    "any pinned artifact, code, model, runtime, population, batching, or price identity differs",
+    "any counted pass records a live provider call or is not warm",
+    "any output is overwritten or any batch is selectively omitted",
+    "the provider-resolved judge model differs from gpt-4o-2024-08-06",
+    "retrieval, packing, prompt, model, threshold, or answer-selection code changes after this manifest is committed",
+    "the 60-row exact upstream rescores or the predeclared gate cannot be produced"
+  ],
+  "authorization": {
+    "runtimeAndProviderSpend": true,
+    "scope": "60-question dev priming, counted qualification, and exact upstream rescoring of the frozen v1 and new v2 dev answer artifacts only; excludes the 104-question test arm"
+  },
+  "signOff": {
+    "by": "maintainer",
+    "at": "2026-09-27",
+    "note": "The maintainer approved the recommended D5 fresh-dev qualification and provider spend. Per-user cold-warm pairing implements the already-declared warm measurement without changing semantics or thresholds."
+  }
+}
