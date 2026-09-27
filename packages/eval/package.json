@@ -25,7 +25,8 @@
     "freeze": "tsx bin/freeze.ts",
     "eligible-views": "tsx bin/eligible-views.ts",
     "replay-compare": "tsx bin/replay-compare.ts",
-    "rescore": "tsx bin/rescore.ts"
+    "rescore": "tsx bin/rescore.ts",
+    "qualify-dev": "tsx bin/qualify-dev.ts"
   },
   "dependencies": {
     "@palimpsest/dataset": "workspace:*",

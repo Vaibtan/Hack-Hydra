@@ -238,3 +238,9 @@ export {
   parseReplayRun
 } from "./Replay.js"
 export type { ReplayComparison, ReplayDifference, ReplayRun } from "./Replay.js"
+export {
+  QualificationThresholds,
+  qualificationRefusals,
+  readQualification
+} from "./Qualification.js"
+export type { QualificationCriterion, QualificationReport } from "./Qualification.js"

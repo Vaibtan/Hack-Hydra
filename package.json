@@ -39,6 +39,7 @@
     "eligible-views": "pnpm --filter @palimpsest/eval run eligible-views",
     "replay-compare": "pnpm --filter @palimpsest/eval run replay-compare",
     "rescore": "pnpm --filter @palimpsest/eval run rescore",
+    "qualify-dev": "pnpm --filter @palimpsest/eval run qualify-dev",
     "serve": "pnpm --filter @palimpsest/server run serve",
     "smoke": "pnpm --filter @palimpsest/server run smoke",
     "demo": "pnpm --filter @palimpsest/demo run dev",
