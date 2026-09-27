@@ -8,7 +8,8 @@ const ArtifactPin = Schema.Struct({ path: Schema.String, sha256: Schema.String, 
 const RunPhase = Schema.Struct({
   pass: Schema.Literal("cold", "warm"),
   cacheMode: Schema.Literal("cache-only", "read-write"),
-  outputRoot: Schema.String
+  outputRoot: Schema.String,
+  readTimeoutMs: Schema.optional(Schema.Number)
 })
 const QualificationFreeze = Schema.Struct({
   schemaVersion: Schema.Literal(1),
@@ -112,6 +113,12 @@ export const legacyQualificationFindings = (
   }
   if (arm.priming.pass !== "cold" || arm.counted.pass !== "warm") {
     findings.push("qualification phases must be cold priming followed by warm counted")
+  }
+  if (arm.priming.readTimeoutMs !== undefined && arm.priming.readTimeoutMs < 120_000) {
+    findings.push("qualification cold read timeout must preserve the 120-second engine query allowance")
+  }
+  if (arm.counted.readTimeoutMs !== undefined) {
+    findings.push("qualification warm phase must use the default read timeout")
   }
   if (arm.priming.outputRoot === arm.counted.outputRoot) {
     findings.push("priming and counted outputs must use distinct roots")

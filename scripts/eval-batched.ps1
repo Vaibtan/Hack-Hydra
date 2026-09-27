@@ -58,7 +58,9 @@ function Invoke-EvalPass {
     $arguments += @("--frozen", $FrozenPurpose, "--manifest", $Manifest, "--authorized", "--pass", $Pass)
   }
   if ($Pass -eq "cold") {
-    $env:PALIMPSEST_READ_TIMEOUT_MS = "115000"
+    $qualification = Get-Content -Raw $Manifest | ConvertFrom-Json
+    $timeoutProperty = $qualification.contract.arm.priming.PSObject.Properties["readTimeoutMs"]
+    $env:PALIMPSEST_READ_TIMEOUT_MS = if ($null -eq $timeoutProperty) { "115000" } else { "$($timeoutProperty.Value)" }
   } else {
     Remove-Item Env:PALIMPSEST_READ_TIMEOUT_MS -ErrorAction SilentlyContinue
   }
