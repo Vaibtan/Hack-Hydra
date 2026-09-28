@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "manifest": {
+    "path": "data/splits/retrieval-v2.d5-dev-v7.freeze.json",
+    "sha256": "bdf87be52b7810ff4a8bebb9a3d29c89c7d9b781617d3485607eeed927be3e68"
+  },
+  "baseline": {
+    "path": "artifacts/retrieval-v2/d5-dev-qualification-v7/palimpsest-dev.upstream-score.json",
+    "sha256": "fcc208b0b5aa1a37e7d8f3441afc5aa04bf6121df22d12e468622e6ab9ed3192"
+  },
+  "candidate": {
+    "path": "artifacts/retrieval-v2/d5-dev-qualification-v7/palimpsest-v2-dev.upstream-score.json",
+    "sha256": "283d8c570799ec3aeed7d2a3f89e29d70d152068acfd0aecc6b6fc3e56cefaee"
+  },
+  "passed": true,
+  "criteria": [
+    {
+      "name": "answerable correct gain",
+      "measured": 6,
+      "bound": 3,
+      "comparison": "at least",
+      "passed": true
+    },
+    {
+      "name": "worst type accuracy regression (percentage points)",
+      "measured": 0,
+      "bound": 8,
+      "comparison": "at most",
+      "passed": true
+    },
+    {
+      "name": "false abstention on answerable (%)",
+      "measured": 5.555555555555555,
+      "bound": 8,
+      "comparison": "at most",
+      "passed": true
+    },
+    {
+      "name": "abstention questions correct",
+      "measured": 4,
+      "bound": 3,
+      "comparison": "at least",
+      "passed": true
+    },
+    {
+      "name": "warm graph p50 (ms)",
+      "measured": 175.5,
+      "bound": 400,
+      "comparison": "at most",
+      "passed": true
+    },
+    {
+      "name": "reader input tokens p50",
+      "measured": 889.5,
+      "bound": 1200,
+      "comparison": "at most",
+      "passed": true
+    }
+  ],
+  "numbers": {
+    "baselineAnswerableCorrect": 43,
+    "candidateAnswerableCorrect": 49,
+    "answerableCorrectGain": 6,
+    "worstType": "none",
+    "worstTypeAccuracyRegressionPercentagePoints": 0,
+    "falseAbstentionPercent": 5.555555555555555,
+    "abstentionCorrect": 4,
+    "graphMsP50": 175.5,
+    "readerInputTokensP50": 889.5
+  }
+}
