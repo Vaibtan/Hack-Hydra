@@ -66,4 +66,8 @@ describe("parseQuestion", () => {
     expect(q.isAbstention).toBe(false)
     expect(parseQuestion({ ...RAW, question_id: "gpt4_2655b836_abs" }).isAbstention).toBe(true)
   })
+
+  it("normalizes numeric reference answers used by LongMemEval-S", () => {
+    expect(parseQuestion({ ...RAW, answer: 3 }).answer).toBe("3")
+  })
 })

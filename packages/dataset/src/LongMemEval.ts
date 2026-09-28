@@ -42,7 +42,7 @@ export const RawQuestion = Schema.Struct({
   question_id: Schema.String,
   question_type: Schema.String,
   question: Schema.String,
-  answer: Schema.optionalKey(Schema.String),
+  answer: Schema.optionalKey(Schema.Union([Schema.String, Schema.Number])),
   question_date: Schema.String,
   haystack_dates: Schema.Array(Schema.String),
   haystack_session_ids: Schema.Array(Schema.String),
@@ -101,7 +101,7 @@ export const parseQuestion = (raw: RawQuestion): DatasetQuestion => {
     questionId: raw.question_id,
     questionType: raw.question_type,
     question: raw.question,
-    answer: raw.answer ?? "",
+    answer: raw.answer === undefined ? "" : String(raw.answer),
     questionDate: parseHaystackDate(raw.question_date),
     sessions: ordered.map((session, i) => {
       const repeat = seen.get(session.sid) ?? 0
