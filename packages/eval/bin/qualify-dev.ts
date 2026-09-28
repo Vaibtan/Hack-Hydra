@@ -3,6 +3,7 @@ import { resolve } from "node:path"
 import { Schema } from "effect"
 import {
   arg,
+  countedAnswerRefusals,
   fileSha256,
   QualificationThresholds,
   qualificationRefusals,
@@ -54,7 +55,9 @@ if (baselineRelative !== readPath("baselineRescore") || candidateRelative !== re
 const baseline = readEnvelope(resolve(root, baselineRelative))
 const candidate = readEnvelope(resolve(root, candidateRelative))
 const manifestSha256 = fileSha256(manifestPath)
-const candidateAnswerSha256 = fileSha256(resolve(root, manifest.comparison.candidateAnswer))
+const candidateAnswerPath = resolve(root, manifest.comparison.candidateAnswer)
+const candidateAnswerSha256 = fileSha256(candidateAnswerPath)
+const candidateAnswer = readEnvelope(candidateAnswerPath)
 const frozenRefusals = [
   ...(baseline.scoreSource?.path === manifest.comparison.baselineAnswer.path &&
   baseline.scoreSource.sha256 === manifest.comparison.baselineAnswer.sha256
@@ -65,13 +68,7 @@ const frozenRefusals = [
   candidateAnswerSha256 !== null
     ? []
     : ["candidate rescore is not bound to the frozen candidate answer artifact"]),
-  ...(candidate.freezeManifestSha256 === manifestSha256 ? [] : ["candidate answer does not identify this qualification manifest"]),
-  ...(candidate.codeIdentity === manifest.contract.codeIdentity.harnessCommit ? [] : ["candidate answer has the wrong harness commit"]),
-  ...(candidate.llmTrace !== undefined &&
-  candidate.llmTrace.length > 0 &&
-  candidate.llmTrace.every((call) => call.cache === "hit")
-    ? []
-    : ["counted candidate answer is not cache-hit-only"])
+  ...countedAnswerRefusals(candidateAnswer, manifestSha256, manifest.contract.codeIdentity.harnessCommit)
 ]
 const refusals = [
   ...qualificationRefusals(baseline, candidate, manifest.contract.arm.eligible),

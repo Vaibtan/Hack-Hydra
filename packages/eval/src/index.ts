@@ -239,6 +239,7 @@ export {
 } from "./Replay.js"
 export type { ReplayComparison, ReplayDifference, ReplayRun } from "./Replay.js"
 export {
+  countedAnswerRefusals,
   QualificationThresholds,
   qualificationRefusals,
   readQualification

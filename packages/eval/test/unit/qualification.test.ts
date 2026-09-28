@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  countedAnswerRefusals,
   qualificationRefusals,
   readQualification,
   type EvalEnvelope,
@@ -89,5 +90,28 @@ describe("D5 fresh-dev qualification", () => {
     expect(refusals).toContain("candidate is not the counted warm pass")
     expect(refusals).toContain("candidate adds question q2")
     expect(refusals).toContain("candidate lacks question q1")
+  })
+
+  it("checks retrieval cache evidence on the answer artifact, not judge traces on its rescore", () => {
+    const trace = {
+      kind: "read",
+      cacheKey: "key",
+      cache: "hit" as const,
+      requestedModel: "gpt-5.6-luna",
+      resolvedModel: null,
+      protocol: "responses" as const,
+      promptSha256: "prompt",
+      schemaSha256: "schema",
+      outputSha256: "output"
+    }
+    const answer: EvalEnvelope = {
+      ...envelope([row("q1")]),
+      freezeManifestSha256: "manifest",
+      codeIdentity: "harness",
+      llmTrace: [trace]
+    }
+    expect(countedAnswerRefusals(answer, "manifest", "harness")).toEqual([])
+    expect(countedAnswerRefusals({ ...answer, llmTrace: [{ ...trace, cache: "live" }] }, "manifest", "harness"))
+      .toContain("counted candidate answer is not cache-hit-only")
   })
 })

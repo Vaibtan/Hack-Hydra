@@ -31,6 +31,26 @@ export interface QualificationReport {
   readonly numbers: Readonly<Record<string, number | string>>
 }
 
+/** Refuse a counted answer artifact that is not the frozen cache-only warm measurement. */
+export const countedAnswerRefusals = (
+  answer: EvalEnvelope,
+  manifestSha256: string | null,
+  harnessCommit: string
+): ReadonlyArray<string> => [
+  ...(answer.freezeManifestSha256 === manifestSha256
+    ? []
+    : ["candidate answer does not identify this qualification manifest"]),
+  ...(answer.codeIdentity === harnessCommit
+    ? []
+    : ["candidate answer has the wrong harness commit"]),
+  ...(answer.pass === "warm" ? [] : ["candidate answer is not the counted warm pass"]),
+  ...(answer.llmTrace !== undefined &&
+  answer.llmTrace.length > 0 &&
+  answer.llmTrace.every((call) => call.cache === "hit")
+    ? []
+    : ["counted candidate answer is not cache-hit-only"])
+]
+
 const percentage = (numerator: number, denominator: number): number =>
   denominator === 0 ? 0 : (100 * numerator) / denominator
 
